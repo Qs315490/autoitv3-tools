@@ -1,0 +1,10 @@
+[package]
+name = "au3-parser"
+version = "0.1.0"
+edition = "2021"
+description = "AutoIt v3 lexer + parser producing a span-aware AST for deobfuscation analysis"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
