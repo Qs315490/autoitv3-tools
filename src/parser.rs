@@ -11,7 +11,7 @@
 //! - Errors carry the offending `Span` so a debugger can report location.
 
 use crate::ast::*;
-use crate::span::{Pos, Span};
+use crate::span::Span;
 use crate::token::Token;
 use crate::token::TokenKind;
 use crate::token::TokenKind as TK;
@@ -60,9 +60,6 @@ impl Parser {
         &self.peek().kind
     }
 
-    fn peek_n(&self, n: usize) -> &Token {
-        &self.tokens[(self.pos + n).min(self.tokens.len() - 1)]
-    }
 
     fn bump(&mut self) -> Token {
         let t = self.peek().clone();
@@ -111,6 +108,17 @@ impl Parser {
             Number(_) | Str(_) | True | False | Default | Null | Var(_) | Macro(_) | IdentTok(_)
                 | Not | Minus | Plus | LParen
         )
+    }
+
+    /// True when we are at the start of a statement that may appear in
+    /// single-line `If ... Then stmt` form.
+    fn at_stmt_start(&self) -> bool {
+        self.at_expr_start()
+            || matches!(
+                self.peek_kind(),
+                Return | Exit | ExitLoop | ContinueLoop | Local | Global | Const | Dim | Static
+                    | ReDim
+            )
     }
 
     // ----- statement separation -----
@@ -206,8 +214,12 @@ impl Parser {
     fn parse_param(&mut self) -> Result<Param, ParseError> {
         let start = self.peek().span;
         let mut by_ref = false;
-        if self.eat(&ByRef).is_some() {
+        // `Const ByRef $x` / `ByRef Const $x` / `Const $x` — any order.
+        if self.eat(&Const).is_some() {
+            self.eat(&ByRef);
+        } else if self.eat(&ByRef).is_some() {
             by_ref = true;
+            self.eat(&Const);
         }
         let name = self.parse_ident()?;
         let default = if self.eat(&Assign).is_some() {
@@ -228,7 +240,14 @@ impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         let start = self.peek().span;
         let kind = match self.peek_kind() {
-            Local | Global | Const | Dim | Static | ReDim => self.parse_var_decl_stmt()?,
+            Preproc(_) => {
+                let t = self.bump();
+                match t.kind {
+                    Preproc(name) => StmtKind::Directive(name),
+                    _ => unreachable!(),
+                }
+            }
+            Local | Global | Const | Dim | Static | ReDim | Enum => self.parse_var_decl_stmt()?,
             Return => {
                 self.bump();
                 let e = if self.at_expr_start() {
@@ -273,18 +292,40 @@ impl Parser {
 
     fn parse_var_decl_stmt(&mut self) -> Result<StmtKind, ParseError> {
         let kw = self.bump();
-        let (kind, mut is_const) = match kw.kind {
+        let (mut kind, mut is_const) = match kw.kind {
             Local => (VarKind::Local, false),
             Global => (VarKind::Global, false),
             Dim => (VarKind::Dim, false),
             Static => (VarKind::Static, false),
             Const => (VarKind::Local, true),
             ReDim => (VarKind::Dim, true),
+            Enum => (VarKind::Local, true),
             _ => unreachable!(),
         };
-        // `Local Const` / `Global Const` ordering.
-        if self.eat(&Const).is_some() {
-            is_const = true;
+        // `Local Const` / `Global Const` / `Global Enum` ordering, plus
+        // multiple leading scope keywords such as `Static Local $x`.
+        let mut is_enum = false;
+        loop {
+            if self.eat(&Const).is_some() {
+                is_const = true;
+            } else if self.eat(&Enum).is_some() {
+                is_enum = true;
+                is_const = true; // enumeration members are constants
+            } else if self.at(&Local) {
+                self.bump();
+                kind = VarKind::Local;
+            } else if self.at(&Global) {
+                self.bump();
+                kind = VarKind::Global;
+            } else if self.at(&Static) {
+                self.bump();
+                kind = VarKind::Static;
+            } else if self.at(&Dim) {
+                self.bump();
+                kind = VarKind::Dim;
+            } else {
+                break;
+            }
         }
         let mut vars = Vec::new();
         loop {
@@ -296,6 +337,7 @@ impl Parser {
         Ok(StmtKind::VarDecl(VarDecl {
             kind,
             is_const,
+            is_enum,
             vars,
         }))
     }
@@ -331,29 +373,46 @@ impl Parser {
         let cond = self.parse_expr()?;
         self.expect(&Then, "Then")?;
         // Single-line `If ... Then stmt`.
-        let then_stmt = if !self.at_any(&[&Newline, &Colon, &Eof]) && self.at_expr_start() {
+        let then_stmt = if !self.at_any(&[&Newline, &Colon, &Eof]) && self.at_stmt_start() {
             Some(Box::new(self.parse_stmt()?))
         } else {
             None
         };
-        self.skip_seps();
         let mut else_ifs = Vec::new();
         let mut else_block = Vec::new();
+        let mut then_block = Vec::new();
+        // AutoIt single-line form: `If cond Then stmt` — no EndIf needed.
+        if then_stmt.is_some() {
+            return Ok(StmtKind::If(IfStmt {
+                cond,
+                then_stmt,
+                else_ifs,
+                else_block,
+                then_block: Vec::new(),
+            }));
+        }
         loop {
+            self.skip_seps();
             if self.at(&ElseIf) {
                 self.bump();
                 let c = self.parse_expr()?;
                 self.expect(&Then, "Then")?;
                 let mut body = Vec::new();
-                self.skip_seps();
-                while !self.at_any(&[&ElseIf, &Else, &EndIf, &Eof]) {
+                loop {
+                    self.skip_seps();
+                    if self.at_any(&[&ElseIf, &Else, &EndIf, &Eof]) {
+                        break;
+                    }
                     body.push(self.parse_stmt()?);
                 }
                 else_ifs.push((c, body));
             } else if self.at(&Else) {
                 self.bump();
-                self.skip_seps();
-                while !self.at(&EndIf) && !self.at(&Eof) {
+                loop {
+                    self.skip_seps();
+                    if self.at(&EndIf) || self.at(&Eof) {
+                        break;
+                    }
                     else_block.push(self.parse_stmt()?);
                 }
                 self.expect(&EndIf, "EndIf")?;
@@ -365,15 +424,19 @@ impl Parser {
                 return Err(self.err_here("unexpected EOF: missing EndIf"));
             } else {
                 // continuation of multi-line Then body
-                while !self.at_any(&[&ElseIf, &Else, &EndIf, &Eof]) {
-                    // push into else_block as the "then" body
-                    else_block.push(self.parse_stmt()?);
+                loop {
+                    self.skip_seps();
+                    if self.at_any(&[&ElseIf, &Else, &EndIf, &Eof]) {
+                        break;
+                    }
+                    then_block.push(self.parse_stmt()?);
                 }
             }
         }
         Ok(StmtKind::If(IfStmt {
             cond,
             then_stmt,
+            then_block,
             else_ifs,
             else_block,
         }))
@@ -418,15 +481,24 @@ impl Parser {
     fn parse_for(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&For, "For")?;
         let var = self.parse_ident()?;
-        self.expect(&Assign, "=")?;
-        let from = self.parse_expr()?;
-        self.expect(&To, "To")?;
-        let to = self.parse_expr()?;
-        let step = if self.eat(&Step).is_some() {
+        // `For ... In $arr` iteration form has no from/to/step.
+        let iter = if self.eat(&In).is_some() {
             Some(self.parse_expr()?)
         } else {
             None
         };
+        let mut from = self.empty_expr(self.peek().span);
+        let mut to = self.empty_expr(self.peek().span);
+        let mut step = None;
+        if iter.is_none() {
+            self.expect(&Assign, "=")?;
+            from = self.parse_expr()?;
+            self.expect(&To, "To")?;
+            to = self.parse_expr()?;
+            if self.eat(&Step).is_some() {
+                step = Some(self.parse_expr()?);
+            }
+        }
         let mut body = Vec::new();
         loop {
             self.skip_seps();
@@ -444,6 +516,7 @@ impl Parser {
             from,
             to,
             step,
+            iter,
             body,
         }))
     }
@@ -547,17 +620,45 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_or()?;
-        if self.at(&Assign) {
+        let lhs = self.parse_ternary()?;
+        let op = match self.peek_kind() {
+            Assign => Some(BinaryOp::Assign),
+            PlusAssign => Some(BinaryOp::PlusAssign),
+            MinusAssign => Some(BinaryOp::MinusAssign),
+            StarAssign => Some(BinaryOp::StarAssign),
+            SlashAssign => Some(BinaryOp::SlashAssign),
+            CaretAssign => Some(BinaryOp::CaretAssign),
+            AmpAssign => Some(BinaryOp::AmpAssign),
+            _ => None,
+        };
+        if let Some(op) = op {
             self.bump();
             let rhs = self.parse_assignment()?;
             let span = lhs.span.merge(rhs.span);
             return Ok(Expr {
-                kind: ExprKind::Binary(BinaryOp::Assign, Box::new(lhs), Box::new(rhs)),
+                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
                 span,
             });
         }
         Ok(lhs)
+    }
+
+    /// `cond ? a : b` — the ternary conditional. `?` binds looser than the
+    /// binary operators but tighter than assignment.
+    fn parse_ternary(&mut self) -> Result<Expr, ParseError> {
+        let cond = self.parse_or()?;
+        if self.at(&Question) {
+            self.bump();
+            let a = self.parse_ternary()?;
+            self.expect(&Colon, ":")?;
+            let b = self.parse_ternary()?;
+            let span = cond.span.merge(b.span);
+            return Ok(Expr {
+                kind: ExprKind::Ternary(Box::new(cond), Box::new(a), Box::new(b)),
+                span,
+            });
+        }
+        Ok(cond)
     }
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
@@ -726,12 +827,12 @@ impl Parser {
                 self.bump();
                 let idx = self.parse_expr()?;
                 self.expect(&RBracket, "]")?;
-                // Fold into VarExpr if it is a variable, else wrap in Call-like.
+                // Fold into VarExpr if it is a variable, else wrap in a
+                // synthetic indexing expression (rare for non-vars).
                 if let ExprKind::Var(v) = &mut e.kind {
                     v.indices.push(idx);
                     e.span = e.span.merge(self.prev_span());
                 } else {
-                    // Build an indexing expression for non-vars (rare).
                     let span = e.span.merge(self.prev_span());
                     e = Expr {
                         kind: ExprKind::Binary(BinaryOp::Concat, Box::new(e), Box::new(idx)),
@@ -741,6 +842,32 @@ impl Parser {
             } else {
                 break;
             }
+        }
+        // User-defined array call: `$arr[0](...)` returns a function ref
+        // that is then invoked. Represent as `IndexCall`.
+        if self.at(&LParen) {
+            let base = match e.kind {
+                ExprKind::Var(v) => v,
+                _ => {
+                    return Err(self.err_here("cannot call non-variable expression"));
+                }
+            };
+            self.bump();
+            let mut args = Vec::new();
+            if !self.at(&RParen) {
+                loop {
+                    args.push(self.parse_expr()?);
+                    if self.eat(&Comma).is_none() {
+                        break;
+                    }
+                }
+            }
+            self.expect(&RParen, ")")?;
+            let span = Span::new(base.name.span.start, self.prev_span().end);
+            return Ok(Expr {
+                kind: ExprKind::IndexCall(base, args),
+                span,
+            });
         }
         Ok(e)
     }
@@ -863,6 +990,24 @@ impl Parser {
                 let span = Span::new(t.span.start, self.prev_span().end);
                 Ok(Expr {
                     kind: ExprKind::Paren(Box::new(inner)),
+                    span,
+                })
+            }
+            LBracket => {
+                self.bump();
+                let mut items = Vec::new();
+                if !self.at(&RBracket) {
+                    loop {
+                        items.push(self.parse_expr()?);
+                        if self.eat(&Comma).is_none() {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&RBracket, "]")?;
+                let span = Span::new(t.span.start, self.prev_span().end);
+                Ok(Expr {
+                    kind: ExprKind::ArrayLit(items),
                     span,
                 })
             }

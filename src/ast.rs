@@ -62,6 +62,8 @@ pub struct Stmt {
 pub enum StmtKind {
     /// A variable declaration: `Local $x`, `Global Const $y = 1`, etc.
     VarDecl(VarDecl),
+    /// A preprocessor directive inside a function body (e.g. `#forceref`).
+    Directive(String),
     /// A plain expression statement (function call, assignment, etc.).
     Expr(Expr),
     /// `Return [expr]`
@@ -91,6 +93,8 @@ pub enum StmtKind {
 pub struct VarDecl {
     pub kind: VarKind,
     pub is_const: bool,
+    /// True for `Enum` / `Global Enum` blocks (members are constants).
+    pub is_enum: bool,
     pub vars: Vec<VarDeclItem>,
 }
 
@@ -117,6 +121,8 @@ pub struct IfStmt {
     pub cond: Expr,
     /// The single statement after `Then` on the same line (optional).
     pub then_stmt: Option<Box<Stmt>>,
+    /// The multi-line `Then` body (empty for single-line form).
+    pub then_block: Vec<Stmt>,
     /// The `ElseIf cond Then ...` clauses.
     pub else_ifs: Vec<(Expr, Vec<Stmt>)>,
     /// The `Else` block statements.
@@ -138,6 +144,8 @@ pub struct DoUntilStmt {
 #[derive(Debug, Clone)]
 pub struct ForStmt {
     pub var: Ident,
+    /// For-In form: the iterated expression (`For $x In $arr`).
+    pub iter: Option<Expr>,
     pub from: Expr,
     pub to: Expr,
     pub step: Option<Expr>,
@@ -190,6 +198,13 @@ pub enum ExprKind {
     Unary(UnaryOp, Box<Expr>),
     /// Parenthesized expression (kept for source fidelity).
     Paren(Box<Expr>),
+    /// Ternary conditional: `cond ? a : b`.
+    Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// Array literal initializer: `[$a, $b, ...]`.
+    ArrayLit(Vec<Expr>),
+    /// Call of a function reference stored in an array element:
+    /// `$arr[i](args...)`.
+    IndexCall(VarExpr, Vec<Expr>),
 }
 
 /// A literal value.
@@ -232,6 +247,12 @@ pub struct CallExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryOp {
     Assign,
+    PlusAssign,
+    MinusAssign,
+    StarAssign,
+    SlashAssign,
+    CaretAssign,
+    AmpAssign,
     Eq,
     NotEq,
     Lt,

@@ -103,7 +103,13 @@ pub enum TokenKind {
     Enum,
 
     // ----- Operators -----
-    Assign, // =
+    Assign,    // =
+    PlusAssign, // +=
+    MinusAssign, // -=
+    StarAssign, // *=
+    SlashAssign, // /=
+    CaretAssign, // ^=
+    AmpAssign, // &=
     Eq,     // ==
     NotEq,  // <>
     Lt,
@@ -114,8 +120,9 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
-    Caret, // ^
-    Amp,   // &  (used as both concat and bitwise-and)
+    Caret,    // ^
+    Amp,      // &  (used as both concat and bitwise-and)
+    Question, // ? (ternary)
 
     // ----- End of input -----
     Eof,

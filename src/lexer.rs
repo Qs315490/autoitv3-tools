@@ -51,9 +51,6 @@ impl<'a> Lexer<'a> {
         self.src.get(self.idx).copied()
     }
 
-    fn peek_at(&self, off: usize) -> Option<u8> {
-        self.src.get(self.idx + off).copied()
-    }
 
     fn pos(&self) -> Pos {
         Pos::new(self.line, self.col)
@@ -71,9 +68,6 @@ impl<'a> Lexer<'a> {
         Some(c)
     }
 
-    fn starts_with(&self, s: &str) -> bool {
-        self.src[self.idx..].starts_with(s.as_bytes())
-    }
 
     fn eat_ws_and_comments(&mut self) {
         loop {
@@ -138,27 +132,61 @@ impl<'a> Lexer<'a> {
             b'0'..=b'9' => self.number(start),
             b'+' => {
                 self.bump();
-                TokenKind::Plus
+                if self.peek() == Some(b'=') {
+                    self.bump();
+                    TokenKind::PlusAssign
+                } else {
+                    TokenKind::Plus
+                }
             }
             b'-' => {
                 self.bump();
-                TokenKind::Minus
+                if self.peek() == Some(b'=') {
+                    self.bump();
+                    TokenKind::MinusAssign
+                } else {
+                    TokenKind::Minus
+                }
             }
             b'*' => {
                 self.bump();
-                TokenKind::Star
+                if self.peek() == Some(b'=') {
+                    self.bump();
+                    TokenKind::StarAssign
+                } else {
+                    TokenKind::Star
+                }
             }
             b'/' => {
                 self.bump();
-                TokenKind::Slash
+                if self.peek() == Some(b'=') {
+                    self.bump();
+                    TokenKind::SlashAssign
+                } else {
+                    TokenKind::Slash
+                }
             }
             b'^' => {
                 self.bump();
-                TokenKind::Caret
+                if self.peek() == Some(b'=') {
+                    self.bump();
+                    TokenKind::CaretAssign
+                } else {
+                    TokenKind::Caret
+                }
             }
             b'&' => {
                 self.bump();
-                TokenKind::Amp
+                if self.peek() == Some(b'=') {
+                    self.bump();
+                    TokenKind::AmpAssign
+                } else {
+                    TokenKind::Amp
+                }
+            }
+            b'?' => {
+                self.bump();
+                TokenKind::Question
             }
             b'=' => {
                 self.bump();
@@ -174,6 +202,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some(b'>') {
                     self.bump();
                     TokenKind::NotEq
+                } else if self.peek() == Some(b'=') {
+                    self.bump();
+                    TokenKind::Le
                 } else {
                     TokenKind::Lt
                 }
@@ -200,7 +231,7 @@ impl<'a> Lexer<'a> {
         Ok(Token::new(kind, Span::new(start, end)))
     }
 
-    fn preproc(&mut self, start: Pos) -> TokenKind {
+    fn preproc(&mut self, _start: Pos) -> TokenKind {
         self.bump(); // '#'
         let mut s = String::new();
         while let Some(c) = self.peek() {
@@ -211,10 +242,20 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        TokenKind::Preproc(s)
+        // Keep the rest of the directive line verbatim (arguments such as
+        // `<file.au3>`, `Icon\app.ico`, `=value`). AutoIt directives are
+        // line-oriented: everything up to the newline belongs to the directive.
+        while let Some(c) = self.peek() {
+            if c == b'\n' {
+                break;
+            }
+            s.push(c as char);
+            self.bump();
+        }
+        TokenKind::Preproc(s.trim_end().to_string())
     }
 
-    fn var(&mut self, start: Pos) -> TokenKind {
+    fn var(&mut self, _start: Pos) -> TokenKind {
         self.bump(); // '$'
         let mut s = String::from("$");
         while let Some(c) = self.peek() {
@@ -228,7 +269,7 @@ impl<'a> Lexer<'a> {
         TokenKind::Var(s)
     }
 
-    fn r#macro(&mut self, start: Pos) -> TokenKind {
+    fn r#macro(&mut self, _start: Pos) -> TokenKind {
         self.bump(); // '@'
         let mut s = String::from("@");
         while let Some(c) = self.peek() {
@@ -271,7 +312,7 @@ impl<'a> Lexer<'a> {
         Ok(TokenKind::Str(s))
     }
 
-    fn number(&mut self, start: Pos) -> TokenKind {
+    fn number(&mut self, _start: Pos) -> TokenKind {
         let mut s = String::new();
         while let Some(c) = self.peek() {
             if c.is_ascii_hexdigit() || c == b'.' || c == b'x' || c == b'X' {
@@ -288,7 +329,7 @@ impl<'a> Lexer<'a> {
         TokenKind::Number(s)
     }
 
-    fn ident(&mut self, start: Pos) -> TokenKind {
+    fn ident(&mut self, _start: Pos) -> TokenKind {
         let mut s = String::new();
         while let Some(c) = self.peek() {
             if c.is_ascii_alphanumeric() || c == b'_' {

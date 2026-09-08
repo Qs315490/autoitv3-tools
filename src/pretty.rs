@@ -91,6 +91,10 @@ impl PrettyPrinter {
 
     fn print_stmt(&mut self, s: &Stmt) {
         match &s.kind {
+            StmtKind::Directive(name) => {
+                self.pad();
+                let _ = writeln!(self.out, "#{name}");
+            }
             StmtKind::VarDecl(v) => {
                 self.pad();
                 let kw = match v.kind {
@@ -100,8 +104,11 @@ impl PrettyPrinter {
                     VarKind::Static => "Static",
                 };
                 let _ = write!(self.out, "{kw}");
-                if v.is_const {
+                if v.is_const && !v.is_enum {
                     let _ = write!(self.out, " Const");
+                }
+                if v.is_enum {
+                    let _ = write!(self.out, " Enum");
                 }
                 for (i, item) in v.vars.iter().enumerate() {
                     if i > 0 {
@@ -148,6 +155,10 @@ impl PrettyPrinter {
                 }
             }
             StmtKind::If(if_) => {
+                let is_single = if_.then_stmt.is_some()
+                    && if_.then_block.is_empty()
+                    && if_.else_ifs.is_empty()
+                    && if_.else_block.is_empty();
                 self.pad();
                 let _ = write!(self.out, "If ");
                 self.print_expr(&if_.cond);
@@ -156,7 +167,17 @@ impl PrettyPrinter {
                     let _ = write!(self.out, " ");
                     self.print_stmt_inline(ts);
                 }
+                if is_single {
+                    // `If cond Then stmt` — no EndIf required.
+                    return;
+                }
                 self.nl();
+                self.indent += 1;
+                for b in &if_.then_block {
+                    self.print_stmt(b);
+                    self.nl();
+                }
+                self.indent -= 1;
                 for (c, body) in &if_.else_ifs {
                     self.pad();
                     let _ = write!(self.out, "ElseIf ");
@@ -209,13 +230,18 @@ impl PrettyPrinter {
             }
             StmtKind::For(f) => {
                 self.pad();
-                let _ = write!(self.out, "For {} = ", f.var.name);
-                self.print_expr(&f.from);
-                let _ = write!(self.out, " To ");
-                self.print_expr(&f.to);
-                if let Some(st) = &f.step {
-                    let _ = write!(self.out, " Step ");
-                    self.print_expr(st);
+                if let Some(iter) = &f.iter {
+                    let _ = write!(self.out, "For {} In ", f.var.name);
+                    self.print_expr(iter);
+                } else {
+                    let _ = write!(self.out, "For {} = ", f.var.name);
+                    self.print_expr(&f.from);
+                    let _ = write!(self.out, " To ");
+                    self.print_expr(&f.to);
+                    if let Some(st) = &f.step {
+                        let _ = write!(self.out, " Step ");
+                        self.print_expr(st);
+                    }
                 }
                 self.nl();
                 self.indent += 1;
@@ -317,6 +343,27 @@ impl PrettyPrinter {
                     }
                 }
             }
+            StmtKind::Return(e) => {
+                let _ = write!(tmp.out, "Return");
+                if let Some(e) = e {
+                    let _ = write!(tmp.out, " ");
+                    tmp.print_expr(e);
+                }
+            }
+            StmtKind::Exit(e) => {
+                let _ = write!(tmp.out, "Exit");
+                if let Some(e) = e {
+                    let _ = write!(tmp.out, " ");
+                    tmp.print_expr(e);
+                }
+            }
+            StmtKind::ExitLoop(e) => {
+                let _ = write!(tmp.out, "ExitLoop");
+                if let Some(e) = e {
+                    let _ = write!(tmp.out, " ");
+                    tmp.print_expr(e);
+                }
+            }
             _ => {
                 let _ = write!(tmp.out, "[inline-stmt]");
             }
@@ -376,6 +423,12 @@ impl PrettyPrinter {
             ExprKind::Binary(op, a, b) => {
                 let sym = match op {
                     BinaryOp::Assign => " = ",
+                    BinaryOp::PlusAssign => " += ",
+                    BinaryOp::MinusAssign => " -= ",
+                    BinaryOp::StarAssign => " *= ",
+                    BinaryOp::SlashAssign => " /= ",
+                    BinaryOp::CaretAssign => " ^= ",
+                    BinaryOp::AmpAssign => " &= ",
                     BinaryOp::Eq => " == ",
                     BinaryOp::NotEq => " <> ",
                     BinaryOp::Lt => " < ",
@@ -392,11 +445,25 @@ impl PrettyPrinter {
                     BinaryOp::And => " And ",
                     BinaryOp::Or => " Or ",
                 };
-                let _ = write!(self.out, "(");
+                let is_assign = matches!(
+                    op,
+                    BinaryOp::Assign
+                        | BinaryOp::PlusAssign
+                        | BinaryOp::MinusAssign
+                        | BinaryOp::StarAssign
+                        | BinaryOp::SlashAssign
+                        | BinaryOp::CaretAssign
+                        | BinaryOp::AmpAssign
+                );
+                if !is_assign {
+                    let _ = write!(self.out, "(");
+                }
                 self.print_expr(a);
                 let _ = write!(self.out, "{sym}");
                 self.print_expr(b);
-                let _ = write!(self.out, ")");
+                if !is_assign {
+                    let _ = write!(self.out, ")");
+                }
             }
             ExprKind::Unary(op, a) => {
                 let sym = match op {
@@ -406,6 +473,39 @@ impl PrettyPrinter {
                 };
                 let _ = write!(self.out, "{sym}");
                 self.print_expr(a);
+            }
+            ExprKind::ArrayLit(items) => {
+                let _ = write!(self.out, "[");
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        let _ = write!(self.out, ", ");
+                    }
+                    self.print_expr(it);
+                }
+                let _ = write!(self.out, "]");
+            }
+            ExprKind::IndexCall(v, args) => {
+                let _ = write!(self.out, "{}", v.name.name);
+                for idx in &v.indices {
+                    let _ = write!(self.out, "[");
+                    self.print_expr(idx);
+                    let _ = write!(self.out, "]");
+                }
+                let _ = write!(self.out, "(");
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        let _ = write!(self.out, ", ");
+                    }
+                    self.print_expr(a);
+                }
+                let _ = write!(self.out, ")");
+            }
+            ExprKind::Ternary(c, a, b) => {
+                self.print_expr(c);
+                let _ = write!(self.out, " ? ");
+                self.print_expr(a);
+                let _ = write!(self.out, " : ");
+                self.print_expr(b);
             }
             ExprKind::Paren(p) => {
                 let _ = write!(self.out, "(");
