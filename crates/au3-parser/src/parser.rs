@@ -305,6 +305,9 @@ impl Parser {
         // `Local Const` / `Global Const` / `Global Enum` ordering, plus
         // multiple leading scope keywords such as `Static Local $x`.
         let mut is_enum = false;
+        // `Static` is the strongest scope modifier and wins over the others,
+        // regardless of order (`Static Local $x` == `Local Static $x`).
+        let mut saw_static = kind == VarKind::Static;
         loop {
             if self.eat(&Const).is_some() {
                 is_const = true;
@@ -313,16 +316,23 @@ impl Parser {
                 is_const = true; // enumeration members are constants
             } else if self.at(&Local) {
                 self.bump();
-                kind = VarKind::Local;
+                if !saw_static {
+                    kind = VarKind::Local;
+                }
             } else if self.at(&Global) {
                 self.bump();
-                kind = VarKind::Global;
+                if !saw_static {
+                    kind = VarKind::Global;
+                }
             } else if self.at(&Static) {
                 self.bump();
+                saw_static = true;
                 kind = VarKind::Static;
             } else if self.at(&Dim) {
                 self.bump();
-                kind = VarKind::Dim;
+                if !saw_static {
+                    kind = VarKind::Dim;
+                }
             } else {
                 break;
             }

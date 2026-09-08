@@ -1,10 +1,12 @@
-[package]
-name = "au3-parser"
+[workspace]
+resolver = "2"
+members = ["crates/au3-parser", "crates/au3-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["Qs315490"]
 description = "AutoIt v3 lexer + parser producing a span-aware AST for deobfuscation analysis"
-
-[dependencies]
 
 [profile.release]
 opt-level = 3

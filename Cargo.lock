@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "au3-cli"
+version = "0.1.0"
+dependencies = [
+ "au3-parser",
+]
+
+[[package]]
 name = "au3-parser"
 version = "0.1.0"

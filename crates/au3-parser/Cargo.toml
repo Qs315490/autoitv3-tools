@@ -1,0 +1,14 @@
+[package]
+name = "au3-parser"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+
+[dependencies]
+
+[lib]
+name = "au3_parser"
+path = "src/lib.rs"
+
+[lints.rust]
+unused = "warn"

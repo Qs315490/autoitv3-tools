@@ -1,0 +1,12 @@
+[package]
+name = "au3-cli"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+
+[dependencies]
+au3-parser = { path = "../au3-parser" }
+
+[[bin]]
+name = "au3-parser"
+path = "src/main.rs"

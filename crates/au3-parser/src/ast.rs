@@ -214,7 +214,7 @@ pub struct Lit {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LitKind {
     Int(i64),
     Float(f64),
