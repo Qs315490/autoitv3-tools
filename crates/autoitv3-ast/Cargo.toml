@@ -1,5 +1,5 @@
 [package]
-name = "au3-parser"
+name = "autoitv3-ast"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
@@ -7,7 +7,7 @@ description.workspace = true
 [dependencies]
 
 [lib]
-name = "au3_parser"
+name = "autoitv3_ast"
 path = "src/lib.rs"
 
 [lints.rust]

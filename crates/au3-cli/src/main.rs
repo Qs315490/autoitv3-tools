@@ -1,15 +1,15 @@
 //! Command line entry point for the AutoIt v3 AST analysis tool.
 //!
 //! Usage:
-//!   au3-parser <file.au3>              # parse, report stats, dump AST
-//!   au3-parser --pretty <file.au3>     # parse then pretty-print (deobfuscate)
+//!   au3 <file.au3>              # parse, report stats, dump AST
+//!   au3 --pretty <file.au3>     # parse then pretty-print (deobfuscate)
 
-use au3_parser::{parse, PrettyPrinter};
+use autoitv3_ast::{parse, PrettyPrinter};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: au3-parser [--pretty] <file.au3>");
+        eprintln!("usage: au3 [--pretty] <file.au3>");
         std::process::exit(2);
     }
 
@@ -51,8 +51,8 @@ fn main() {
     }
 }
 
-fn count_funcs(prog: &au3_parser::Program) -> usize {
-    use au3_parser::ast::ItemKind;
+fn count_funcs(prog: &autoitv3_ast::Program) -> usize {
+    use autoitv3_ast::ast::ItemKind;
     prog.items
         .iter()
         .filter(|it| matches!(it.kind, ItemKind::Func(_)))

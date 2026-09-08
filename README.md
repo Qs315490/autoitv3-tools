@@ -1,6 +1,6 @@
-# au3-parser (workspace)
+# autoitv3-tools (workspace)
 
-AutoIt v3 词法/语法分析器，产出**带源码位置（Span）的 AST**，作为反混淆分析的基座。
+AutoIt v3 词法/语法分析工具集：产出**带源码位置（Span）的 AST**，作为反混淆分析的基座。
 代码结构分层，便于后续叠加功能（常量折叠、断点调试、解释执行器等）而无需改动核心。
 
 采用 **Cargo workspace**：AST 作为可复用的库 crate，CLI 作为独立二进制 crate 调用库。
@@ -8,10 +8,10 @@ AutoIt v3 词法/语法分析器，产出**带源码位置（Span）的 AST**，
 ## 结构
 
 ```
-au3-parser/
+autoitv3-tools/
   Cargo.toml                 # workspace 定义
   crates/
-    au3-parser/              # 库 crate（可被下游依赖）
+    autoitv3-ast/            # 库 crate（可被下游依赖）——AutoIt AST 分析核心
       src/
         span.rs    位置(Pos)与区间(Span)——每个 AST 节点都带 Span，方便断点/源码映射
         token.rs   词法 token 定义（关键字、运算符、复合赋值、三元 ?:）
@@ -22,7 +22,7 @@ au3-parser/
         lib.rs    库入口，统一导出
       tests/
         integration.rs   库集成单元测试（24 项）
-    au3-cli/                # CLI 二进制 crate，调用库
+    au3-cli/                # CLI 二进制 crate（产物名为 au3）
       src/main.rs
 ```
 
@@ -31,21 +31,21 @@ au3-parser/
 ```bash
 cargo build --release
 # 统计信息（顶层条目数、函数数）
-./target/release/au3-parser some.au3
+./target/release/au3 some.au3
 # 规范化重打印（去注释、统一缩进）——反混淆输出基础
-./target/release/au3-parser --pretty some.au3
+./target/release/au3 --pretty some.au3
 # 运行库的单元测试
-cargo test -p au3-parser
+cargo test -p autoitv3-ast
 ```
 
 ## 作为库调用
 
 ```rust
-use au3_parser::{parse, pretty::PrettyPrinter};
+use autoitv3_ast::{parse, pretty::PrettyPrinter};
 
 let prog = parse(src)?;               // 得到 span-aware AST
 let funcs = prog.items.iter()
-    .filter(|it| matches!(it.kind, au3_parser::ast::ItemKind::Func(_)))
+    .filter(|it| matches!(it.kind, autoitv3_ast::ast::ItemKind::Func(_)))
     .count();
 
 let mut pp = PrettyPrinter::new();
@@ -73,7 +73,7 @@ let out = pp.print_program(&prog);    // 反混淆/规范化输出
 
 ## 测试
 
-`crates/au3-parser/tests/integration.rs` 覆盖：
+`crates/autoitv3-ast/tests/integration.rs` 覆盖：
 
 - 词法：token 种类、字符串转义、`#指令`整行（含 CRLF 处理）、复合赋值/三元
 - 解析与 AST 结构：顶层条目、Global/Const、赋值/复合赋值、三元、函数与参数、
@@ -87,3 +87,12 @@ let out = pp.print_program(&prog);    // 反混淆/规范化输出
 
 - 解析成功，顶层条目与函数都识别出来
 - pretty 规范化输出可被重新解析（round-trip 一致）
+
+## 命名对应
+
+| 概念 | 名称 |
+| ---- | ---- |
+| 项目/工作区 | `autoitv3-tools` |
+| AST 分析库 crate | `autoitv3-ast`（lib 名 `autoitv3_ast`） |
+| CLI crate | `au3-cli` |
+| CLI 可执行产物 | `au3` |

@@ -6,9 +6,9 @@ version = 4
 name = "au3-cli"
 version = "0.1.0"
 dependencies = [
- "au3-parser",
+ "autoitv3-ast",
 ]
 
 [[package]]
-name = "au3-parser"
+name = "autoitv3-ast"
 version = "0.1.0"

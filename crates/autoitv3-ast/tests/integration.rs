@@ -4,8 +4,8 @@
 //! pretty-printer round-trip. They use the public library API so they also
 //! serve as usage examples for downstream callers.
 
-use au3_parser::ast::{BinaryOp, ExprKind, ItemKind, LitKind, StmtKind, VarKind};
-use au3_parser::{parse, lexer, pretty::PrettyPrinter};
+use autoitv3_ast::ast::{BinaryOp, ExprKind, ItemKind, LitKind, StmtKind, VarKind};
+use autoitv3_ast::{parse, lexer, pretty::PrettyPrinter};
 
 // ---------------------------------------------------------------------------
 // Lexer
@@ -32,10 +32,10 @@ fn lexer_string_escape() {
     let toks = lexer::lex("MsgBox(0, \"say \"\"hi\"\"\")").unwrap();
     let s = toks
         .iter()
-        .find(|t| matches!(t.kind, au3_parser::token::TokenKind::Str(_)))
+        .find(|t| matches!(t.kind, autoitv3_ast::token::TokenKind::Str(_)))
         .unwrap();
     match &s.kind {
-        au3_parser::token::TokenKind::Str(v) => assert_eq!(v, "say \"hi\""),
+        autoitv3_ast::token::TokenKind::Str(v) => assert_eq!(v, "say \"hi\""),
         other => panic!("expected Str, got {other:?}"),
     }
 }
@@ -44,7 +44,7 @@ fn lexer_string_escape() {
 fn lexer_preproc_keeps_rest_of_line() {
     let toks = lexer::lex("#include <Constants.au3>\n").unwrap();
     match &toks[0].kind {
-        au3_parser::token::TokenKind::Preproc(s) => {
+        autoitv3_ast::token::TokenKind::Preproc(s) => {
             assert_eq!(s, "include <Constants.au3>");
         }
         other => panic!("expected Preproc, got {other:?}"),
@@ -66,11 +66,11 @@ fn lexer_handles_crlf() {
     let toks = lexer::lex("#NoTrayIcon\r\nMsgBox(0, \"hi\")\r\n").unwrap();
     // Preproc must not retain the trailing \r.
     match &toks[0].kind {
-        au3_parser::token::TokenKind::Preproc(s) => assert_eq!(s, "NoTrayIcon"),
+        autoitv3_ast::token::TokenKind::Preproc(s) => assert_eq!(s, "NoTrayIcon"),
         other => panic!("expected Preproc, got {other:?}"),
     }
     let eof = toks.last().unwrap();
-    assert_eq!(eof.kind, au3_parser::token::TokenKind::Eof);
+    assert_eq!(eof.kind, autoitv3_ast::token::TokenKind::Eof);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +308,7 @@ fn pretty_roundtrip_preserves_items() {
     // The printed output must parse back with the same item/function counts.
     let reparsed = parse(&out).unwrap();
     assert_eq!(reparsed.items.len(), prog.items.len());
-    let count = |p: &au3_parser::Program| {
+    let count = |p: &autoitv3_ast::Program| {
         p.items
             .iter()
             .filter(|it| matches!(it.kind, ItemKind::Func(_)))

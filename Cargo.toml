@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/au3-parser", "crates/au3-cli"]
+members = ["crates/autoitv3-ast", "crates/au3-cli"]
 
 [workspace.package]
 version = "0.1.0"

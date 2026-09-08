@@ -1,4 +1,4 @@
-//! au3-parser: an AutoIt v3 lexer + parser producing a span-aware AST.
+//! autoitv3-ast: an AutoIt v3 lexer + parser producing a span-aware AST.
 //!
 //! This crate is the foundation for AutoIt deobfuscation. Its design keeps
 //! each stage (lexing, parsing, printing) as a separate module so future
