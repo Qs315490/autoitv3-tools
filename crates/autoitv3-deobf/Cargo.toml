@@ -1,13 +1,11 @@
 [package]
-name = "au3-cli"
+name = "autoitv3-deobf"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
 
 [dependencies]
 autoitv3-ast = { path = "../autoitv3-ast" }
-autoitv3-deobf = { path = "../autoitv3-deobf" }
 
-[[bin]]
-name = "au3"
-path = "src/main.rs"
+[lints.rust]
+unused = "warn"
