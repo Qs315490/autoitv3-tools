@@ -22,6 +22,14 @@ autoitv3-tools/
         lib.rs    库入口，统一导出
       tests/
         integration.rs   库集成单元测试（24 项）
+    autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 标识符重命名）
+      src/
+        fold.rs        常量折叠：纯算术/字符串/拼接表达式原地求值内联
+        rename.rs      确定性重命名混淆的变量/函数/宏为可读别名（可复现）
+        orchestrator.rs 按序执行 pass 流水线，产出 Deobfuscator/Report
+        lib.rs
+      tests/
+        deobf.rs      反混淆 pass 单元测试（13 项）
     au3-cli/                # CLI 二进制 crate（产物名为 au3）
       src/main.rs
 ```
@@ -34,8 +42,11 @@ cargo build --release
 ./target/release/au3 some.au3
 # 规范化重打印（去注释、统一缩进）——反混淆输出基础
 ./target/release/au3 --pretty some.au3
+# 反混淆（常量折叠 + 标识符重命名），输出可重解析的规范 AutoIt 源码
+./target/release/au3 --deobfuscate some.au3
 # 运行库的单元测试
 cargo test -p autoitv3-ast
+cargo test -p autoitv3-deobf
 ```
 
 ## 作为库调用

@@ -1,19 +1,22 @@
-//! Command line entry point for the AutoIt v3 AST analysis tool.
+//! Command line entry point for the AutoIt v3 analysis tool.
 //!
 //! Usage:
-//!   au3 <file.au3>              # parse, report stats, dump AST
-//!   au3 --pretty <file.au3>     # parse then pretty-print (deobfuscate)
+//!   au3 <file.au3>                # parse, report stats
+//!   au3 --pretty <file.au3>       # parse then pretty-print (normalize)
+//!   au3 --deobfuscate <file.au3>   # constant-fold + rename, then pretty-print
 
-use autoitv3_ast::{parse, PrettyPrinter};
+use autoitv3_ast::{parse, pretty::PrettyPrinter};
+use autoitv3_deobf::deobfuscate;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: au3 [--pretty] <file.au3>");
+        eprintln!("usage: au3 [--pretty | --deobfuscate] <file.au3>");
         std::process::exit(2);
     }
 
     let pretty = args.iter().any(|a| a == "--pretty");
+    let deobfuscate_flag = args.iter().any(|a| a == "--deobfuscate");
     let file = args
         .iter()
         .skip(1)
@@ -29,25 +32,34 @@ fn main() {
         }
     };
 
-    match parse(&src) {
-        Ok(prog) => {
-            if pretty {
-                let mut pp = PrettyPrinter::new();
-                let out = pp.print_program(&prog);
-                println!("{out}");
-            } else {
-                let funcs = count_funcs(&prog);
-                println!(
-                    "parsed OK: {} top-level items, {} functions",
-                    prog.items.len(),
-                    funcs
-                );
-            }
-        }
+    let mut prog = match parse(&src) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("parse error: {e}");
             std::process::exit(1);
         }
+    };
+
+    if deobfuscate_flag {
+        let report = deobfuscate(&mut prog);
+        eprintln!(
+            "deobfuscated: {} folds, {} vars, {} funcs, {} macros renamed",
+            report.folds, report.renamed.vars, report.renamed.funcs, report.renamed.macros
+        );
+    }
+
+    let mut pp = PrettyPrinter::new();
+    let out = pp.print_program(&prog);
+
+    if pretty || deobfuscate_flag {
+        println!("{out}");
+    } else {
+        let funcs = count_funcs(&prog);
+        println!(
+            "parsed OK: {} top-level items, {} functions",
+            prog.items.len(),
+            funcs
+        );
     }
 }
 

@@ -7,8 +7,16 @@ name = "au3-cli"
 version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
+ "autoitv3-deobf",
 ]
 
 [[package]]
 name = "autoitv3-ast"
 version = "0.1.0"
+
+[[package]]
+name = "autoitv3-deobf"
+version = "0.1.0"
+dependencies = [
+ "autoitv3-ast",
+]

@@ -787,7 +787,7 @@ impl Parser {
     }
 
     fn parse_multiplicative(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_unary()?;
+        let mut lhs = self.parse_power()?;
         loop {
             let op = if self.at(&Star) {
                 self.bump();
@@ -798,12 +798,27 @@ impl Parser {
             } else {
                 break;
             };
-            let rhs = self.parse_unary()?;
+            let rhs = self.parse_power()?;
             let span = lhs.span.merge(rhs.span);
             lhs = Expr {
                 kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
                 span,
             };
+        }
+        Ok(lhs)
+    }
+
+    /// Power `^` — higher precedence than `*`/`/`, right associative.
+    fn parse_power(&mut self) -> Result<Expr, ParseError> {
+        let lhs = self.parse_unary()?;
+        if self.at(&Caret) {
+            self.bump();
+            let rhs = self.parse_power()?;
+            let span = lhs.span.merge(rhs.span);
+            return Ok(Expr {
+                kind: ExprKind::Binary(BinaryOp::Pow, Box::new(lhs), Box::new(rhs)),
+                span,
+            });
         }
         Ok(lhs)
     }
