@@ -321,3 +321,37 @@ fn parse_entire_obfuscated_target() {
     assert!(funcs > 900, "expected 900+ functions, got {funcs}");
     assert!(prog.items.len() > 1000);
 }
+// ---------------------------------------------------------------------------
+// Regression: parser must accept `;` comments trailing after EndFunc
+// (marker comments like `;==>MARKER` in the real obfuscated target).
+// A stale release binary previously failed here with "expected expression";
+// the root cause was parser/lexer comment handling, so this lives in the
+// AST crate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_comment_after_endfunc_collects_comment() {
+    let src = "Func F($x)\n    Return $x\nEndFunc   ;==>MARKER\r\n";
+    let prog = parse(src).expect("must parse");
+    // The comment is collected into the AST, not dropped.
+    assert!(
+        prog.comments.iter().any(|c| c.text.contains("MARKER")),
+        "comment not collected: {:?}",
+        prog.comments
+    );
+}
+
+#[test]
+fn parse_comment_after_endfunc_at_top_level() {
+    let src = "Local $x = 1 ; trailing\n;==>MARKER\n";
+    let prog = parse(src).expect("must parse");
+    assert!(prog.comments.len() >= 2);
+}
+
+#[test]
+fn parse_standalone_comment_lines_between_funcs() {
+    let src = "Func A()\nEndFunc\n; between\nFunc B()\nEndFunc\n";
+    let prog = parse(src).expect("must parse");
+    assert!(prog.comments.iter().any(|c| c.text.contains("between")));
+    assert_eq!(prog.items.len(), 2);
+}
