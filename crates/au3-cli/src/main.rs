@@ -75,8 +75,9 @@ fn main() {
     if deobfuscate_flag {
         let report = deobfuscate(&mut prog);
         eprintln!(
-            "deobfuscated: {} folds, {} vars, {} funcs, {} macros renamed",
-            report.folds, report.renamed.vars, report.renamed.funcs, report.renamed.macros
+            "deobfuscated: {} folds, {} vars, {} funcs, {} macros renamed; table: {} entries, {} calls, {} refs rewritten",
+            report.folds, report.renamed.vars, report.renamed.funcs, report.renamed.macros,
+            report.table.entries, report.table.calls, report.table.refs
         );
     }
 

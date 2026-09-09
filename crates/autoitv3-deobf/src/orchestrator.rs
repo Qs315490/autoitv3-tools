@@ -4,6 +4,7 @@ use autoitv3_ast::ast::Program;
 
 use crate::fold;
 use crate::rename;
+use crate::table;
 
 /// Summary of what a deobfuscation run did.
 #[derive(Debug, Clone, Default)]
@@ -12,6 +13,8 @@ pub struct DeobfReport {
     pub folds: usize,
     /// Number of renamed identifiers.
     pub renamed: RenameCount,
+    /// Function-table resolution stats.
+    pub table: TableCount,
 }
 
 /// Counts of renamed identifiers by kind.
@@ -22,15 +25,27 @@ pub struct RenameCount {
     pub macros: usize,
 }
 
+/// Counts for the function-table resolution pass.
+#[derive(Debug, Clone, Default)]
+pub struct TableCount {
+    /// Number of `$fn_table[...](...)` indexed calls rewritten to plain calls.
+    pub calls: usize,
+    /// Number of `$fn_table[...]` indexed references rewritten to identifiers.
+    pub refs: usize,
+    /// Number of function entries resolved in the table.
+    pub entries: usize,
+}
+
 /// The ordered set of deobfuscation passes to apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pass {
     Fold,
     Rename,
+    Table,
 }
 
 impl Pass {
-    pub const ALL: &'static [Pass] = &[Pass::Fold, Pass::Rename];
+    pub const ALL: &'static [Pass] = &[Pass::Fold, Pass::Table, Pass::Rename];
 }
 
 /// A deobfuscator configured with a set of passes.
@@ -57,6 +72,12 @@ impl Deobfuscator {
                     report.renamed.vars += r.vars;
                     report.renamed.funcs += r.funcs;
                     report.renamed.macros += r.macros;
+                }
+                Pass::Table => {
+                    let r = table::resolve_function_table(prog, "fn_table", "BuildFunctionTable");
+                    report.table.calls += r.calls_rewritten;
+                    report.table.refs += r.refs_rewritten;
+                    report.table.entries += r.entries;
                 }
             }
         }
