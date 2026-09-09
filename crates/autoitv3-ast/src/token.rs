@@ -1,7 +1,8 @@
 //! Lexical tokens consumed by the parser.
 //!
-//! The lexer strips whitespace and `;` comments, so this list contains only
-//! meaningful tokens. Every token carries its `Span` in the source.
+//! The lexer strips whitespace but preserves `;` comments as `Comment` tokens,
+//! so the parser can carry them into the AST and the pretty-printer can
+//! re-emit them. Every token carries its `Span` in the source.
 
 use crate::span::Span;
 
@@ -46,6 +47,11 @@ pub enum TokenKind {
     Default,
     /// The `Null` keyword.
     Null,
+
+    // ----- Comments -----
+    /// A `;` comment. The string holds the text after the `;` (without the
+    /// leading `;`), trimmed of trailing `\r`. The newline is a separate token.
+    Comment(String),
 
     // ----- Statement separators -----
     Newline,

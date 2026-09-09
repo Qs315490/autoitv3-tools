@@ -318,13 +318,23 @@ fn pretty_roundtrip_preserves_items() {
 }
 
 #[test]
-fn pretty_strips_comments() {
+fn pretty_strips_comments_when_requested() {
+    let src = "Func A() ; this is a comment\n    Return 1 ; trailing\nEndFunc\n";
+    let prog = parse(src).unwrap();
+    let mut pp = PrettyPrinter::new().strip_comments(true);
+    let out = pp.print_program(&prog);
+    assert!(!out.contains("this is a comment"));
+    assert!(!out.contains("trailing"));
+}
+
+#[test]
+fn pretty_preserves_comments_by_default() {
     let src = "Func A() ; this is a comment\n    Return 1 ; trailing\nEndFunc\n";
     let prog = parse(src).unwrap();
     let mut pp = PrettyPrinter::new();
     let out = pp.print_program(&prog);
-    assert!(!out.contains("this is a comment"));
-    assert!(!out.contains("trailing"));
+    assert!(out.contains("this is a comment"));
+    assert!(out.contains("trailing"));
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,17 @@ use crate::span::Span;
 #[derive(Debug, Clone)]
 pub struct Program {
     pub items: Vec<Item>,
+    /// All `;` comments collected from the source, in token order.
+    /// Preserved so the pretty-printer can re-emit them by default.
+    pub comments: Vec<Comment>,
+}
+
+/// A `;` comment from the source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Comment {
+    /// The comment text after the `;` (leading `;` not included).
+    pub text: String,
+    pub span: Span,
 }
 
 /// A top-level program item.

@@ -70,21 +70,11 @@ impl<'a> Lexer<'a> {
 
 
     fn eat_ws_and_comments(&mut self) {
-        loop {
-            while matches!(self.peek(), Some(b' ' | b'\t' | b'\r')) {
-                self.bump();
-            }
-            // `;` comments extend to end of line (including `\r`).
-            if self.peek() == Some(b';') {
-                while let Some(c) = self.peek() {
-                    if c == b'\n' {
-                        break;
-                    }
-                    self.bump();
-                }
-                continue; // allow trailing ws before a newline
-            }
-            break;
+        // Skip only spaces, tabs and carriage returns. `;` comments are NOT
+        // dropped here; they are turned into `Comment` tokens by `next_token`
+        // so the parser can preserve them.
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\r')) {
+            self.bump();
         }
     }
 
@@ -97,6 +87,20 @@ impl<'a> Lexer<'a> {
         };
 
         let kind = match c {
+            // `;` comment extends to end of line (including any `\r`). We keep
+            // the text after the `;` and let the newline be a separate token.
+            b';' => {
+                self.bump(); // consume ';'
+                let mut s = String::new();
+                while let Some(c) = self.peek() {
+                    if c == b'\n' {
+                        break;
+                    }
+                    s.push(c as char);
+                    self.bump();
+                }
+                TokenKind::Comment(s.trim_end().to_string())
+            }
             b'\n' => {
                 self.bump();
                 TokenKind::Newline
