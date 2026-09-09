@@ -5,7 +5,7 @@
 //! serve as usage examples for downstream callers.
 
 use autoitv3_ast::ast::{BinaryOp, ExprKind, ItemKind, LitKind, StmtKind, VarKind};
-use autoitv3_ast::{parse, lexer, pretty::PrettyPrinter};
+use autoitv3_ast::{parse, lexer};
 
 // ---------------------------------------------------------------------------
 // Lexer
@@ -298,44 +298,6 @@ fn parse_error_reports_span() {
 // ---------------------------------------------------------------------------
 // Pretty-printer round-trip
 // ---------------------------------------------------------------------------
-
-#[test]
-fn pretty_roundtrip_preserves_items() {
-    let src = "#NoTrayIcon\nGlobal Const $A = 1\nFunc Add($x, $y = 2)\n    Return $x + $y\nEndFunc\nAdd(1)\n";
-    let prog = parse(src).unwrap();
-    let mut pp = PrettyPrinter::new();
-    let out = pp.print_program(&prog);
-    // The printed output must parse back with the same item/function counts.
-    let reparsed = parse(&out).unwrap();
-    assert_eq!(reparsed.items.len(), prog.items.len());
-    let count = |p: &autoitv3_ast::Program| {
-        p.items
-            .iter()
-            .filter(|it| matches!(it.kind, ItemKind::Func(_)))
-            .count()
-    };
-    assert_eq!(count(&reparsed), count(&prog));
-}
-
-#[test]
-fn pretty_strips_comments_when_requested() {
-    let src = "Func A() ; this is a comment\n    Return 1 ; trailing\nEndFunc\n";
-    let prog = parse(src).unwrap();
-    let mut pp = PrettyPrinter::new().strip_comments(true);
-    let out = pp.print_program(&prog);
-    assert!(!out.contains("this is a comment"));
-    assert!(!out.contains("trailing"));
-}
-
-#[test]
-fn pretty_preserves_comments_by_default() {
-    let src = "Func A() ; this is a comment\n    Return 1 ; trailing\nEndFunc\n";
-    let prog = parse(src).unwrap();
-    let mut pp = PrettyPrinter::new();
-    let out = pp.print_program(&prog);
-    assert!(out.contains("this is a comment"));
-    assert!(out.contains("trailing"));
-}
 
 // ---------------------------------------------------------------------------
 // Full-file smoke test (the actual obfuscation target)

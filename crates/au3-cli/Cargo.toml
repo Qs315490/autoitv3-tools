@@ -6,6 +6,7 @@ description.workspace = true
 
 [dependencies]
 autoitv3-ast = { path = "../autoitv3-ast" }
+autoitv3-format = { path = "../autoitv3-format" }
 autoitv3-deobf = { path = "../autoitv3-deobf" }
 
 [[bin]]
