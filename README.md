@@ -29,13 +29,32 @@ autoitv3-tools/
       src/
         fold.rs        常量折叠：纯算术/字符串/拼接表达式原地求值内联
         rename.rs      确定性重命名混淆的变量/函数/宏为可读别名（可复现）
+        table.rs       函数表解析：静态求值 $fn_table 构建函数，把 $fn_table[0x..](...)
+                       改写为真实函数名调用（解开函数间接层）
         orchestrator.rs 按序执行 pass 流水线，产出 Deobfuscator/Report
         lib.rs
       tests/
         deobf.rs      反混淆 pass 单元测试（13 项）
+        table_test.rs 函数表解析测试（最小 + 全量 sample.au3，2 项）
     au3-cli/                # CLI 二进制 crate（产物名为 au3）
       src/main.rs
 ```
+
+## 反混淆现状
+
+`au3 --deobfuscate` 现在执行 3 个 pass：
+
+1. **常量折叠**（fold）：求值纯算术/字符串/拼接，原地内联。
+2. **函数表解析**（table）：静态执行 `BuildFunctionTable()`（纯数组构建，
+   `Local $x[]=[...]` + `MergeArrays` + `Return`）得到 `$fn_table` 函数表
+   （1108 个函数名），把所有 `$fn_table[0x..](args)` 改写为 `FuncName(args)`、
+   `$fn_table[0x..]` 改写为 `FuncName`。在 `sample.au3` 上改写约 several thousand 处引用。
+3. **标识符重命名**（rename）：确定性重命名变量/函数/宏为可读别名。
+
+> **TODO（字符串表求值）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()`
+> 构建，其内部依赖 `Execute`、`Map`/`MapExists`、二进制运算等运行时语义，
+> 纯静态求值无法完全解开。需实现一个小型 AutoIt 解释器（覆盖 `For/In`、
+> `ReDim`、数组、字符串运算、若干内置函数）才能运行时求值，作为后续工作。
 
 ## 使用
 

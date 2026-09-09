@@ -8,10 +8,13 @@
 //!   expressions on literals and inline them.
 //! - `rename`  : deterministic renaming of generated/obfuscated identifiers
 //!   and macros, so output is greppable and reproducible.
+//! - `table`   : resolve the `$fn_table` function table and rewrite indexed
+//!   calls/references to real function names.
 //! - `orchestrator`: runs a pipeline of passes over a program.
 
 pub mod fold;
 pub mod rename;
+pub mod table;
 pub mod orchestrator;
 
 pub use orchestrator::{deobfuscate, Deobfuscator};
