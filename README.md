@@ -18,10 +18,13 @@ autoitv3-tools/
         lexer.rs   手写词法分析器：`#指令`整行、字符串""转义、0x 十六进制、$var/@macro
         ast.rs     AST 定义：Program / Item / FuncDef / Stmt / Expr / Lit / Call / IndexCall / Ternary / ArrayLit ...
         parser.rs 递归下降分析器：语句按行/冒号分隔，表达式用优先级爬升
-        pretty.rs 把 AST 重新打印为 AutoIt 源码（去注释、规范化，反混淆输出的基础）
         lib.rs    库入口，统一导出
       tests/
-        integration.rs   库集成单元测试（24 项）
+        integration.rs   库集成单元测试（22 项）
+    autoitv3-format/         # 库 crate——格式打印（原名 pretty）
+      src/lib.rs    把 AST 重新打印为 AutoIt 源码（默认保留注释，可 strip；规范缩进）
+      tests/
+        format.rs    格式化/注释保留/去除测试（3 项）
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 标识符重命名）
       src/
         fold.rs        常量折叠：纯算术/字符串/拼接表达式原地求值内联
@@ -44,6 +47,9 @@ cargo build --release
 ./target/release/au3 --pretty some.au3
 # 反混淆（常量折叠 + 标识符重命名 + 去除注释），输出可重解析的规范 AutoIt 源码
 ./target/release/au3 --deobfuscate some.au3
+# -o FILE 将格式化输出重定向到文件；-o - 或省略 -o 则输出到 stdout（原文件永不被修改）
+./target/release/au3 --pretty -o out.au3 some.au3
+./target/release/au3 --deobfuscate -o - some.au3
 # 运行库的单元测试
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-deobf

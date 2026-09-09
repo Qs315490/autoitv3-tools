@@ -5,7 +5,7 @@
 //! constants. Structure is preserved faithfully so the output remains valid.
 
 use std::fmt::Write;
-use crate::ast::*;
+use autoitv3_ast::ast::*;
 
 pub struct PrettyPrinter {
     out: String,

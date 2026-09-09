@@ -8,10 +8,8 @@
 pub mod ast;
 pub mod lexer;
 pub mod parser;
-pub mod pretty;
 pub mod span;
 pub mod token;
 
 pub use ast::{Program, Stmt, StmtKind, Expr, ExprKind};
 pub use parser::{parse, ParseError, Parser};
-pub use pretty::PrettyPrinter;

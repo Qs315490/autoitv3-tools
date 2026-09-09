@@ -1,7 +1,8 @@
 //! Unit tests for the autoitv3-deobf passes.
 
 use autoitv3_ast::ast::{ExprKind, ItemKind, LitKind, StmtKind};
-use autoitv3_ast::{parse, pretty::PrettyPrinter};
+use autoitv3_ast::parse;
+use autoitv3_format::PrettyPrinter;
 use autoitv3_deobf::{deobfuscate, rename, fold};
 
 fn pretty(prog: &autoitv3_ast::Program) -> String {
