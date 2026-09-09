@@ -10,6 +10,9 @@ use crate::ast::*;
 pub struct PrettyPrinter {
     out: String,
     indent: usize,
+    /// When true, `;` comments are dropped from the output (for deobfuscation).
+    /// Defaults to false so comments are preserved.
+    strip_comments: bool,
 }
 
 impl PrettyPrinter {
@@ -17,16 +20,42 @@ impl PrettyPrinter {
         Self {
             out: String::new(),
             indent: 0,
+            strip_comments: false,
         }
+    }
+
+    /// Builder: configure whether `;` comments are stripped. Default keeps them.
+    pub fn strip_comments(mut self, strip: bool) -> Self {
+        self.strip_comments = strip;
+        self
     }
 
     pub fn print_program(&mut self, prog: &Program) -> String {
         self.out.clear();
         self.indent = 0;
+        let mut ci = 0; // cursor into prog.comments
         for item in &prog.items {
+            self.emit_comments_until(prog, &mut ci, item.span.start.line);
             self.print_item(item);
         }
+        // Any comments after the last item.
+        self.emit_comments_until(prog, &mut ci, u32::MAX);
         self.out.clone()
+    }
+
+    /// Emit (or skip, when stripping) comments whose start line is <= `line`.
+    fn emit_comments_until(&mut self, prog: &Program, ci: &mut usize, line: u32) {
+        while *ci < prog.comments.len() {
+            let c = &prog.comments[*ci];
+            if c.span.start.line > line {
+                break;
+            }
+            if !self.strip_comments {
+                self.pad();
+                let _ = writeln!(self.out, ";{}", c.text);
+            }
+            *ci += 1;
+        }
     }
 
     fn pad(&mut self) {

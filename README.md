@@ -40,9 +40,9 @@ autoitv3-tools/
 cargo build --release
 # 统计信息（顶层条目数、函数数）
 ./target/release/au3 some.au3
-# 规范化重打印（去注释、统一缩进）——反混淆输出基础
+# 规范化重打印（默认保留注释、统一缩进）——反混淆输出基础
 ./target/release/au3 --pretty some.au3
-# 反混淆（常量折叠 + 标识符重命名），输出可重解析的规范 AutoIt 源码
+# 反混淆（常量折叠 + 标识符重命名 + 去除注释），输出可重解析的规范 AutoIt 源码
 ./target/release/au3 --deobfuscate some.au3
 # 运行库的单元测试
 cargo test -p autoitv3-ast

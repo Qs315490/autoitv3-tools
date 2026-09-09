@@ -48,7 +48,9 @@ fn main() {
         );
     }
 
-    let mut pp = PrettyPrinter::new();
+    // Deobfuscation output strips comments; plain pretty output preserves them.
+    let strip = deobfuscate_flag;
+    let mut pp = PrettyPrinter::new().strip_comments(strip);
     let out = pp.print_program(&prog);
 
     if pretty || deobfuscate_flag {

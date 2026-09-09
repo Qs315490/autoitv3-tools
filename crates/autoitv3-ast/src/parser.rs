@@ -33,6 +33,8 @@ impl std::fmt::Display for ParseError {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// All `;` comments captured from the token stream, in order.
+    comments: Vec<crate::ast::Comment>,
 }
 
 /// Convenience: lex then parse a whole program.
@@ -47,7 +49,11 @@ pub fn parse(src: &str) -> Result<Program, ParseError> {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            comments: Vec::new(),
+        }
     }
 
     // ----- low level helpers -----
@@ -65,6 +71,13 @@ impl Parser {
         let t = self.peek().clone();
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
+        }
+        // Capture comment tokens so the pretty-printer can re-emit them.
+        if let TokenKind::Comment(text) = &t.kind {
+            self.comments.push(crate::ast::Comment {
+                text: text.clone(),
+                span: t.span,
+            });
         }
         t
     }
@@ -130,6 +143,9 @@ impl Parser {
                 Newline | Colon => {
                     self.bump();
                 }
+                TokenKind::Comment(_) => {
+                    self.bump();
+                }
                 _ => break,
             }
         }
@@ -146,7 +162,10 @@ impl Parser {
             }
             items.push(self.parse_item()?);
         }
-        Ok(Program { items })
+        Ok(Program {
+            items,
+            comments: std::mem::take(&mut self.comments),
+        })
     }
 
     fn parse_item(&mut self) -> Result<Item, ParseError> {
