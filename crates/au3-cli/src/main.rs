@@ -1,32 +1,34 @@
 //! `au3` — command line entry point for the AutoIt v3 analysis toolkit.
 //!
-//! The binary itself only collects `argv`, hands it to
+//! The binary only parses `argv` with `clap`, hands the result to
 //! [`commands::dispatch`], and turns a [`CliError`](args::CliError) into an exit
 //! code. Each subcommand lives in its own module under [`commands`]:
 //!
 //! ```text
-//! au3 parse       <file.au3>
-//! au3 pretty      <file.au3> [-o FILE]
-//! au3 deobfuscate <file.au3> [-o FILE]
-//! au3 run         <Func> <file.au3> [--arg V]... [--init] [--trace]
-//! au3 help
+//! au3 parse       <FILE>
+//! au3 pretty      <FILE> [-o FILE]
+//! au3 deobfuscate <FILE> [-o FILE]
+//! au3 run         <FUNC> <FILE> [--arg V]... [--init] [--trace]
 //! ```
 //!
-//! Run `au3 help` for the full text.
+//! Subcommands may be abbreviated when unambiguous (`au3 deob`) and have
+//! aliases (`au3 fmt`). Run `au3 --help` for the full text.
+//!
+//! Exit codes: `0` success, `2` usage errors (reported by `clap`) and IO
+//! failures, `1` input processing failures (parse or runtime errors).
 
 mod args;
+mod cli;
 mod commands;
 mod output;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+use clap::Parser;
 
-    if let Err(err) = commands::dispatch(&argv) {
+fn main() {
+    let cli = cli::Cli::parse();
+
+    if let Err(err) = commands::dispatch(&cli) {
         eprintln!("error: {}", err.message);
-        if err.code == 2 {
-            eprintln!();
-            eprintln!("{}", commands::USAGE);
-        }
         std::process::exit(err.code);
     }
 }

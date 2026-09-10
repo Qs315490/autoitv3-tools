@@ -1,16 +1,24 @@
-//! `au3 parse <file.au3>` — parse the script and report its shape.
+//! `au3 parse <FILE>` — parse the script and report its shape.
 //!
-//! This is the cheapest command: it proves the file is syntactically valid
-//! AutoIt v3 and summarises what was found, without emitting any source.
+//! The cheapest command: it proves the file is syntactically valid AutoIt v3
+//! and summarises what was found, without emitting any source.
 
 use autoitv3_ast::ast::ItemKind;
+use clap::Args;
 
-use crate::args::{load_program, single_input, CliResult};
+use crate::args::{load_program, CliResult};
+
+/// Arguments for `au3 parse`.
+#[derive(Args, Debug)]
+pub struct ParseArgs {
+    /// Input AutoIt v3 script
+    #[arg(value_name = "FILE")]
+    pub input: String,
+}
 
 /// Entry point for the `parse` subcommand.
-pub fn run(args: &[String]) -> CliResult<()> {
-    let input = single_input("parse", args)?;
-    let prog = load_program(&input)?;
+pub fn run(args: &ParseArgs) -> CliResult<()> {
+    let prog = load_program(&args.input)?;
 
     let funcs = prog
         .items
