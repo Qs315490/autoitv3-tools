@@ -150,7 +150,13 @@ impl PrettyPrinter {
                     let _ = write!(self.out, " {}", item.name.name);
                     for d in &item.dims {
                         let _ = write!(self.out, "[");
-                        self.print_expr(d);
+                        // `$a[]` (empty brackets) is recorded by the parser as
+                        // a `Null` placeholder dimension. Printing it would
+                        // turn `Local $a[] = [...]` into `Local $a[Null]`,
+                        // silently changing the declaration's meaning.
+                        if !is_empty_dim(d) {
+                            self.print_expr(d);
+                        }
                         let _ = write!(self.out, "]");
                     }
                     if let Some(init) = &item.init {
@@ -378,6 +384,13 @@ impl PrettyPrinter {
                         let _ = write!(tmp.out, ",");
                     }
                     let _ = write!(tmp.out, " {}", item.name.name);
+                    for d in &item.dims {
+                        let _ = write!(tmp.out, "[");
+                        if !is_empty_dim(d) {
+                            tmp.print_expr(d);
+                        }
+                        let _ = write!(tmp.out, "]");
+                    }
                     if let Some(init) = &item.init {
                         let _ = write!(tmp.out, " = ");
                         tmp.print_expr(init);
@@ -562,4 +575,9 @@ impl PrettyPrinter {
             }
         }
     }
+}
+
+/// True for the `[]` dimension the parser records as a `Null` placeholder.
+fn is_empty_dim(e: &Expr) -> bool {
+    matches!(e.kind, ExprKind::Lit(Lit { kind: LitKind::Null, .. }))
 }

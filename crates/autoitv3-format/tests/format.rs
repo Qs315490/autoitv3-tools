@@ -41,3 +41,23 @@ fn pretty_preserves_comments_by_default() {
     assert!(out.contains("this is a comment"));
     assert!(out.contains("trailing"));
 }
+
+#[test]
+fn empty_array_brackets_are_not_printed_as_null() {
+    // `Local $a[] = [...]` uses "empty brackets, size from the initializer".
+    // The parser records that as a `Null` placeholder dimension, which must
+    // print as `[]` — printing `[Null]` silently changes the declaration.
+    let src = "Local $a[] = [1, 2, 3]\nGlobal $b[4]\nReDim $b[6]\n";
+    let prog = parse(src).unwrap();
+    let mut pp = PrettyPrinter::new();
+    let out = pp.print_program(&prog);
+
+    assert!(out.contains("Local $a[] = [1, 2, 3]"), "out: {out}");
+    assert!(!out.contains("Null"), "empty brackets leaked as Null: {out}");
+    assert!(out.contains("Global $b[4]"), "out: {out}");
+    assert!(out.contains("ReDim $b[6]"), "out: {out}");
+
+    // The rendering must still be valid, re-parseable AutoIt.
+    let reparsed = parse(&out).unwrap();
+    assert_eq!(reparsed.items.len(), prog.items.len());
+}
