@@ -296,9 +296,12 @@ au3 run BuildFunctionTable --init some.au3
 # --trace 打印解释器执行的语句流
 au3 run SomeFunc --trace some.au3
 
-# debug：加载脚本并进入交互式调试 shell（断点/单步/查看/求值）
+# debug：加载脚本并进入交互式调试 shell（断点/单步/异常时停/查看/求值）
 au3 debug some.au3
 au3 debug some.au3 -c "break 68" -c run -c "print $string_table[0x4ea]" -c quit
+au3 debug some.au3 -c "break 69; run; backtrace"     # -c 里可以用 ; 串多条
+au3 debug some.au3 -x breakpoints.au3dbg             # 先跑命令文件，再把 prompt 交给你
+au3 debug some.au3 --no-catch                        # 不在未捕获异常处停下
 echo 'break 68
 run
 backtrace
@@ -322,7 +325,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 | `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值；`--no-rename` 跳过重命名；`--win-version` 等选仿真版本） |
 | `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
 | `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数（同样接受 `--win-*` 开关） |
-| `debug <FILE> [-c CMD]…` | `dbg` | 交互式调试 shell：断点、单步、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下） |
+| `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
 **缩写**：只要前缀无歧义即可使用，例如 `au3 deob`、`au3 pars`、`au3 pret`。
@@ -338,7 +341,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 
 ```bash
 # 运行库的单元测试
-cargo test                     # 全部（276 项，含 doctest）
+cargo test                     # 全部（286 项，含 doctest）
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
 cargo test -p autoitv3-platform
@@ -433,8 +436,8 @@ script body did not finish: undefined function: DLLSTRUCTCREATE (at 42:1)
 ## 交互式调试（`au3 debug`）
 
 `au3 debug <FILE>` 加载脚本后**不立即运行**，进入一个 gdb/pdb 风格的 shell：`run` 启动
-（再敲一次就是重启），断点与单步处停下，停下时可以查看调用栈、当前帧的局部变量、
-全局变量，以及直接在**当前帧**里求值。
+（再敲一次就是重启），在**断点、单步、以及未捕获异常**处停下；停下时可以查看调用栈、
+当前帧的局部变量、全局变量，以及直接在**当前帧**里求值。
 
 ```text
 $ au3 debug a.au3
@@ -466,7 +469,37 @@ Breakpoint 1, line 69
 | `backtrace` / `bt` / `where` | 调用栈（`#0` 为最内层） |
 | `list [line]` / `l` | 看停点附近的源码，`=>` 标出当前行 |
 | `trace on\|off` | 打开后逐条打印执行的语句 |
+| `catch on\|off` | 未捕获异常时是否停下（默认 on） |
+| `source <file>` | 把一个命令文件的命令插到队首执行，然后回到提示符 |
 | `quit` / `q` | 退出 |
+
+### 未捕获异常时停下（post-mortem）
+
+`RuntimeError` 一旦抛出就没人会接住（AutoIt 没有 try/catch，解释器把它当作终止），
+所以"未捕获异常"就是"任何运行时错误"。默认会**在抛出错误的那条语句处停下**：
+
+```text
+(au3) run
+[uncaught error] index 5 out of bounds (len 2) (at 6:12)
+     6      Return $list[$n]
+(au3:6:5) backtrace
+#0  Boom at 6:5
+#1  Outer at 11:5
+(au3:6:5) info locals
+list = Array[2] {"1", "2"}
+n = 5
+x = 10
+(au3:6:5) print $x
+10
+```
+
+关键在**停的位置**：钩子挂在 `exec_stmt` 的错误返回路径上，而抛出错误的那个栈帧要到
+`call_user` 返回时才弹出，所以此刻 `#0` 那层的局部变量仍然活着——这正是 post-mortem
+要有用的前提。同一个错误会向上穿过每一层 `exec_stmt`，`error_reported` 保证只上报一次。
+
+- `catch off`（或命令行 `--no-catch`）关掉它，错误就只作为 `[script stopped: …]` 报出。
+- 调试器主动中止（`quit`、在停点敲 `run` 重启）走的是独立的 `RuntimeError::Aborted`，
+  **不会**被当成脚本异常，所以不会反过来弹出一个 post-mortem 停点。
 
 ### 停止是怎么实现的
 
@@ -487,11 +520,24 @@ shell 侧的句柄用 `try_borrow_mut`，所以"命令正在执行时又被递�
   `Runtime::evaluate_expression`（借 `Return` 强制表达式语法），`$i = 5` 是比较。
 - **`print` 同理**：`print $i = 3` 是比较，赋值请用 `set`。
 
-### 与 `-c` / stdin 的关系
+### 命令来源：`-x` 文件、`-c`、stdin
 
-命令来自**同一个队列**：先是所有 `-c` 参数，然后是 stdin。外层循环与断点处的提示符都从
-这个队列取，所以 `-c run -c next -c 'print $x' -c quit` 的含义和字面一致 —— `run` 停下后，
-剩下的命令由提示符消费。stdin 是管道时不画提示符，方便脚本化。
+命令来自**同一个队列**，顺序是：先用 `-x FILE` 里的命令，再用 `-c` 的命令，最后是 stdin。
+外层循环与断点处的提示符都从这个队列取，所以 `-c run -c next -c 'print $x' -c quit`
+的含义和字面一致 —— `run` 停下后，剩下的命令由提示符消费。
+
+```bash
+au3 debug a.au3 -x breakpoints.au3dbg          # 先跑常用断点，然后交回提示符
+au3 debug a.au3 -c "break 69; run; print \$string_table[0x4ea]"
+au3 debug a.au3 -x setup.au3dbg -c run -c quit # 文件 → -c → stdin，依次消费
+```
+
+- **`;` 分隔多条命令**（`-c`、`-x` 文件、交互输入都适用）。双引号内的 `;` 不切分，
+  所以 `print "a;b"` 是一整条；AutoIt 的 `""` 转义也照旧。文件里空行与 `#` 开头的行忽略。
+- **命令文件跑完不会退出**：stdin 是终端时继续给提示符，是管道时继续读管道，读到 EOF 才结束——
+  `-x setup.au3dbg` 就是"先加载我惯用的断点，再把 prompt 交给我"。
+- 会话中还可以用 `source <file>` 再塞一个文件进来（插到队首，优先于已排队的命令）。
+- stdin 是管道时不画提示符，方便脚本化。
 
 ## 语法覆盖
 

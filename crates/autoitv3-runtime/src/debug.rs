@@ -206,6 +206,16 @@ pub trait Debugger {
         let _ = (name, value);
     }
 
+    /// Called when a statement fails with an uncaught runtime error.
+    ///
+    /// This fires where the error is *raised*, before the interpreter unwinds:
+    /// the frame that raised it is still on the stack, so `host` can show the
+    /// locals and the call stack that led there — a post-mortem. The error
+    /// propagates as usual once this returns; there is no way to swallow it.
+    fn on_error(&mut self, error: &RuntimeError, span: Option<Span>, host: &mut dyn DebugHost) {
+        let _ = (error, span, host);
+    }
+
     /// Called when the interpreter stops.
     ///
     /// For [`StopReason::Breakpoint`], [`StopReason::Step`] and

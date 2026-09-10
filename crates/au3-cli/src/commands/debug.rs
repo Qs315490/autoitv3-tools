@@ -40,6 +40,7 @@ use std::rc::Rc;
 use autoitv3_ast::span::Span;
 use autoitv3_ast::Program;
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
+use autoitv3_runtime::RuntimeError;
 use autoitv3_runtime::{ExecutionProfile, Runtime};
 use clap::Args;
 
@@ -56,9 +57,29 @@ pub struct DebugArgs {
     /// Command to run at startup; repeat for a whole session.
     ///
     /// Commands are accepted wherever a prompt would appear, including at a
-    /// breakpoint, so `-c run -c next -c quit` walks the script.
+    /// breakpoint, so `-c run -c next -c quit` walks the script. Several
+    /// commands may share one `-c` if they are separated by `;`
+    /// (`-c "break 11; run; print $i"`); a `;` inside a "quoted string" is left
+    /// alone.
     #[arg(short = 'c', long = "command", value_name = "CMD")]
     pub commands: Vec<String>,
+
+    /// File of commands to run at startup, one per line; repeat for more.
+    ///
+    /// Blank lines and lines starting with `#` are ignored, and `;` separates
+    /// several commands on one line. These run before any `-c` command, and the
+    /// session stays interactive afterwards — `-x setup.au3dbg` is how you get
+    /// "load my usual breakpoints, then hand me the prompt".
+    #[arg(short = 'x', long = "command-file", value_name = "FILE")]
+    pub command_files: Vec<String>,
+
+    /// Do not stop when a statement fails with an uncaught error
+    ///
+    /// The default is to stop where the error was raised — the frame that
+    /// raised it is still on the stack, so it can be inspected like a
+    /// breakpoint. Use `catch off` at the prompt to change it mid-session.
+    #[arg(long = "no-catch")]
+    pub no_catch: bool,
 
     /// Stop on the first statement the script executes, as if `step` had been
     /// typed before `run`
@@ -83,7 +104,21 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
     let source = std::fs::read_to_string(&args.input)
         .map_err(|e| CliError::io(format!("cannot read {}: {e}", args.input)))?;
 
-    let shell = Rc::new(RefCell::new(Shell::new(args.input.clone(), &source, args)));
+    let mut file_commands = Vec::new();
+    for path in &args.command_files {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| CliError::io(format!("cannot read command file {path}: {e}")))?;
+        for line in text.lines() {
+            file_commands.extend(split_commands(line));
+        }
+    }
+
+    let shell = Rc::new(RefCell::new(Shell::new(
+        args.input.clone(),
+        &source,
+        args,
+        file_commands,
+    )));
     let mut rt = build_runtime(&prog, args, shell.clone());
 
     // The outer loop. A `Resume` here means "start the script body"; the same
@@ -145,6 +180,12 @@ impl Debugger for SharedShell {
         match self.0.try_borrow_mut() {
             Ok(mut shell) => shell.on_statement(span, depth, host),
             Err(_) => DebugAction::Continue,
+        }
+    }
+
+    fn on_error(&mut self, error: &RuntimeError, span: Option<Span>, host: &mut dyn DebugHost) {
+        if let Ok(mut shell) = self.0.try_borrow_mut() {
+            shell.on_error(error, span, host);
         }
     }
 
@@ -221,6 +262,11 @@ struct Shell {
     paused: bool,
     /// Echo every statement as it runs.
     tracing: bool,
+    /// Stop where an uncaught error was raised.
+    catching: bool,
+    /// An error was already shown at its source, so the end-of-run report
+    /// should not repeat it.
+    reported_error: bool,
     /// A breakpoint edit for [`Shell::flush_edits`] to apply.
     pending: Option<Edit>,
     /// `run` was typed at a stop, so the current run should unwind and start
@@ -231,11 +277,17 @@ struct Shell {
 }
 
 impl Shell {
-    fn new(script: String, source: &str, args: &DebugArgs) -> Self {
+    fn new(script: String, source: &str, args: &DebugArgs, file_commands: Vec<String>) -> Self {
+        // Command files first, then `-c`, then stdin: every source feeds the
+        // one queue, so the order they appear in is the order they run.
+        let mut queue: VecDeque<String> = file_commands.into();
+        for raw in &args.commands {
+            queue.extend(split_commands(raw));
+        }
         Self {
             script,
             lines: source.lines().map(|l| l.to_string()).collect(),
-            queue: args.commands.iter().cloned().collect(),
+            queue,
             show_prompts: std::io::stdin().is_terminal(),
             finished: false,
             step: StepMode::Run,
@@ -243,6 +295,8 @@ impl Shell {
             current: None,
             paused: false,
             tracing: false,
+            catching: !args.no_catch,
+            reported_error: false,
             pending: None,
             restart: false,
             saved_breakpoints: Vec::new(),
@@ -280,6 +334,8 @@ impl Shell {
         }
         match outcome {
             Ok(_) => println!("[script finished]"),
+            // A caught error was already printed where it was raised.
+            Err(_) if std::mem::take(&mut self.reported_error) => {}
             Err(e) => println!("[script stopped: {e}]"),
         }
     }
@@ -387,6 +443,11 @@ impl Shell {
                 self.trace_command(rest.trim());
                 Outcome::Stay
             }
+            "catch" => {
+                self.catch_command(rest.trim());
+                Outcome::Stay
+            }
+            "source" => self.source_command(rest.trim()),
             other => {
                 println!("unknown command {other:?} — try `help`");
                 Outcome::Stay
@@ -674,6 +735,49 @@ impl Shell {
         }
     }
 
+    fn catch_command(&mut self, rest: &str) {
+        match rest {
+            "on" => {
+                self.catching = true;
+                println!("stopping where an uncaught error is raised");
+            }
+            "off" => {
+                self.catching = false;
+                println!("uncaught errors will end the run without stopping");
+            }
+            "" => println!(
+                "stopping on uncaught errors is {}",
+                if self.catching { "on" } else { "off" }
+            ),
+            other => println!("usage: catch on|off (not {other:?})"),
+        }
+    }
+
+    /// `source FILE` — queue that file's commands to run next.
+    fn source_command(&mut self, path: &str) -> Outcome {
+        if path.is_empty() {
+            println!("usage: source <file>");
+            return Outcome::Stay;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let commands: Vec<String> = text.lines().flat_map(split_commands).collect();
+                let count = commands.len();
+                // Pushed to the front, so they run before anything already
+                // queued — including from inside a breakpoint's prompt.
+                for command in commands.into_iter().rev() {
+                    self.queue.push_front(command);
+                }
+                println!("sourced {path} ({count} commands)");
+                Outcome::Stay
+            }
+            Err(e) => {
+                println!("cannot read {path}: {e}");
+                Outcome::Stay
+            }
+        }
+    }
+
     fn trace_command(&mut self, rest: &str) {
         match rest {
             "on" => {
@@ -716,12 +820,37 @@ Commands (`help <cmd>` describes one)
   backtrace, bt          show the call stack
   list [line], l         show source around the stop point
   trace on|off           echo every statement as it runs
-  quit, q                leave the session"
+  catch on|off           stop where an uncaught error is raised (default on)
+  source <file>          run the commands in a file, then come back here
+  quit, q                leave the session
+
+`;` separates several commands on one line (`break 11; run; print $i`); a `;`
+inside a \"quoted string\" is left alone."
         );
     }
 }
 
 impl Debugger for Shell {
+    fn on_error(&mut self, error: &RuntimeError, span: Option<Span>, host: &mut dyn DebugHost) {
+        if !self.catching || self.finished {
+            return;
+        }
+        self.reported_error = true;
+        self.paused = true;
+        // The statement that raised the error is the one the frame is on.
+        if let Some(span) = span {
+            let depth = self.current.map(|(_, d)| d).unwrap_or(0);
+            self.current = Some((span, depth));
+        }
+        println!("[uncaught error] {error}");
+        self.show_current_line();
+        // The frames that led here are still live, so `backtrace` and
+        // `info locals` work and `run` starts a fresh pass. Whatever is typed,
+        // the error carries on unwinding when this returns.
+        self.prompt_loop(host);
+        self.paused = false;
+    }
+
     fn on_statement(&mut self, span: Span, depth: usize, _host: &mut dyn DebugHost) -> DebugAction {
         // Unwind the run when the session is over, or when `run` asked for a
         // fresh one from inside a stop.
@@ -802,6 +931,35 @@ impl Shell {
     }
 }
 
+/// Split a command line into the commands it holds.
+///
+/// `;` separates commands so `-c "break 11; run"` and one line of a command
+/// file can carry several. A `;` inside a double-quoted string is left alone,
+/// and so is its AutoIt idiom for a literal quote (`""`), which is why the
+/// in-string flag is a toggle rather than a scan for the next quote.
+fn split_commands(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    for c in line.chars() {
+        match c {
+            '"' => {
+                in_string = !in_string;
+                current.push(c);
+            }
+            ';' if !in_string => {
+                out.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    out.push(current);
+    out.into_iter()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty() && !c.starts_with('#'))
+        .collect()
+}
+
 /// Split `"break 12"` into `("break", "12")`.
 fn split_command(line: &str) -> (String, String) {
     match line.split_once(char::is_whitespace) {
@@ -832,6 +990,10 @@ fn help_for(topic: &str) -> String {
         "backtrace" | "bt" | "where" => "backtrace — the call stack, innermost last".to_string(),
         "list" | "l" => "list [line] — eight source lines around the stop point".to_string(),
         "trace" => "trace on|off — echo every statement as it executes".to_string(),
+        "catch" => {
+            "catch on|off — stop where an uncaught error is raised, before it unwinds".to_string()
+        }
+        "source" => "source <file> — queue the commands in a file, one per line".to_string(),
         "quit" | "q" => "quit — leave the session".to_string(),
         other => format!("no help for {other:?}"),
     }

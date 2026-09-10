@@ -47,6 +47,11 @@ pub enum RuntimeError {
     CallDepthExceeded { limit: usize },
     /// An error raised by a host/native function.
     Host { name: String, message: String },
+    /// The debugger stopped the run on purpose (`quit`, or `run` to restart).
+    ///
+    /// This is a control signal rather than a script failure, so it is
+    /// deliberately *not* offered to [`crate::debug::Debugger::on_error`].
+    Aborted,
 }
 
 impl RuntimeError {
@@ -69,6 +74,7 @@ impl RuntimeError {
                 format!("call depth exceeded ({limit})")
             }
             RuntimeError::Host { name, message } => format!("host function {name}: {message}"),
+            RuntimeError::Aborted => "aborted by the debugger".to_string(),
         }
     }
 
