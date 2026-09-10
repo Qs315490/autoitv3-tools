@@ -90,6 +90,7 @@ pub const FUNCTIONS: &[&str] = &[
     "Ceiling",
     "Random",
     "RandomSeed",
+    "SRandom",
     // timing
     "TimerInit",
     "TimerDiff",
@@ -635,7 +636,8 @@ impl PortablePlatform {
             "exp" => Value::Float(arg_f64(args, 0).exp()),
             "floor" => Value::Float(arg_f64(args, 0).floor()),
             "ceiling" => Value::Float(arg_f64(args, 0).ceil()),
-            "randomseed" => {
+            // `SRandom` is the legacy spelling of `RandomSeed`.
+            "randomseed" | "srandom" => {
                 let seed = arg_int(args, 0) as u64;
                 self.rng = Some(if seed == 0 { DEFAULT_RANDOM_SEED } else { seed });
                 Value::Int(1)

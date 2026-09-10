@@ -68,6 +68,13 @@ pub struct Runtime {
     paused: Option<StopReason>,
     /// Set by `Exit [code]`.
     exit_code: Option<i32>,
+    /// Functions named by `OnAutoItExitRegister`, in registration order.
+    ///
+    /// AutoIt calls these when the process exits. A batch analysis run has no
+    /// exit phase — the CLI stops after the script body and hands back the
+    /// values it produced — so the names are recorded and left for the caller
+    /// rather than invoked behind its back.
+    exit_handlers: Vec<String>,
     /// How faithfully AutoIt's observable behaviour is reproduced.
     profile: ExecutionProfile,
     /// Top-level (script) statements, executed by [`Runtime::run_script`].
@@ -99,6 +106,7 @@ impl Runtime {
             max_depth: DEFAULT_MAX_DEPTH,
             paused: None,
             exit_code: None,
+            exit_handlers: Vec::new(),
             profile: ExecutionProfile::default(),
             script: Vec::new(),
         }
@@ -109,6 +117,37 @@ impl Runtime {
         let mut rt = Self::new();
         rt.load_program(prog);
         rt
+    }
+
+    /// The functions registered with `OnAutoItExitRegister`.
+    pub fn exit_handlers(&self) -> &[String] {
+        &self.exit_handlers
+    }
+
+    /// Record an `OnAutoItExitRegister` callback. See [`Runtime::exit_handlers`].
+    pub(crate) fn register_exit_handler(&mut self, name: String) {
+        if !self
+            .exit_handlers
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&name))
+        {
+            self.exit_handlers.push(name);
+        }
+    }
+
+    /// Forget an `OnAutoItExitRegister` callback.
+    pub(crate) fn unregister_exit_handler(&mut self, name: &str) -> bool {
+        match self
+            .exit_handlers
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
+        {
+            Some(i) => {
+                self.exit_handlers.remove(i);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Register every `Func` in `prog` so it can be called, and remember the
@@ -982,14 +1021,32 @@ impl Runtime {
         for item in &v.vars {
             let key = var_key(&item.name.name);
             if v.is_redim {
-                // `ReDim $a[n]` — resize in place, preserving existing values.
-                let size = self.dim_size(&item.dims, span)?;
+                // `ReDim $a[n]` / `ReDim $a[n][m]` — resize in place, keeping
+                // the values that still fit.
                 let cur = self.read_var(&item.name.name, span)?;
-                if let Value::Array(a) = cur {
-                    let mut arr = a.borrow_mut();
-                    arr.resize(size, Value::Int(0));
-                } else {
-                    self.write_var(&item.name.name, Value::array_sized(size), scope, span);
+                match (&cur, item.dims.len()) {
+                    (Value::Array(a), dims) if dims > 1 => {
+                        let rows = self.dim_size(&item.dims, span)?;
+                        let cols = self.dim_size(&item.dims[1..], span)?;
+                        let mut arr = a.borrow_mut();
+                        while arr.len() < rows {
+                            arr.push(Value::array_sized(cols));
+                        }
+                        arr.truncate(rows);
+                        for row in arr.iter() {
+                            if let Value::Array(r) = row {
+                                r.borrow_mut().resize(cols, Value::Int(0));
+                            }
+                        }
+                    }
+                    (Value::Array(a), _) => {
+                        let size = self.dim_size(&item.dims, span)?;
+                        a.borrow_mut().resize(size, Value::Int(0));
+                    }
+                    _ => {
+                        let value = self.array_with_dims(&item.dims, span)?;
+                        self.write_var(&item.name.name, value, scope, span);
+                    }
                 }
                 continue;
             }
@@ -1002,8 +1059,7 @@ impl Runtime {
                     // initializer).
                     Value::map()
                 } else {
-                    let size = self.dim_size(&item.dims, span)?;
-                    Value::array_sized(size)
+                    self.array_with_dims(&item.dims, span)?
                 }
             } else {
                 Value::Str(String::new())
@@ -1028,6 +1084,37 @@ impl Runtime {
             self.write_var(&item.name.name, value, scope, span);
         }
         Ok(())
+    }
+
+    /// Build the array a declaration's dimensions describe.
+    ///
+    /// `$a[3]` is a flat array, `$a[3][4]` is three arrays of four — AutoIt
+    /// nests the extra dimensions, and scripts index them with `$a[$i][$j]`.
+    fn array_with_dims(&mut self, dims: &[Expr], span: Span) -> Result<Value, RuntimeError> {
+        let Some(first) = dims.first() else {
+            return Ok(Value::array_sized(0));
+        };
+        let n = if matches!(first.kind, ExprKind::Lit(Lit { kind: LitKind::Null, .. })) {
+            0
+        } else {
+            let n = self.eval_expr(first)?.to_int();
+            if n < 0 {
+                return Err(RuntimeError::IndexOutOfBounds {
+                    index: n,
+                    len: 0,
+                    span: Some(span),
+                });
+            }
+            n as usize
+        };
+        if dims.len() == 1 {
+            return Ok(Value::array_sized(n));
+        }
+        let mut rows = Vec::with_capacity(n);
+        for _ in 0..n {
+            rows.push(self.array_with_dims(&dims[1..], span)?);
+        }
+        Ok(Value::array(rows))
     }
 
     /// Size for `$a[n]`. Empty brackets (`$a[]`) are not a size — they are the

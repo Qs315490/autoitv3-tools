@@ -57,21 +57,45 @@ pub(crate) fn call(
             Value::Int(if b == 0 { 0 } else { a % b })
         }
         "hex" => {
+            // `Hex` renders a binary (or a string) as upper-case hex digits, and
+            // anything else as an integer.
+            if let Some(Value::Binary(bytes)) = args.first() {
+                return Ok(Some(Value::Str(
+                    crate::value::binary_to_hex(bytes)
+                        .trim_start_matches("0x")
+                        .to_string(),
+                )));
+            }
             let a = args.first().map(|v| v.to_int()).unwrap_or(0);
             let digits = args.get(1).map(|v| v.to_int()).unwrap_or(8).clamp(1, 16) as usize;
             Value::Str(format!("{:0width$X}", a, width = digits))
         }
         "dec" => {
+            // `Dec("1A")` is 26: AutoIt reads the argument as *hexadecimal*, with
+            // an optional sign and an optional `0x`, and stops at the first
+            // character that is not a hex digit.
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
             let t = s.trim();
-            let neg = t.starts_with('-');
-            let body = t.trim_start_matches('-');
-            let v = if let Some(h) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-                i64::from_str_radix(h, 16).unwrap_or(0)
-            } else {
-                t.parse::<i64>().unwrap_or(0)
+            let (neg, body) = match t.strip_prefix('-') {
+                Some(rest) => (true, rest.trim_start()),
+                None => (false, t),
             };
-            Value::Int(if neg { -v } else { v })
+            let body = body
+                .strip_prefix("0x")
+                .or_else(|| body.strip_prefix("0X"))
+                .unwrap_or(body);
+            let digits: String = body.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            let v = if digits.is_empty() {
+                0
+            } else {
+                i64::from_str_radix(&digits, 16).unwrap_or(0)
+            };
+            let v = if neg { -v } else { v };
+            match args.get(1).map(|a| a.to_int()) {
+                // `Dec($hex, $length)` renders the value with a fixed width.
+                Some(width) if width > 0 => Value::Str(format!("{:0width$}", v, width = width as usize)),
+                _ => Value::Int(v),
+            }
         }
         "chr" => {
             let c = args.first().map(|v| v.to_int()).unwrap_or(0) as u32;
@@ -427,15 +451,10 @@ pub(crate) fn call(
         }
 
         // ---------------- arrays / maps ----------------
-        "ubound" => {
-            let a = args.first().cloned().unwrap_or(Value::Null);
-            match a {
-                Value::Array(a) => Value::Int(a.borrow().len() as i64),
-                Value::Map(m) => Value::Int(m.borrow().len() as i64),
-                Value::Str(s) => Value::Int(s.chars().count() as i64),
-                _ => Value::Int(0),
-            }
-        }
+        "ubound" => Value::Int(ubound(
+            args.first().unwrap_or(&Value::Null),
+            args.get(1).map(|v| v.to_int()).unwrap_or(1),
+        )),
         "isarray" => Value::Bool(matches!(args.first(), Some(Value::Array(_)))),
         "ismap" => Value::Bool(matches!(args.first(), Some(Value::Map(_)))),
         "map" => {
@@ -572,6 +591,24 @@ pub(crate) fn call(
         // implementation: a silent stub in this table would both invent a
         // value and shadow the platform that could answer properly.
         "opt" | "autoitsetoption" => Value::Int(1),
+        // `Ptr`/`HWnd` only retype a value as a handle; the emulation keeps
+        // handles as plain integers, so the conversion is the identity.
+        "ptr" | "hwnd" => Value::Int(args.first().map(|a| a.to_int()).unwrap_or(0)),
+        "vargettype" => Value::Str(var_get_type(args.first()).to_string()),
+        // AutoIt runs these when the process exits; see `Runtime::exit_handlers`.
+        "onautoitexitregister" => {
+            let name = args.first().map(|a| a.to_autoit_string()).unwrap_or_default();
+            if name.is_empty() {
+                Value::Int(0)
+            } else {
+                rt.register_exit_handler(name);
+                Value::Int(1)
+            }
+        }
+        "onautoitexitunregister" => {
+            let name = args.first().map(|a| a.to_autoit_string()).unwrap_or_default();
+            Value::Int(i64::from(rt.unregister_exit_handler(&name)))
+        }
         // `Sleep` follows the execution profile: a *faithful* run really waits
         // (AutoIt semantics), while the deterministic deobfuscation profile
         // returns immediately, because nothing in a script's *result* depends
@@ -728,4 +765,67 @@ fn format_like(fmt: &str, args: &[Value]) -> String {
 #[allow(dead_code)]
 pub(crate) fn float_to_string(f: f64) -> String {
     format_float(f)
+}
+/// AutoIt's `VarGetType` name for a value.
+///
+/// AutoIt distinguishes the two integer widths by what the value fits in, and
+/// calls the two "no value" keywords `Keyword`.
+fn var_get_type(v: Option<&Value>) -> &'static str {
+    match v {
+        None => "Keyword",
+        Some(Value::Int(i)) => {
+            if i32::try_from(*i).is_ok() {
+                "Int32"
+            } else {
+                "Int64"
+            }
+        }
+        Some(Value::Float(_)) => "Double",
+        Some(Value::Str(_)) => "String",
+        Some(Value::Binary(_)) => "Binary",
+        Some(Value::Bool(_)) => "Bool",
+        Some(Value::Array(_)) => "Array",
+        Some(Value::Map(_)) => "Map",
+        Some(Value::FuncRef(_)) => "Function",
+        Some(Value::Null) | Some(Value::Default) => "Keyword",
+    }
+}
+
+/// `UBound($a[, $dim])`: the length of `$dim` (1-based), or — for `$dim` 0 —
+/// how many dimensions the array has. AutoIt nests extra dimensions as arrays
+/// of arrays, so dimension 2 is the length of a row.
+fn ubound(value: &Value, dim: i64) -> i64 {
+    let mut cur = value.clone();
+    if dim <= 0 {
+        let mut count = 0;
+        loop {
+            match &cur {
+                Value::Array(inner) => {
+                    count += 1;
+                    let first = inner.borrow().first().cloned();
+                    match first {
+                        Some(v) => cur = v,
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        return count;
+    }
+    for _ in 1..dim {
+        cur = match &cur {
+            Value::Array(inner) => match inner.borrow().first() {
+                Some(first) => first.clone(),
+                None => return 0,
+            },
+            _ => return 0,
+        };
+    }
+    match &cur {
+        Value::Array(a) => a.borrow().len() as i64,
+        Value::Map(m) => m.borrow().len() as i64,
+        Value::Str(s) => s.chars().count() as i64,
+        _ => 0,
+    }
 }

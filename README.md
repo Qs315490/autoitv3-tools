@@ -237,22 +237,18 @@ Deobfuscator::new()
 好处是 AutoIt 的运算符语义（强制转换、字符串拼接、整数/浮点提升）只有**一份**实现，
 不会随两处代码各自演进而产生偏差。
 
-> **字符串表求值（进展）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()` 构建。它先用
-> `DllStructCreate(OSVERSIONINFO)` + `DllCall(GetVersionExW)` 取系统版本、再按版本挑字符串
-> ——这条路径 `winemu` 已经实现（回归测试：
-> `evaluate_test.rs::an_os_version_query_no_longer_blocks_the_string_table`）。
-> 但实测 `--evaluate` 仍会在 `$string_table` 的构建函数里中止：它要先把一份**加密的**数据解密成
-> Map（`decrypt()` → `decompress()`），链路是 `CryptAcquireContext` /
-> `CryptCreateHash` / `CryptHashData` / `CryptDeriveKey` / `CryptDecrypt`（算法含
-> `CALG_RC4`、`CALG_AES_*`、`CALG_3DES`），外加 `RtlGetCompressionWorkSpaceSize` +
-> `RtlDecompressBuffer` 与资源加载。这些 `DllCall` 目前落进"未列举"分支：置 `@error = 1`
-> 返回 `0`，构建函数于是返回错误值，字符串表建不起来。也就是说 **`$string_table` 的边界是
-> CryptoAPI，不是版本查询**。COM/GUI/窗口等未列举调用同理，不会编造结果。
+> **字符串表求值**：`$string_table`（字符串表）由 `$fn_table[0x33d]()` 构建，它先用
+> `DllStructCreate(OSVERSIONINFO)` + `DllCall(GetVersionExW)` 取系统版本，再把内嵌在
+> PE 资源里的**加密**数据解开。整条链路 `winemu` 都已实现：`CryptAcquireContext` /
+> `CryptCreateHash` / `CryptHashData` / `CryptDeriveKey` / `CryptDecrypt`
+> （`CALG_RC4`、`CALG_AES_128/192/256`）、`RtlGetCompressionWorkSpaceSize` +
+> `RtlDecompressBuffer`（LZNT1）以及 `FindResourceW` / `SizeofResource` / `LoadResource` /
+> `LockResource`。真实脚本上 `$string_table` 现在**能完整建出来**，脚本体继续跑到 GUI 创建为止。
+> 也就是说边界已经推到 **GUI/窗口层**，不再是 CryptoAPI。
 > 用 `--no-win-emu` 可关闭仿真，回到"停在第一个 Windows 调用"的行为。
 >
-> 反过来，`$name_table`（结构体/API 名表，`$fn_table[0x454]()`，即反混淆输出里的 `f001`）
-> 是能建起来的：`--evaluate` 把它内联，`simplify` 再把 `EXECUTE($name_table[i])` 摊平成真实
-> 调用（真实脚本上 39 处）。
+> `$name_table`（结构体/API 名表，`$fn_table[0x454]()`，即反混淆输出里的 `f001`）
+> 同样被内联，`simplify` 再把 `EXECUTE($name_table[i])` 摊平成真实调用。
 
 ## 使用
 
@@ -408,18 +404,18 @@ script body did not finish: undefined function: DLLSTRUCTCREATE (at 42:1)
   values produced before that point were still inlined
 ```
 
-在真实脚本上的实际效果：
+在真实脚本上的实际效果（`au3 deobfuscate a.au3 --evaluate`）：
 
 | 引用 | 求值前 | 求值后 |
 | ---- | ------ | ------ |
-| `$fn_table[...]` | several thousand | **127** |
-| `$name_table[...]` | 817 | **3** |
-| 字符串字面量 | 41 | **406**（解出 `Execute` 的动态代码） |
-| `$string_table[...]` | several thousand | several thousand（**卡在 Windows 边界**） |
+| `$fn_table[...]`（函数表） | several thousand | **0** |
+| `$name_table[...]`（名字表） | 数百 | **0**（少数留在 `Execute` 字符串里） |
+| `$string_table[...]`（字符串表） | several thousand | **0** |
+| `AU3_WIN_MODULE` 未给出 | — | 资源调用返回 `0` + `@error = 1`（诚实边界） |
 
-`$string_table` 未解开的原因是它本身依赖 Windows API：其构建路径调用
-`DllStructCreate(OSVERSIONINFO)` + `DllCall(GetVersionEx)` 取系统版本，
-再按版本选择字符串。这部分要等 `windows.rs` 平台层实现。
+跑完的规模：能在本机求出的表都内联了（globals、名字表、字符串表），`deobfuscated`
+阶段没有留下未解析的表引用。脚本体停在 `GUICreate`：GUI 不在仿真范围内，
+但**在那之前求出的表都已经内联**（--evaluate 的设计即如此）。
 
 ## 语法覆盖
 
@@ -538,6 +534,21 @@ HKLM\SOFTWARE\Vendor    Count   REG_DWORD   7
   制表符、CR/LF、NUL 都会被转义，`REG_MULTI_SZ` 用 `|` 连接（项内的 `|` 转义），
   因此任意文本都不会破坏记录边界。已知取舍：删除**种子里的**值不会跨运行记住
   （格式里没有墓碑记录）。
+
+#### CryptoAPI 的密钥派生
+
+`CryptDeriveKey` 不是"取摘要前 n 字节"那么简单。MSDN 写明：**当 hash 不属于 SHA-2 家族、
+且目标算法是 3DES 或 AES** 时，CSP 会把摘要混进 64 字节 `0x36` 和 64 字节 `0x5c`，各自
+用同一算法再 hash 一次，然后**拼接**两个摘要，取前 n 字节做密钥。正因如此，16 字节的
+MD5 口令摘要才能填满 256 位的 AES 密钥 —— 真实脚本里那个 `0x6610`（AES-256）
+走的正是这条。块密码沿用 CryptoAPI 的默认 CBC + 全零 IV；RC4 按"摘要前 n 字节"处理。
+回归测试 `an_aes_key_wider_than_the_hash_uses_the_documented_expansion` 用样本里真实的
+口令钉住了整条派生（MD5 → 32 字节密钥）。
+
+`DllStruct` 的内存是 `Rc<RefCell<Vec<u8>>>`：`DllStructCreate($def, $ptr)` 会**映射**到
+已存在的地址而不是另开一块，于是 `_Crypt_DecryptData` 那套"交给 `DllCall` 解密、
+再用第二个 struct 从同一地址按实际长度读回明文"的写法才成立。写入经过 `write_at()`
+（内部可变），所以经 `struct*` 参数回写的字节对两个视图都可见。
 
 **边界仍然存在，而且是有意的**：仿真层不是 PE 加载器，没有 COM、没有窗口管理器、
 不调用真实 DLL。因此

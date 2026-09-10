@@ -57,17 +57,23 @@
 //! rather stop at the boundary, install [`crate::host_platform`] without this
 //! layer (set `AU3_WIN_EMU=0`, or use `--no-win-emu`).
 
+mod compress;
+mod crypto;
 mod dllstruct;
 mod paths;
+mod pe;
 mod registry;
 mod version;
 
 pub use dllstruct::{DllStruct, FieldSelector};
 pub use paths::WindowsPaths;
+pub use pe::{PeImage, Resource, Selector};
 pub use registry::{FileRegistry, MemoryRegistry, RegistryData, RegistryStore};
 pub use version::{WindowsArch, WindowsVersion};
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
 use autoitv3_runtime::error::RuntimeError;
@@ -84,6 +90,12 @@ pub const ARCH_ENV: &str = "AU3_WIN_ARCH";
 pub const ENABLE_ENV: &str = "AU3_WIN_EMU";
 /// Environment variable naming the file the emulated registry lives in.
 pub const REGISTRY_ENV: &str = "AU3_WIN_REGISTRY";
+/// Environment variable naming the PE file whose resources the emulated
+/// `FindResourceW`/`LoadResource` answer from (the `.exe` the script came from).
+pub const MODULE_ENV: &str = "AU3_WIN_MODULE";
+/// Set this to report every `DllCall` target the emulation does not implement
+/// (once each, on stderr). Handy for finding the next boundary to fill in.
+pub const TRACE_ENV: &str = "AU3_WINEMU_TRACE";
 /// The version used when nothing selects one.
 pub const DEFAULT_VERSION: WindowsVersion = WindowsVersion::Win10;
 /// The clipboard file, relative to the working directory.
@@ -102,6 +114,8 @@ pub const FUNCTIONS: &[&str] = &[
     "IsDllStruct",
     // native calls
     "DllCall",
+    "DllOpen",
+    "DllClose",
     // registry
     "RegRead",
     "RegWrite",
@@ -121,6 +135,69 @@ pub const FUNCTIONS: &[&str] = &[
     "DriveSpaceFree",
     "DriveStatus",
 ];
+
+/// The image base a PE is loaded at, as `GetModuleHandleW` reports it.
+const EMULATED_IMAGE_BASE: i64 = 0x0040_0000;
+
+/// A resource `FindResourceW` handed out, plus the address `LockResource`
+/// materialised its bytes at.
+#[derive(Debug, Clone)]
+struct ResourceHandle {
+    data: Vec<u8>,
+    address: Option<u64>,
+}
+
+/// What an emulated `DllCall` produced.
+///
+/// AutoIt's `DllCall` returns an array: element 0 is the function's return
+/// value and elements 1..n are the arguments (the obfuscator reads its
+/// out-parameters straight out of there — `$r[5]` for the fifth argument), so
+/// an emulated call reports its by-ref results the same way.
+struct DllOutcome {
+    retval: Value,
+    /// `(argument index, value after the call)`.
+    writes: Vec<(usize, Value)>,
+}
+
+impl DllOutcome {
+    /// A call with no by-ref results.
+    fn value(retval: Value) -> Self {
+        Self {
+            retval,
+            writes: Vec::new(),
+        }
+    }
+
+    /// A call that wrote `value` into argument `index`.
+    fn with(retval: Value, index: usize, value: Value) -> Self {
+        Self {
+            retval,
+            writes: vec![(index, value)],
+        }
+    }
+}
+
+/// CryptoAPI state: the hash and key objects `CryptCreateHash` /
+/// `CryptDeriveKey` hand out.
+#[derive(Debug, Default)]
+struct CryptoState {
+    hashes: Vec<Option<HashObject>>,
+    keys: Vec<Option<KeyObject>>,
+}
+
+#[derive(Debug)]
+struct HashObject {
+    alg: crypto::HashAlg,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct KeyObject {
+    alg: crypto::CipherAlg,
+    key: Vec<u8>,
+    /// The IV `CryptDeriveKey` produced, readable via `CryptGetKeyParam(KP_IV)`.
+    iv: Vec<u8>,
+}
 
 /// One emulated drive.
 ///
@@ -211,7 +288,24 @@ pub struct WindowsEmulation {
     drives: Vec<DriveSpec>,
     /// Allocated `DllStruct`s, addressed by 1-based handle.
     structs: Vec<Option<DllStruct>>,
+    /// The PE file whose resources the module/resource calls answer from.
+    module: Option<PeImage>,
+    /// Resources handed out by `FindResourceW`/`LoadResource`, 1-based.
+    handles: Vec<Option<ResourceHandle>>,
+    /// Resource bytes materialised by `LockResource`, keyed by their address.
+    /// Shared like a struct's storage so `DllStructCreate` can map over them.
+    blobs: Vec<(u64, Rc<RefCell<Vec<u8>>>)>,
+    /// Handles handed out by `DllOpen`.
+    dlls: Vec<Option<String>>,
+    /// Emulated CryptoAPI objects.
+    crypto: CryptoState,
+    /// Next synthetic address handed out (`&struct`, `LockResource`).
+    next_addr: u64,
     origin: Instant,
+    /// Report unimplemented `DllCall` targets on stderr (`AU3_WINEMU_TRACE`).
+    trace_dll: bool,
+    /// Targets already reported, so the trace stays readable.
+    traced: std::collections::HashSet<String>,
 }
 
 impl Default for WindowsEmulation {
@@ -246,7 +340,15 @@ impl WindowsEmulation {
             clipboard: PathBuf::from(DEFAULT_CLIPBOARD_FILE),
             drives: vec![DriveSpec::default()],
             structs: Vec::new(),
+            module: None,
+            handles: Vec::new(),
+            blobs: Vec::new(),
+            dlls: Vec::new(),
+            crypto: CryptoState::default(),
+            next_addr: 0x0100_0000,
             origin: Instant::now(),
+            trace_dll: false,
+            traced: std::collections::HashSet::new(),
         }
     }
 
@@ -269,6 +371,17 @@ impl WindowsEmulation {
             if !raw.trim().is_empty() {
                 emu = emu.with_registry_file(raw.trim());
             }
+        }
+        if let Ok(raw) = std::env::var(MODULE_ENV) {
+            if !raw.trim().is_empty() {
+                emu = emu.with_module_file(raw.trim());
+            }
+        }
+        if let Ok(raw) = std::env::var(TRACE_ENV) {
+            emu.trace_dll = !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "no" | "off"
+            );
         }
         if let Ok(raw) = std::env::var(ENABLE_ENV) {
             emu.enabled = !matches!(
@@ -350,6 +463,47 @@ impl WindowsEmulation {
         self
     }
 
+    /// Answer `GetModuleHandleW`/`FindResourceW`/`LoadResource`/`LockResource`
+    /// from the resources of this PE file.
+    ///
+    /// The reference sample reaches its payload through
+    /// `GetModuleHandleW(NULL)` → `FindResourceW(hMod, "PAYLOAD", RT_RCDATA)` →
+    /// `SizeofResource` → `LoadResource` → `LockResource`, so pointing this at
+    /// the `.exe` the script was compiled from makes that path work. A file
+    /// that cannot be read leaves the calls failing, as before.
+    pub fn with_module_file(mut self, path: impl AsRef<std::path::Path>) -> Self {
+        let path = path.as_ref();
+        match PeImage::load(path) {
+            Ok(image) => self.module = Some(image),
+            Err(e) => {
+                if self.trace_dll {
+                    eprintln!("[winemu] cannot read module {}: {e}", path.display());
+                }
+                self.module = None;
+            }
+        }
+        self
+    }
+
+    /// The loaded module image, if any.
+    pub fn module(&self) -> Option<&PeImage> {
+        self.module.as_ref()
+    }
+
+    /// Report every `DllCall` target the emulation does not implement, once
+    /// each, on stderr.
+    pub fn with_dll_trace(mut self, on: bool) -> Self {
+        self.trace_dll = on;
+        self
+    }
+
+    /// The `DllCall` targets seen so far that this layer does not implement.
+    pub fn unimplemented_dll_calls(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.traced.iter().cloned().collect();
+        out.sort();
+        out
+    }
+
     /// Switch the whole layer off (it then answers nothing).
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
@@ -400,6 +554,123 @@ impl WindowsEmulation {
         };
     }
 
+    // ----- emulated address space -----
+
+    /// Hand out a synthetic address for `len` bytes.
+    ///
+    /// Only the emulation resolves these: they are handed to the script by
+    /// `DllStructGetPtr` / `LockResource` and consumed by `RtlMoveMemory`.
+    fn allocate(&mut self, len: usize) -> u64 {
+        let base = self.next_addr;
+        self.next_addr = base + ((len as u64 + 0xFFF) & !0xFFF).max(0x1000);
+        base
+    }
+
+    /// Resolve a `DllStruct` by its handle *or* by an address it was given.
+    fn struct_any_mut(&mut self, value: i64) -> Option<&mut DllStruct> {
+        if value >= 1 {
+            let index = value as usize - 1;
+            if self.structs.get(index).is_some_and(|s| s.is_some()) {
+                return self.structs.get_mut(index)?.as_mut();
+            }
+        }
+        let addr = value as u64;
+        let found = self.structs.iter().position(|slot| {
+            slot.as_ref().is_some_and(|s| {
+                s.address() != 0 && addr >= s.address() && addr < s.address() + s.size() as u64
+            })
+        })?;
+        self.structs.get_mut(found)?.as_mut()
+    }
+
+    /// Read `len` bytes at an emulated address.
+    fn memory_read(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+        for s in self.structs.iter().flatten() {
+            let (base, size) = (s.address(), s.size() as u64);
+            if base != 0 && addr >= base && addr + len as u64 <= base + size {
+                let start = (addr - base) as usize;
+                return Some(s.bytes()[start..start + len].to_vec());
+            }
+        }
+        for (base, data) in &self.blobs {
+            let data = data.borrow();
+            if addr >= *base && addr + len as u64 <= *base + data.len() as u64 {
+                let start = (addr - *base) as usize;
+                return Some(data[start..start + len].to_vec());
+            }
+        }
+        None
+    }
+
+    /// The shared storage an emulated address points into, with the offset of
+    /// that address inside it. `DllStructCreate($def, $ptr)` maps onto this
+    /// instead of allocating, so the two views stay aliases of one another.
+    fn memory_storage(&self, addr: u64) -> Option<(Rc<RefCell<Vec<u8>>>, usize, u64)> {
+        for s in self.structs.iter().flatten() {
+            let (base, size) = (s.address(), s.size() as u64);
+            if base != 0 && addr >= base && addr < base + size {
+                let (storage, offset) = s.storage();
+                return Some((storage, offset + (addr - base) as usize, addr));
+            }
+        }
+        for (base, data) in &self.blobs {
+            let len = data.borrow().len() as u64;
+            if addr >= *base && addr < *base + len {
+                return Some((Rc::clone(data), (addr - *base) as usize, addr));
+            }
+        }
+        None
+    }
+
+    /// Write `bytes` at an emulated address.
+    fn memory_write(&mut self, addr: u64, bytes: &[u8]) -> bool {
+        for s in self.structs.iter_mut().flatten() {
+            let (base, size) = (s.address(), s.size() as u64);
+            if base != 0 && addr >= base && addr + bytes.len() as u64 <= base + size {
+                return s.write_at((addr - base) as usize, bytes);
+            }
+        }
+        for (base, data) in &mut self.blobs {
+            let len = data.borrow().len() as u64;
+            if addr >= *base && addr + bytes.len() as u64 <= *base + len {
+                let start = (addr - *base) as usize;
+                data.borrow_mut()[start..start + bytes.len()].copy_from_slice(bytes);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Hand out a `DllOpen` handle for `name`.
+    fn open_dll(&mut self, name: &str) -> i64 {
+        if let Some(i) = self.dlls.iter().position(|slot| slot.is_none()) {
+            self.dlls[i] = Some(name.to_string());
+            return i as i64 + 1;
+        }
+        self.dlls.push(Some(name.to_string()));
+        self.dlls.len() as i64
+    }
+
+    fn resource(&self, handle: i64) -> Option<&ResourceHandle> {
+        let index = usize::try_from(handle).ok()?.checked_sub(1)?;
+        self.handles.get(index)?.as_ref()
+    }
+
+    /// Materialise a locked resource and return its address.
+    fn lock_resource(&mut self, handle: i64) -> Option<Value> {
+        let index = usize::try_from(handle).ok()?.checked_sub(1)?;
+        if let Some(addr) = self.handles.get(index)?.as_ref()?.address {
+            return Some(Value::Int(addr as i64));
+        }
+        let data = self.handles.get(index)?.as_ref()?.data.clone();
+        let addr = self.allocate(data.len());
+        self.blobs.push((addr, Rc::new(RefCell::new(data))));
+        if let Some(slot) = self.handles.get_mut(index).and_then(|h| h.as_mut()) {
+            slot.address = Some(addr);
+        }
+        Some(Value::Int(addr as i64))
+    }
+
     // ----- DllStruct handles -----
 
     fn push_struct(&mut self, s: DllStruct) -> i64 {
@@ -431,49 +702,384 @@ impl WindowsEmulation {
     /// Emulate `DllCall(dll, rettype, function, type1, arg1, ...)`.
     fn dll_call(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
         let function = arg_str(args, 2);
-        let extra: &[Value] = if args.len() > 3 { &args[3..] } else { &[] };
-        let result = match function.to_ascii_lowercase().as_str() {
-            "getversionexw" => self.fill_version_struct(extra),
-            // The ANSI entry point fills the same fields; string fields that
-            // the definition declared `char` are written narrow automatically.
-            "getversionexa" | "getversionex" => self.fill_version_struct(extra),
-            "rtlgetversion" => self.fill_version_struct(extra),
-            "getversion" => Some(Value::Int(self.version.packed_get_version() as i64)),
-            "getsysteminfo" | "getnativesysteminfo" => self.fill_system_info(extra),
-            "getlasterror" => Some(Value::Int(0)),
-            "setlasterror" => Some(Value::Int(0)),
-            "getcurrentprocessid" => Some(Value::Int(std::process::id() as i64)),
-            "getcurrentthreadid" => Some(Value::Int(std::process::id() as i64)),
-            "getcurrentprocess" => Some(Value::Int(-1)),
-            "gettickcount" | "gettickcount64" => {
-                Some(Value::Int(self.origin.elapsed().as_millis() as i64))
-            }
-            _ => None,
-        };
-        match result {
-            Some(value) => {
+        // The tail is `type, value, type, value, ...`.
+        let pairs: Vec<(String, Value)> = args
+            .get(3..)
+            .unwrap_or(&[])
+            .chunks(2)
+            .filter(|pair| pair.len() == 2)
+            .map(|pair| (pair[0].to_autoit_string(), pair[1].clone()))
+            .collect();
+
+        let outcome = self.dll_call_inner(&function, &pairs);
+
+        match outcome {
+            Some(out) => {
                 ctx.set_error(0, 0);
-                // AutoIt's `DllCall` returns an **array**: element 0 is the
-                // function's return value and the rest are the `type*`
-                // parameters it wrote back. Scripts index it
-                // (`If Not $r[0] Then ...`), so returning a scalar breaks them.
-                Value::array(vec![value])
+                // `[return value, arg1, arg2, ...]`, as AutoIt hands it back.
+                let mut result = Vec::with_capacity(pairs.len() + 1);
+                result.push(out.retval);
+                for (i, (_, value)) in pairs.iter().enumerate() {
+                    let updated = out
+                        .writes
+                        .iter()
+                        .find(|(index, _)| *index == i)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_else(|| value.clone());
+                    result.push(updated);
+                }
+                Value::array(result)
             }
             // Not emulated: hand control back to the script's error handling
             // rather than inventing a result. AutoIt returns 0 (not an array)
             // when a call fails, and scripts test `@error` first.
             None => {
+                if self.trace_dll && self.traced.insert(function.to_ascii_lowercase()) {
+                    eprintln!(
+                        "[winemu] DllCall not emulated: {}!{}",
+                        arg_str(args, 0),
+                        function
+                    );
+                }
                 ctx.set_error(1, 0);
                 Value::Int(0)
             }
         }
     }
 
+    /// Dispatch one emulated `DllCall`.
+    fn dll_call_inner(
+        &mut self,
+        function: &str,
+        pairs: &[(String, Value)],
+    ) -> Option<DllOutcome> {
+        let arg = |i: usize| pairs.get(i).map(|(_, v)| v.clone());
+        let values: Vec<Value> = pairs.iter().map(|(_, v)| v.clone()).collect();
+        match function.to_ascii_lowercase().as_str() {
+            "getversionexw" | "getversionexa" | "getversionex" | "rtlgetversion" => {
+                Some(DllOutcome::value(self.fill_version_struct(&values)?))
+            }
+            "getversion" => Some(DllOutcome::value(Value::Int(
+                self.version.packed_get_version() as i64,
+            ))),
+            "getsysteminfo" | "getnativesysteminfo" => {
+                Some(DllOutcome::value(self.fill_system_info(&values)?))
+            }
+            "getlasterror" | "setlasterror" => Some(DllOutcome::value(Value::Int(0))),
+            "getcurrentprocessid" | "getcurrentthreadid" => {
+                Some(DllOutcome::value(Value::Int(std::process::id() as i64)))
+            }
+            "getcurrentprocess" => Some(DllOutcome::value(Value::Int(-1))),
+            "gettickcount" | "gettickcount64" => Some(DllOutcome::value(Value::Int(
+                self.origin.elapsed().as_millis() as i64,
+            ))),
+            // "Is this pointer bad?" — our addresses only ever name buffers the
+            // emulation allocated, so the honest answer is "no".
+            "isbadreadptr" | "isbadwriteptr" => Some(DllOutcome::value(Value::Int(0))),
+
+            // ---------------- module resources ----------------
+            "getmodulehandlew" | "getmodulehandlea" | "getmodulehandle" => {
+                self.module.as_ref()?;
+                Some(DllOutcome::value(Value::Int(EMULATED_IMAGE_BASE)))
+            }
+            "findresourcew" | "findresourcea" | "findresource" => {
+                let name = resource_selector(arg(1).as_ref())?;
+                let kind = resource_selector(arg(2).as_ref())?;
+                let data = self.module.as_ref()?.find(&name, &kind)?.data.clone();
+                self.handles.push(Some(ResourceHandle {
+                    data,
+                    address: None,
+                }));
+                Some(DllOutcome::value(Value::Int(self.handles.len() as i64)))
+            }
+            "sizeofresource" => {
+                let handle = arg(1).map(|v| v.to_int()).unwrap_or(0);
+                let size = self.resource(handle)?.data.len() as i64;
+                Some(DllOutcome::value(Value::Int(size)))
+            }
+            "loadresource" => {
+                let handle = arg(1).map(|v| v.to_int()).unwrap_or(0);
+                self.resource(handle)?;
+                Some(DllOutcome::value(Value::Int(handle)))
+            }
+            "lockresource" => {
+                let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                Some(DllOutcome::value(self.lock_resource(handle)?))
+            }
+            "rtlmovememory" | "copymemory" => {
+                let dest = arg(0).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let src = arg(1).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let len = arg(2).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+                let bytes = self.memory_read(src, len)?;
+                if !self.memory_write(dest, &bytes) {
+                    return None;
+                }
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+
+            // ---------------- CryptoAPI ----------------
+            "cryptacquirecontext" | "cryptacquirecontexta" | "cryptacquirecontextw" => {
+                Some(DllOutcome::with(
+                    Value::Bool(true),
+                    0,
+                    Value::Int(0x0c00_0001),
+                ))
+            }
+            "cryptreleasecontext" => Some(DllOutcome::value(Value::Bool(true))),
+            "cryptcreatehash" => self.crypt_create_hash(&arg(1)?),
+            "crypthashdata" => self.crypt_hash_data(&arg(0)?, &arg(1)?, &arg(2)?),
+            "cryptgethashparam" => self.crypt_get_hash_param(&arg(0)?, &arg(1)?, &arg(2)?),
+            "cryptderivekey" => self.crypt_derive_key(&arg(1)?, &arg(2)?),
+            "cryptdecrypt" => {
+                let final_block = arg(2).map(|v| v.is_truthy()).unwrap_or(false);
+                self.crypt_decrypt(&arg(0)?, &arg(4)?, &arg(5)?, final_block)
+            }
+            // KP_IV = 7: the IV the derived key already carries.
+            "cryptgetkeyparam" => {
+                let index = usize::try_from(arg(0)?.to_int()).ok()?.checked_sub(1)?;
+                let key = self.crypto.keys.get(index)?.as_ref()?.clone();
+                match arg(1)?.to_int() {
+                    7 => {
+                        self.write_buffer(&arg(2)?, &key.iv);
+                        Some(DllOutcome::with(
+                            Value::Bool(true),
+                            2,
+                            Value::Binary(std::rc::Rc::new(key.iv)),
+                        ))
+                    }
+                    _ => None,
+                }
+            }
+            "cryptsetkeyparam" => {
+                let index = usize::try_from(arg(0)?.to_int()).ok()?.checked_sub(1)?;
+                let value = self.read_buffer(&arg(2)?, 0)?;
+                if arg(1)?.to_int() == 7 {
+                    if let Some(slot) = self.crypto.keys.get_mut(index).and_then(|k| k.as_mut()) {
+                        slot.iv = value;
+                    }
+                    Some(DllOutcome::value(Value::Bool(true)))
+                } else {
+                    None
+                }
+            }
+            "cryptdestroyhash" => {
+                let index = usize::try_from(arg(0)?.to_int()).ok()?.checked_sub(1)?;
+                *self.crypto.hashes.get_mut(index)? = None;
+                Some(DllOutcome::value(Value::Bool(true)))
+            }
+            "cryptdestroykey" => {
+                let index = usize::try_from(arg(0)?.to_int()).ok()?.checked_sub(1)?;
+                *self.crypto.keys.get_mut(index)? = None;
+                Some(DllOutcome::value(Value::Bool(true)))
+            }
+
+            // ---------------- LZNT1 ----------------
+            "rtlgetcompressionworkspacesize" => {
+                Some(DllOutcome::with(Value::Int(0), 1, Value::Int(0)))
+            }
+            "rtldecompressbuffer" => {
+                self.rtl_decompress_buffer(&arg(0)?, &arg(1)?, &arg(2)?, &arg(3)?, &arg(4)?)
+            }
+            _ => None,
+        }
+    }
+
+    // ----- CryptoAPI -----
+
+    /// `CryptCreateHash(hProv, algid, hKey, flags, phHash)`.
+    fn crypt_create_hash(&mut self, algid: &Value) -> Option<DllOutcome> {
+        let Some(alg) = crypto::HashAlg::from_algid(algid.to_int() as u32) else {
+            if self.trace_dll {
+                eprintln!("[winemu] CryptCreateHash: unsupported hash algid {:#x}", algid.to_int());
+            }
+            return None;
+        };
+        let slot = Some(HashObject {
+            alg,
+            data: Vec::new(),
+        });
+        let handle = if let Some(i) = self.crypto.hashes.iter().position(|h| h.is_none()) {
+            self.crypto.hashes[i] = slot;
+            i as i64 + 1
+        } else {
+            self.crypto.hashes.push(slot);
+            self.crypto.hashes.len() as i64
+        };
+        // The sample hands `phHash` a literal 0 and reads the handle out of
+        // `$result[5]`, so the array slot is the only channel that matters.
+        Some(DllOutcome::with(Value::Bool(true), 4, Value::Int(handle)))
+    }
+
+    /// `CryptHashData(hHash, pbData, dwDataLen, flags)`.
+    fn crypt_hash_data(
+        &mut self,
+        handle: &Value,
+        buffer: &Value,
+        len: &Value,
+    ) -> Option<DllOutcome> {
+        let index = usize::try_from(handle.to_int()).ok()?.checked_sub(1)?;
+        let len = len.to_int().max(0) as usize;
+        let bytes = self.read_buffer(buffer, len)?;
+        let slot = self.crypto.hashes.get_mut(index)?.as_mut()?;
+        slot.data.extend_from_slice(&bytes);
+        Some(DllOutcome::value(Value::Bool(true)))
+    }
+
+    /// `CryptGetHashParam(hHash, param, pbData, pdwDataLen, flags)`.
+    fn crypt_get_hash_param(
+        &mut self,
+        handle: &Value,
+        param: &Value,
+        buffer: &Value,
+    ) -> Option<DllOutcome> {
+        let index = usize::try_from(handle.to_int()).ok()?.checked_sub(1)?;
+        let alg = self.crypto.hashes.get(index)?.as_ref()?.alg;
+        let data = self.crypto.hashes.get(index)?.as_ref()?.data.clone();
+        match param.to_int() {
+            // HP_HASHSIZE
+            4 => {
+                let size = Value::Int(alg.digest_len() as i64);
+                self.write_buffer(buffer, &(alg.digest_len() as u32).to_le_bytes());
+                Some(DllOutcome::with(Value::Bool(true), 2, size))
+            }
+            // HP_HASHVAL
+            2 => {
+                let digest = alg.digest(&data);
+                self.write_buffer(buffer, &digest);
+                Some(DllOutcome::with(
+                    Value::Bool(true),
+                    2,
+                    Value::Binary(std::rc::Rc::new(digest)),
+                ))
+            }
+            // HP_ALGID
+            1 => Some(DllOutcome::with(Value::Bool(true), 2, Value::Int(0))),
+            _ => None,
+        }
+    }
+
+    /// `CryptDeriveKey(hProv, algid, hBaseData, flags, phKey)`.
+    fn crypt_derive_key(&mut self, algid: &Value, base: &Value) -> Option<DllOutcome> {
+        let Some(alg) = crypto::CipherAlg::from_algid(algid.to_int() as u32) else {
+            if self.trace_dll {
+                eprintln!("[winemu] CryptDeriveKey: unsupported cipher algid {:#x}", algid.to_int());
+            }
+            return None;
+        };
+        // The key material is the digest of the hash object handed in, run
+        // through CryptoAPI's derivation for the requested algorithm.
+        let index = usize::try_from(base.to_int()).ok()?.checked_sub(1)?;
+        let (hash_alg, digest) = {
+            let hash = self.crypto.hashes.get(index)?.as_ref()?;
+            (hash.alg, hash.alg.digest(&hash.data))
+        };
+        let (key, iv) = alg.derive_key(hash_alg, &digest);
+        let handle = if let Some(i) = self.crypto.keys.iter().position(|k| k.is_none()) {
+            self.crypto.keys[i] = Some(KeyObject { alg, key, iv });
+            i as i64 + 1
+        } else {
+            self.crypto.keys.push(Some(KeyObject { alg, key, iv }));
+            self.crypto.keys.len() as i64
+        };
+        Some(DllOutcome::with(Value::Bool(true), 4, Value::Int(handle)))
+    }
+
+    /// `CryptDecrypt(hKey, hHash, final, flags, pbData, pdwDataLen)`.
+    fn crypt_decrypt(
+        &mut self,
+        handle: &Value,
+        buffer: &Value,
+        len: &Value,
+        final_block: bool,
+    ) -> Option<DllOutcome> {
+        let index = usize::try_from(handle.to_int()).ok()?.checked_sub(1)?;
+        let key = self.crypto.keys.get(index)?.as_ref()?.clone();
+        let len = len.to_int().max(0) as usize;
+        let data = self.read_buffer(buffer, len)?;
+        let mut plain = key.alg.apply(&key.key, &key.iv, &data);
+        // CryptoAPI's block ciphers pad to the block size with PKCS#7, and the
+        // final `CryptDecrypt` strips it — leaving it in would append up to a
+        // block of 0x10 bytes to the plaintext.
+        if final_block {
+            if let Some(keep) = pkcs7_kept_len(&plain) {
+                plain.truncate(keep);
+            }
+        }
+        if !self.write_buffer(buffer, &plain) {
+            return None;
+        }
+        Some(DllOutcome::with(
+            Value::Bool(true),
+            5,
+            Value::Int(plain.len() as i64),
+        ))
+    }
+
+    /// `RtlDecompressBuffer(format, outBuf, outLen, inBuf, inLen, pOutLen)`.
+    fn rtl_decompress_buffer(
+        &mut self,
+        format: &Value,
+        out_buf: &Value,
+        out_len: &Value,
+        in_buf: &Value,
+        in_len: &Value,
+    ) -> Option<DllOutcome> {
+        if format.to_int() as u32 != compress::COMPRESSION_FORMAT_LZNT1 {
+            return None;
+        }
+        let input = self.read_buffer(in_buf, in_len.to_int().max(0) as usize)?;
+        let mut plain = compress::decompress(&input)?;
+        let capacity = out_len.to_int().max(0) as usize;
+        if capacity > 0 {
+            plain.truncate(capacity);
+        }
+        if !self.write_buffer(out_buf, &plain) {
+            return None;
+        }
+        Some(DllOutcome::with(
+            Value::Int(0),
+            5,
+            Value::Int(plain.len() as i64),
+        ))
+    }
+
+    // ----- buffers -----
+
+    /// Read up to `len` bytes from whatever a `DllCall` argument names: a
+    /// `DllStruct` handle (AutoIt's `struct*`), an emulated address, a binary
+    /// value, or a string.
+    fn read_buffer(&self, value: &Value, len: usize) -> Option<Vec<u8>> {
+        match value {
+            Value::Binary(bytes) => {
+                let mut out = bytes.as_ref().clone();
+                out.truncate(if len == 0 { out.len() } else { len });
+                Some(out)
+            }
+            Value::Str(s) => Some(s.as_bytes().to_vec()),
+            _ => {
+                let handle = value.to_int();
+                let bytes = self.struct_ref(handle).map(|s| s.bytes())?;
+                let take = if len == 0 { bytes.len() } else { len.min(bytes.len()) };
+                Some(bytes[..take].to_vec())
+            }
+        }
+    }
+
+    /// Write `bytes` into whatever a `DllCall` argument names.
+    fn write_buffer(&mut self, value: &Value, bytes: &[u8]) -> bool {
+        let handle = value.to_int();
+        if let Some(s) = self.struct_any_mut(handle) {
+            let n = bytes.len().min(s.size());
+            return s.write_all(&bytes[..n]);
+        }
+        self.memory_write(handle as u64, bytes)
+    }
+
     /// Write `OSVERSIONINFO(W/EX)` fields into the struct argument.
     fn fill_version_struct(&mut self, extra: &[Value]) -> Option<Value> {
         let handle = struct_handle_arg(extra)?;
         let version = self.version;
-        let s = self.struct_mut(handle)?;
+        let s = self.struct_any_mut(handle)?;
         if let Some(i) = s.field_alias(&["osversioninfosize", "dwosversioninfosize"]) {
             let size = s.size() as u64;
             s.set_int(i, size);
@@ -512,7 +1118,7 @@ impl WindowsEmulation {
     fn fill_system_info(&mut self, extra: &[Value]) -> Option<Value> {
         let handle = struct_handle_arg(extra)?;
         let arch = self.arch;
-        let s = self.struct_mut(handle)?;
+        let s = self.struct_any_mut(handle)?;
         let x64 = arch.pointer_size() == 8;
         let set = |s: &mut DllStruct, aliases: &[&str], value: u64| {
             if let Some(i) = s.field_alias(aliases) {
@@ -735,8 +1341,35 @@ impl Platform for WindowsEmulation {
             // ---------------- DllStruct ----------------
             "dllstructcreate" => {
                 let definition = arg_str(&args, 0);
-                match DllStruct::create(&definition, self.arch) {
-                    Ok(s) => {
+                // `DllStructCreate($def, $ptr)` maps the struct over memory
+                // that already exists, so writes through either view are seen
+                // by the other — that is how a script reads a decrypted buffer
+                // back out of the struct it passed to a `DllCall`.
+                let pointer = args.get(1).map(|v| v.to_int()).unwrap_or(0);
+                let over = if pointer > 0 {
+                    self.memory_storage(pointer as u64)
+                } else {
+                    None
+                };
+                let created = match over {
+                    Some((storage, offset, address)) => DllStruct::create_over(
+                        &definition,
+                        self.arch,
+                        storage,
+                        offset,
+                        address,
+                    ),
+                    None => DllStruct::create(&definition, self.arch),
+                };
+                match created {
+                    Ok(mut s) => {
+                        // Give it an address so `DllStructGetPtr` hands out
+                        // something `RtlMoveMemory` can write through.
+                        if s.address() == 0 {
+                            let size = s.size();
+                            let address = self.allocate(size);
+                            s.set_address(address);
+                        }
                         let handle = self.push_struct(s);
                         ctx.set_error(0, 0);
                         Value::Int(handle)
@@ -763,9 +1396,10 @@ impl Platform for WindowsEmulation {
             }
             "dllstructgetptr" => {
                 let handle = arg_int(&args, 0);
-                if self.struct_ref(handle).is_some() {
+                let address = self.struct_ref(handle).map(|s| s.address()).unwrap_or(0);
+                if address != 0 {
                     ctx.set_error(0, 0);
-                    Value::Int(handle)
+                    Value::Int(address as i64)
                 } else {
                     ctx.set_error(1, 0);
                     Value::Int(0)
@@ -825,6 +1459,27 @@ impl Platform for WindowsEmulation {
             }
             // ---------------- DllCall ----------------
             "dllcall" => self.dll_call(&args, ctx),
+            // `DllOpen` just hands back a handle that is passed to `DllCall` in
+            // place of the file name; our `DllCall` never loads anything, so a
+            // counter is enough. `DllClose` forgets it again.
+            "dllopen" => {
+                let name = arg_str(&args, 0);
+                let handle = self.open_dll(&name);
+                ctx.set_error(0, 0);
+                Value::Int(handle)
+            }
+            "dllclose" => {
+                let handle = arg_int(&args, 0);
+                let ok = handle >= 1 && (handle as usize) <= self.dlls.len();
+                if ok {
+                    self.dlls[handle as usize - 1] = None;
+                    ctx.set_error(0, 0);
+                    Value::Int(1)
+                } else {
+                    ctx.set_error(1, 0);
+                    Value::Int(0)
+                }
+            }
             // ---------------- registry ----------------
             "regread" => self.reg_read(&args, ctx),
             "regwrite" => self.reg_write(&args, ctx),
@@ -943,6 +1598,33 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
 /// `C:` → `C:\` so the common-profile paths can be built from the drive.
 fn drive_root(home_drive: &str) -> String {
     format!("{}\\", home_drive.trim_end_matches('\\'))
+}
+
+/// The length left after stripping valid PKCS#7 padding (`None` when the tail
+/// is not padding, in which case the data is passed through untouched).
+fn pkcs7_kept_len(data: &[u8]) -> Option<usize> {
+    let pad = *data.last()? as usize;
+    if pad == 0 || pad > 16 || pad > data.len() {
+        return None;
+    }
+    if data[data.len() - pad..].iter().all(|b| *b as usize == pad) {
+        Some(data.len() - pad)
+    } else {
+        None
+    }
+}
+
+/// A `FindResourceW` selector from one argument: a string name, an integer id,
+/// or `None` for a null argument.
+fn resource_selector(v: Option<&Value>) -> Option<Selector> {
+    match v {
+        Some(Value::Str(s)) => Some(Selector::name(s.clone())),
+        Some(other) if other.is_number() => {
+            let id = other.to_int();
+            (id != 0).then(|| Selector::id(id as u32))
+        }
+        _ => None,
+    }
 }
 
 /// Find a struct handle among `DllCall`'s type/value argument pairs.

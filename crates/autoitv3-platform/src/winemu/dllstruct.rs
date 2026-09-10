@@ -27,6 +27,9 @@
 //! * unnamed fields (referred to by 1-based index)
 //! * `align N`, which pads the next field to an N-byte boundary
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use autoitv3_runtime::value::Value;
 
 use super::version::WindowsArch;
@@ -42,8 +45,11 @@ struct Field {
     count: usize,
     /// Byte offset from the start of the struct.
     offset: usize,
-    /// True for `byte`/`char`, whose arrays read back as a string.
+    /// True for `char`, whose arrays read back as a string.
     is_char: bool,
+    /// True for `byte`/`ubyte`, whose arrays read back as a **binary** value —
+    /// that is how a script pulls an encrypted blob out of a struct.
+    is_binary: bool,
     /// True for `wchar`, whose arrays read back as a UTF-16 string.
     is_wchar: bool,
     /// True for floating point fields.
@@ -60,11 +66,25 @@ impl Field {
 }
 
 /// A parsed, allocated native structure.
+///
+/// The bytes live behind an `Rc<RefCell<..>>` because `DllStructCreate` can map
+/// a *second* struct onto memory that already exists (`DllStructCreate($def,
+/// $ptr)`). Both views then have to observe each other's writes, exactly as
+/// they do when they are two pointers into the same Windows allocation.
 #[derive(Debug, Clone)]
 pub struct DllStruct {
     definition: String,
     fields: Vec<Field>,
-    data: Vec<u8>,
+    /// Backing bytes, shared with every struct mapped over this memory.
+    data: Rc<RefCell<Vec<u8>>>,
+    /// Where this struct starts inside `data`; non-zero for an alias.
+    offset: usize,
+    /// Size of this struct in bytes — the alias may be smaller than its owner.
+    size: usize,
+    /// Where the buffer lives in the emulated address space, so that
+    /// `DllStructGetPtr` hands out something `RtlMoveMemory` and friends can
+    /// write through. Assigned by the emulation layer at creation.
+    address: u64,
 }
 
 impl DllStruct {
@@ -81,8 +101,70 @@ impl DllStruct {
         Ok(Self {
             definition: definition.to_string(),
             fields,
-            data: vec![0u8; size],
+            data: Rc::new(RefCell::new(vec![0u8; size])),
+            offset: 0,
+            size,
+            address: 0,
         })
+    }
+
+    /// Map `definition` onto memory that already exists at `address`.
+    ///
+    /// `storage`/`offset` locate that memory; the new struct shares it instead
+    /// of allocating, so a write through either view is seen by the other.
+    pub fn create_over(
+        definition: &str,
+        arch: WindowsArch,
+        storage: Rc<RefCell<Vec<u8>>>,
+        offset: usize,
+        address: u64,
+    ) -> Result<Self, String> {
+        let mut s = Self::create(definition, arch)?;
+        s.data = storage;
+        s.offset = offset;
+        s.address = address;
+        Ok(s)
+    }
+
+    /// Where this struct lives in the emulated address space.
+    pub fn address(&self) -> u64 {
+        self.address
+    }
+
+    /// Give the struct an address (called by the emulation layer).
+    pub fn set_address(&mut self, address: u64) {
+        self.address = address;
+    }
+
+    /// The backing bytes and this struct's offset into them, for mapping
+    /// another struct over the same memory.
+    pub fn storage(&self) -> (Rc<RefCell<Vec<u8>>>, usize) {
+        (Rc::clone(&self.data), self.offset)
+    }
+
+    /// The struct's bytes, a copy so the caller does not hold the borrow.
+    pub fn bytes(&self) -> Vec<u8> {
+        let data = self.data.borrow();
+        data[self.offset..self.offset + self.size].to_vec()
+    }
+
+    /// Overwrite the struct's first `bytes.len()` bytes.
+    pub fn write_all(&self, bytes: &[u8]) -> bool {
+        self.write_at(0, bytes)
+    }
+
+    /// Overwrite `bytes.len()` bytes at `at` (struct-relative).
+    pub fn write_at(&self, at: usize, bytes: &[u8]) -> bool {
+        if at + bytes.len() > self.size {
+            return false;
+        }
+        let start = self.offset + at;
+        let mut data = self.data.borrow_mut();
+        if start + bytes.len() > data.len() {
+            return false;
+        }
+        data[start..start + bytes.len()].copy_from_slice(bytes);
+        true
     }
 
     /// The definition string the struct was created from.
@@ -92,7 +174,7 @@ impl DllStruct {
 
     /// Total size in bytes, as `DllStructGetSize` reports it.
     pub fn size(&self) -> usize {
-        self.data.len()
+        self.size
     }
 
     /// Number of fields.
@@ -143,6 +225,10 @@ impl DllStruct {
     /// `None` for the whole field.
     pub fn get(&self, field: usize, element: Option<usize>) -> Option<Value> {
         let f = self.fields.get(field)?;
+        if f.is_binary && f.count > 1 {
+            let bytes = self.read(f.offset, f.total_size())?;
+            return Some(Value::Binary(std::rc::Rc::new(bytes)));
+        }
         if f.is_char {
             let slice = self.char_slice(f, element)?;
             return Some(Value::Str(slice));
@@ -160,7 +246,7 @@ impl DllStruct {
         }
         let raw = self.element_bytes(f, element)?;
         let mut buf = [0u8; 8];
-        buf[..f.elem_size].copy_from_slice(raw);
+        buf[..f.elem_size].copy_from_slice(&raw);
         let unsigned = u64::from_le_bytes(buf);
         let value = if f.signed {
             sign_extend(unsigned, f.elem_size)
@@ -175,6 +261,14 @@ impl DllStruct {
         let Some(f) = self.fields.get(field).cloned() else {
             return false;
         };
+        if f.is_binary && f.count > 1 && element.is_none() {
+            let bytes = match value {
+                Value::Binary(b) => b.as_ref().clone(),
+                other => other.to_autoit_string().into_bytes(),
+            };
+            let n = bytes.len().min(f.total_size());
+            return self.write_at(f.offset, &bytes[..n]);
+        }
         if f.is_char || f.is_wchar {
             return self.set_string(field, element, &value.to_autoit_string());
         }
@@ -216,14 +310,13 @@ impl DllStruct {
             let units: Vec<u16> = text.encode_utf16().collect();
             for slot in 0..slots {
                 let unit = units.get(slot).copied().unwrap_or(0);
-                let at = start + slot * 2;
-                self.data[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+                self.write_at(start + slot * 2, &unit.to_le_bytes());
             }
         } else {
             let bytes = text.as_bytes();
             for slot in 0..slots {
                 let b = bytes.get(slot).copied().unwrap_or(0);
-                self.data[start + slot] = b;
+                self.write_at(start + slot, &[b]);
             }
         }
         true
@@ -245,22 +338,32 @@ impl DllStruct {
 
     // ----- internals -----
 
-    fn element_bytes(&self, f: &Field, element: Option<usize>) -> Option<&[u8]> {
+    /// Read `len` bytes at `at` (struct-relative).
+    fn read(&self, at: usize, len: usize) -> Option<Vec<u8>> {
+        if at + len > self.size {
+            return None;
+        }
+        let start = self.offset + at;
+        let data = self.data.borrow();
+        data.get(start..start + len).map(<[u8]>::to_vec)
+    }
+
+    fn element_bytes(&self, f: &Field, element: Option<usize>) -> Option<Vec<u8>> {
         let index = match element {
             Some(e) if e >= 1 && e <= f.count => e - 1,
             Some(_) => return None,
             None => 0,
         };
         let at = f.offset + index * f.elem_size;
-        self.data.get(at..at + f.elem_size)
+        self.read(at, f.elem_size)
     }
 
     fn char_slice(&self, f: &Field, element: Option<usize>) -> Option<String> {
         if let Some(e) = element {
             let raw = self.element_bytes(f, Some(e))?;
-            return Some(String::from_utf8_lossy(raw).into_owned());
+            return Some(String::from_utf8_lossy(&raw).into_owned());
         }
-        let bytes = self.data.get(f.offset..f.offset + f.total_size())?;
+        let bytes = self.read(f.offset, f.total_size())?;
         let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
         Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
     }
@@ -271,7 +374,7 @@ impl DllStruct {
             let unit = u16::from_le_bytes(raw.try_into().ok()?);
             return Some(String::from_utf16_lossy(&[unit]));
         }
-        let bytes = self.data.get(f.offset..f.offset + f.total_size())?;
+        let bytes = self.read(f.offset, f.total_size())?;
         let units: Vec<u16> = (0..bytes.len() / 2)
             .map(|i| u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]))
             .collect();
@@ -287,11 +390,7 @@ impl DllStruct {
         };
         let at = f.offset + index * f.elem_size;
         let n = bytes.len().min(f.elem_size);
-        if at + n > self.data.len() {
-            return false;
-        }
-        self.data[at..at + n].copy_from_slice(&bytes[..n]);
-        true
+        self.write_at(at, &bytes[..n])
     }
 }
 
@@ -354,7 +453,7 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
             None => (String::new(), type_count),
         };
         let count = count.max(1);
-        let (elem_size, is_char, is_wchar, is_float, signed) =
+        let (elem_size, is_char, is_binary, is_wchar, is_float, signed) =
             type_info(&type_name, arch).ok_or_else(|| {
                 format!("DllStruct: unknown type {type_name:?} in {definition:?}")
             })?;
@@ -373,6 +472,7 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
             count,
             offset,
             is_char,
+            is_binary,
             is_wchar,
             is_float,
             signed,
@@ -401,25 +501,28 @@ fn split_array(token: &str) -> (String, usize) {
     }
 }
 
-/// `(element size, char, wchar, float, signed)` for a type keyword.
+/// `(element size, char, binary, wchar, float, signed)` for a type keyword.
 fn type_info(
     type_name: &str,
     arch: WindowsArch,
-) -> Option<(usize, bool, bool, bool, bool)> {
+) -> Option<(usize, bool, bool, bool, bool, bool)> {
     let info = match type_name {
-        "byte" | "char" => (1, true, false, false, false),
-        "ubyte" | "boolean" => (1, false, false, false, false),
-        "wchar" => (2, false, true, false, false),
-        "short" => (2, false, false, false, true),
-        "ushort" | "word" => (2, false, false, false, false),
-        "int" | "long" => (4, false, false, false, true),
-        "uint" | "ulong" | "dword" => (4, false, false, false, false),
-        "int64" => (8, false, false, false, true),
-        "uint64" => (8, false, false, false, false),
-        "ptr" | "handle" | "hwnd" => (arch.pointer_size(), false, false, false, false),
-        "float" => (4, false, false, true, true),
-        "double" => (8, false, false, true, true),
-        "bool" => (4, false, false, false, false),
+        // `char` arrays are strings; `byte`/`ubyte` arrays are binaries.
+        "char" => (1, true, false, false, false, false),
+        "byte" | "ubyte" | "boolean" => (1, false, true, false, false, false),
+        "wchar" => (2, false, false, true, false, false),
+        "short" => (2, false, false, false, false, true),
+        "ushort" | "word" => (2, false, false, false, false, false),
+        "int" | "long" => (4, false, false, false, false, true),
+        "uint" | "ulong" | "dword" => (4, false, false, false, false, false),
+        "int64" => (8, false, false, false, false, true),
+        "uint64" => (8, false, false, false, false, false),
+        "ptr" | "handle" | "hwnd" => {
+            (arch.pointer_size(), false, false, false, false, false)
+        }
+        "float" => (4, false, false, false, true, true),
+        "double" => (8, false, false, false, true, true),
+        "bool" => (4, false, false, false, false, false),
         _ => return None,
     };
     Some(info)
