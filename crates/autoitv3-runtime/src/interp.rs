@@ -22,7 +22,7 @@ use crate::builtins;
 use crate::debug::{Breakpoints, DebugAction, Debugger, FrameInfo, StopReason};
 use crate::error::{Flow, RuntimeError};
 use crate::host::{Host, HostContext};
-use crate::platform::{self, Platform};
+use crate::platform::Platform;
 use crate::value::Value;
 
 /// Default runaway-loop guard.
@@ -48,7 +48,10 @@ pub struct Runtime {
     /// Plugged-in provider of native functions (the full-runtime seam).
     host: Option<Box<dyn Host>>,
     /// OS integration; supplies builtins that cannot be portable.
-    platform: Box<dyn Platform>,
+    ///
+    /// `None` until one is installed: the core deliberately names no concrete
+    /// operating system (see `crate::platform`).
+    platform: Option<Box<dyn Platform>>,
     /// Attached debugger (the debug-module seam).
     debugger: Option<Box<dyn Debugger>>,
     /// Breakpoints consulted before each statement.
@@ -81,7 +84,7 @@ impl Runtime {
             funcs: HashMap::new(),
             func_names: HashMap::new(),
             host: None,
-            platform: platform::host_platform(),
+            platform: None,
             debugger: None,
             breakpoints: Breakpoints::new(),
             error: 0,
@@ -175,14 +178,17 @@ impl Runtime {
         self.host = Some(host);
     }
 
-    /// Replace the platform layer (defaults to the current OS's).
+    /// Install the platform layer.
+    ///
+    /// Nothing OS-specific can be reached until one is installed; use
+    /// `autoitv3_platform::host_platform()` for the current OS.
     pub fn set_platform(&mut self, platform: Box<dyn Platform>) {
-        self.platform = platform;
+        self.platform = Some(platform);
     }
 
-    /// The name of the active platform, e.g. `linux-generic` or `windows`.
+    /// The name of the installed platform, or `none` when there is not one.
     pub fn platform_name(&self) -> &'static str {
-        self.platform.name()
+        self.platform.as_ref().map(|p| p.name()).unwrap_or("none")
     }
 
     /// Attach a debugger.
@@ -326,12 +332,14 @@ impl Runtime {
             }
         }
 
-        // Then the OS layer (nothing but the scaffold on non-Windows).
-        {
+        // Then the OS layer, when one is installed.
+        if self.platform.is_some() {
             let Runtime { globals, error, extended, platform, .. } = self;
             let mut ctx = HostBridge { globals, error, extended };
-            if let Some(v) = platform.call(name, args, &mut ctx)? {
-                return Ok(v);
+            if let Some(p) = platform.as_mut() {
+                if let Some(v) = p.call(name, args, &mut ctx)? {
+                    return Ok(v);
+                }
             }
         }
 

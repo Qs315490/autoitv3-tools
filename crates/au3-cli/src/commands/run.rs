@@ -6,7 +6,7 @@
 //! the future debug module consumes.
 
 use autoitv3_runtime::debug::{DebugAction, Debugger, StopReason};
-use autoitv3_runtime::{Runtime, Value};
+use autoitv3_runtime::Value;
 use clap::Args;
 
 use crate::args::{load_program, parse_arg_value, CliError, CliResult};
@@ -40,7 +40,9 @@ pub struct RunArgs {
 /// Entry point for the `run` subcommand.
 pub fn run(args: &RunArgs) -> CliResult<()> {
     let prog = load_program(&args.input)?;
-    let mut rt = Runtime::with_program(&prog);
+    // Install the platform layer for this OS so OS-specific builtins can be
+    // reached (see `autoitv3-platform`).
+    let mut rt = autoitv3_platform::runtime_with_platform(&prog);
 
     if args.trace {
         rt.set_debugger(Box::new(TracePrinter::new()));

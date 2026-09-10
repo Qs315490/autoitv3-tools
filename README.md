@@ -32,13 +32,21 @@ autoitv3-tools/
         interp.rs     Runtime 解释器：加载程序、调用函数、求值表达式、执行语句
         builtins.rs   已实现的内置函数子集（字符串/数值/位运算/数组/Map/Execute/Call...）
         host.rs       Host trait——嵌入方接入原生函数的接口（优先级高于平台层）
-        platform/     Platform trait + 各平台实现：generic.rs（Linux，无 OS 特有功能）
-                      / windows.rs（Windows 独有内容的扩展点，当前为骨架）
+        platform/     Platform trait（仅接口；实现见 autoitv3-platform）
+        regexp.rs     StringRegExp* ——基于纯 Rust regex 引擎，平台无关
         debug.rs      Debugger trait / Breakpoint / FrameInfo——后续 debug 模块的接口
         error.rs      RuntimeError 与控制流信号 Flow
         lib.rs        公共 API
       tests/
-        runtime.rs    解释器/host/debug 接口 + 真实集成测试（28 项）
+        runtime.rs    解释器/host/debug 接口 + 真实集成测试（32 项）
+        regexp.rs     StringRegExp / StringRegExpReplace（27 项）
+    autoitv3-platform/       # 库 crate——各操作系统集成（平台单独成 crate）
+      src/
+        lib.rs        host_platform() 工厂、runtime_with_platform() 便捷构造
+        generic.rs    Linux（及其他非 Windows）：如实返回「未提供」
+        windows.rs    Windows：注册表/COM/DllCall/GUI 的扩展点（当前为骨架）
+      tests/
+        platform.rs   平台选择、注入、OS 函数供给（4 项）
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
@@ -163,8 +171,10 @@ au3 run SomeFunc --trace some.au3
 
 ```bash
 # 运行库的单元测试
+cargo test                     # 全部（123 项）
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
+cargo test -p autoitv3-platform
 cargo test -p autoitv3-deobf
 ```
 
@@ -227,15 +237,40 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 ## 平台层
 
 解释器核心、值模型与可移植内置函数子集都与平台无关；AutoIt 自身的函数库大多是
-Win32 的封装，因此每个操作系统对应一个 `Platform` 实现：
+Win32 的封装，因此**平台单独成一个 crate** `autoitv3-platform`：
 
 | 模块 | 适用 | 内容 |
 | ---- | ---- | ---- |
-| `platform/generic.rs` | Linux（及任何非 Windows 目标） | 不提供 OS 特有功能——AutoIt 是 Windows 工具，这里如实返回"未提供" |
-| `platform/windows.rs` | Windows | **扩展点骨架**：注册表、COM、`DllCall`、GUI、进程/窗口等后续在此填充 |
+| `generic.rs` | Linux（及任何非 Windows 目标） | 不提供 OS 特有功能——AutoIt 是 Windows 工具，这里如实返回"未提供" |
+| `windows.rs` | Windows | **扩展点骨架**：注册表、COM、`DllCall`、GUI、进程/窗口等后续在此填充 |
 
-查找顺序为 **内置函数 → Host → Platform**，因此嵌入方可以通过 `Host` 覆盖任何
-平台默认实现。平台通过 `cfg` 选择，一次构建只编译本平台的模块。
+`Platform` **trait** 留在 `autoitv3-runtime`（它是解释器调用的接缝），**实现**放在
+`autoitv3-platform`。依赖方向单向：平台 crate 依赖运行时，运行时不知道任何具体操作
+系统，因此 `Runtime::new()` 默认**没有**平台层；需要时用
+`autoitv3_platform::runtime_with_platform(&prog)` 或 `rt.set_platform(...)` 安装。
+
+查找顺序为 **内置函数 → Host → Platform**，因此嵌入方可以用 `Host` 覆盖任何平台默认实现。
+
+> **不再静默编造值**：内置函数层只保留**可移植**的中性调用（`Sleep`、`ConsoleWrite`、
+> `Opt` 等）。注册表、COM、`DllCall`、GUI、剪贴板、进程控制等 OS 特有函数一律**不再**
+> 返回假值——在平台层提供实现之前，它们如实报「undefined function」，避免悄悄污染
+> 反混淆结果。
+
+### 正则表达式（平台无关）
+
+`StringRegExp` / `StringRegExpReplace` 用**纯 Rust 的 `regex` 引擎**实现（`regexp.rs`），
+不依赖 PCRE/C，因而不放进平台层——正则与操作系统无关，放平台层只会造成两套实现。
+
+支持 AutoIt 文档中日常用到的全部要素：字面量、`.`、字符类与 POSIX 类、
+`\d \s \w \b`、锚点、量词（含懒惰 `?`）、分支、捕获/命名/非捕获组、
+`(?imsxU)` 选项组，以及模式头部 `(*UCP)`/`(*CRLF)` 之类的全局设置（会被剥离）。
+
+`regex` 是有限自动机引擎，PCRE 的**回溯专有特性不支持**：环视 `(?=)`/`(?<=)`、
+反向引用 `\1`、原子组 `(?>)`、占有量词、条件与递归。这些会**如实报错**
+（`@error = 2` 坏模式），而不是近似匹配。
+
+`offset` 参数语义正确（1-based，从该位置**开始搜索**）；`@extended` 在 flags 1/2 下
+报告匹配结束后的下一个位置，在 `StringRegExpReplace` 下报告替换次数。
 
 ## 测试
 

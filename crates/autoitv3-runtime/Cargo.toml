@@ -7,6 +7,11 @@ description.workspace = true
 [dependencies]
 autoitv3-ast = { path = "../autoitv3-ast" }
 
+# AutoIt's StringRegExp* are PCRE; we implement them with the pure-Rust
+# `regex` engine, which keeps them platform-independent (no PCRE/C dependency).
+regex = "1.12"
+
+
 [lib]
 name = "autoitv3_runtime"
 path = "src/lib.rs"

@@ -8,6 +8,7 @@ description.workspace = true
 autoitv3-ast = { path = "../autoitv3-ast" }
 autoitv3-format = { path = "../autoitv3-format" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
+autoitv3-platform = { path = "../autoitv3-platform" }
 autoitv3-deobf = { path = "../autoitv3-deobf" }
 
 # CLI parsing: subcommand aliases + unambiguous abbreviations (`au3 deob`).

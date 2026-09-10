@@ -11,15 +11,15 @@
 //! * a Linux build has a well-defined place to grow portable functionality
 //!   (for example file-system or process helpers) without touching the core;
 //! * behaviour is identical whatever the host OS for everything that *is*
-//!   portable, because the portable subset lives in [`crate::builtins`].
+//!   portable, because the portable subset lives in [`autoitv3_runtime::builtins`].
 //!
 //! Every call answers `Ok(None)` — "not provided here" — which the interpreter
 //! turns into an undefined-function error.
 
-use super::Platform;
-use crate::error::RuntimeError;
-use crate::host::HostContext;
-use crate::value::Value;
+use autoitv3_runtime::platform::Platform;
+use autoitv3_runtime::error::RuntimeError;
+use autoitv3_runtime::host::HostContext;
+use autoitv3_runtime::value::Value;
 
 /// The platform used when the target OS is not Windows.
 #[derive(Debug, Default)]

@@ -259,6 +259,156 @@ pub(crate) fn call(
             Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_whitespace()))
         }
 
+        // ---------------- regular expressions ----------------
+        // AutoIt uses PCRE; `crate::regexp` implements the same surface with a
+        // pure-Rust engine, so these behave identically on every platform.
+        "stringregexp" => {
+            let subject = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            let pattern = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
+            let flag = args.get(2).map(|v| v.to_int()).unwrap_or(0);
+            let offset = args.get(3).map(|v| v.to_int()).unwrap_or(1);
+
+            let re = match crate::regexp::compile(&pattern) {
+                Ok(re) => re,
+                Err(e) => {
+                    // 2 = bad pattern, @extended = offset of the error.
+                    rt.set_error_value(2, e.offset as i64);
+                    return Ok(Some(Value::Int(0)));
+                }
+            };
+            let Some(start) = crate::regexp::char_offset_to_byte(&subject, offset) else {
+                rt.set_error_value(1, 0);
+                return Ok(Some(Value::Int(0)));
+            };
+            let tail = &subject[start..];
+
+            match flag {
+                // $STR_REGEXPMATCH — "does it match?"
+                0 => {
+                    let hit = re.is_match(tail);
+                    rt.set_error_value(0, 0);
+                    Value::Int(i64::from(hit))
+                }
+                // $STR_REGEXPARRAYMATCH — captured groups of the first match.
+                1 => match re.captures(tail) {
+                    None => {
+                        rt.set_error_value(1, 0);
+                        Value::Int(0)
+                    }
+                    Some(caps) => {
+                        let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+                        rt.set_error_value(
+                            0,
+                            crate::regexp::byte_to_char_offset(tail, end) as i64,
+                        );
+                        let mut out: Vec<Value> = Vec::new();
+                        if re.captures_len() == 1 {
+                            // No capturing groups: the match itself is returned.
+                            out.push(Value::Str(
+                                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string(),
+                            ));
+                        } else {
+                            for i in 1..re.captures_len() {
+                                out.push(Value::Str(
+                                    caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string(),
+                                ));
+                            }
+                        }
+                        Value::array(out)
+                    }
+                },
+                // $STR_REGEXPARRAYFULLMATCH — full match first, then groups.
+                2 => match re.captures(tail) {
+                    None => {
+                        rt.set_error_value(1, 0);
+                        Value::Int(0)
+                    }
+                    Some(caps) => {
+                        let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+                        rt.set_error_value(
+                            0,
+                            crate::regexp::byte_to_char_offset(tail, end) as i64,
+                        );
+                        let mut out: Vec<Value> = Vec::new();
+                        for i in 0..re.captures_len() {
+                            out.push(Value::Str(
+                                caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string(),
+                            ));
+                        }
+                        Value::array(out)
+                    }
+                },
+                // $STR_REGEXPARRAYGLOBALMATCH — every match.
+                3 => {
+                    let all: Vec<Value> = re
+                        .find_iter(tail)
+                        .map(|m| Value::Str(m.as_str().to_string()))
+                        .collect();
+                    if all.is_empty() {
+                        rt.set_error_value(1, 0);
+                        Value::Int(0)
+                    } else {
+                        rt.set_error_value(0, 0);
+                        Value::array(all)
+                    }
+                }
+                // $STR_REGEXPARRAYGLOBALFULLMATCH — every match with groups.
+                4 => {
+                    let all: Vec<Value> = re
+                        .captures_iter(tail)
+                        .map(|caps| {
+                            let mut inner: Vec<Value> = Vec::new();
+                            for i in 0..re.captures_len() {
+                                inner.push(Value::Str(
+                                    caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string(),
+                                ));
+                            }
+                            Value::array(inner)
+                        })
+                        .collect();
+                    if all.is_empty() {
+                        rt.set_error_value(1, 0);
+                        Value::Int(0)
+                    } else {
+                        rt.set_error_value(0, 0);
+                        Value::array(all)
+                    }
+                }
+                other => {
+                    rt.set_error_value(2, 0);
+                    return Err(RuntimeError::Unsupported {
+                        what: format!("StringRegExp flag {other} (expected 0..4)"),
+                        span: Some(span),
+                    });
+                }
+            }
+        }
+        "stringregexpreplace" => {
+            let subject = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            let pattern = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
+            let replacement = args.get(2).map(|v| v.to_autoit_string()).unwrap_or_default();
+            let count = args.get(3).map(|v| v.to_int()).unwrap_or(0);
+
+            let re = match crate::regexp::compile(&pattern) {
+                Ok(re) => re,
+                Err(e) => {
+                    rt.set_error_value(2, e.offset as i64);
+                    return Ok(Some(Value::Str(subject)));
+                }
+            };
+            let rep = crate::regexp::translate_replacement(&replacement);
+            let limit = if count > 0 { count as usize } else { usize::MAX };
+            let performed = re.find_iter(&subject).take(limit).count();
+            let out = if count > 0 {
+                re.replacen(&subject, count as usize, rep.as_str()).to_string()
+            } else {
+                re.replace_all(&subject, rep.as_str()).to_string()
+            };
+            // @extended reports how many replacements were made.
+            rt.set_error_value(0, performed as i64);
+            Value::Str(out)
+        }
+
         // ---------------- arrays / maps ----------------
         "ubound" => {
             let a = args.first().cloned().unwrap_or(Value::Null);
@@ -375,27 +525,20 @@ pub(crate) fn call(
         }
 
         // ---------------- benign no-ops ----------------
-        // These appear in the obfuscator's helpers but only matter for side
-        // effects this interpreter does not model; returning a neutral value
-        // keeps table evaluation going.
+        // Only *portable* calls that have no observable effect on the values a
+        // deobfuscator computes are neutralised here. Anything OS-specific
+        // (registry, COM, DllCall, GUI, clipboard, process control) is
+        // deliberately NOT stubbed: a silent fake value would corrupt results.
+        // Those belong to a `Platform` implementation, and until one provides
+        // them the interpreter reports an undefined function.
         "opt" | "autoitsetoption" => Value::Int(1),
         "sleep" => Value::Int(0),
-        "consolewrite" | "filewrite" | "fileflush" | "fileclose" | "dircreate" => Value::Int(1),
-        "dllcall" | "dllstructcreate" | "dllstructgetdata" | "dllstructsetdata"
-        | "dllstructgetsize" | "isdllstruct" | "guictrlread" | "guictrlcreatepic"
-        | "guictrlcreatebutton" | "guictrlcreategraphic" | "guictrlcreateinput"
-        | "guictrlcreatelistview" | "guictrlsendmsg" | "guictrlsetimage"
-        | "guictrlsetstate" | "guictrlsetcolor" | "guictrlsetdata" | "guictrldelete"
-        | "guictrlgetstate" | "guictrlgetpos" | "guisetstate" | "guisetbkcolor"
-        | "guicreate" | "guigetmsg" => Value::Int(0),
-        "regread" => Value::Str(String::new()),
+        "consolewrite" => Value::Int(0),
+        "filewrite" | "fileflush" | "fileclose" | "dircreate" => Value::Int(1),
         "filegetsize" => Value::Int(0),
         "filegetversion" => Value::Str("0.0.0.0".into()),
         "filegetattrib" => Value::Str(String::new()),
         "fileexists" => Value::Int(0),
-        "processclose" | "processexists" => Value::Int(0),
-        "clipget" => Value::Str(String::new()),
-        "cliput" | "clipput" => Value::Int(1),
         "stdoutread" => Value::Str(String::new()),
 
         _ => return Ok(None),
