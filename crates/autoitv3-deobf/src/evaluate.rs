@@ -46,6 +46,71 @@ pub struct EvaluateReport {
     pub substitutions: usize,
     /// Number of indexed calls resolved to a real function name.
     pub calls_resolved: usize,
+    /// The globals the run produced, kept so the substitution can be repeated
+    /// once the later passes have spliced new code into the tree.
+    pub values: Tables,
+}
+
+/// The globals a run produced, keyed by lower-cased name without the `$`.
+///
+/// A snapshot is kept because substitution is not a one-shot: the `Simplify`
+/// pass turns `Execute("$FN_TABLE[1094]($name_table[175])")` strings into real code,
+/// and that code reads the same tables. Running [`Tables::substitute`] again
+/// after the simplifier is what finishes the job.
+#[derive(Debug, Default, Clone)]
+pub struct Tables {
+    values: HashMap<String, Value>,
+}
+
+/// What one substitution sweep replaced.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SubstitutionCount {
+    /// Constant-indexed references replaced with runtime values.
+    pub substitutions: usize,
+    /// Indexed calls resolved to a real function name.
+    pub calls_resolved: usize,
+}
+
+impl SubstitutionCount {
+    /// Total number of rewrites.
+    pub fn total(&self) -> usize {
+        self.substitutions + self.calls_resolved
+    }
+}
+
+impl Tables {
+    /// Build a snapshot from `name -> value` pairs. A leading `$` in the name
+    /// is optional; lookups are case-insensitive, like AutoIt itself.
+    pub fn new<I: IntoIterator<Item = (String, Value)>>(values: I) -> Self {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(name, value)| (name.trim_start_matches('$').to_ascii_lowercase(), value))
+                .collect(),
+        }
+    }
+
+    /// Replace constant-indexed table reads in `prog` with the values the run
+    /// produced. Safe to call repeatedly; later sweeps pick up code an earlier
+    /// pass spliced in.
+    pub fn substitute(&self, prog: &mut Program) -> SubstitutionCount {
+        // Bare variable reads are only safe to inline when the script itself
+        // promises the value never changes.
+        let consts = const_globals(prog);
+        let mut ctx = SubstituteCtx {
+            tables: &self.values,
+            consts: &consts,
+            substitutions: 0,
+            calls_resolved: 0,
+        };
+        for item in &mut prog.items {
+            ctx.item(item);
+        }
+        SubstitutionCount {
+            substitutions: ctx.substitutions,
+            calls_resolved: ctx.calls_resolved,
+        }
+    }
 }
 
 /// Run `prog`'s script body and inline the resulting table values.
@@ -90,41 +155,46 @@ pub fn evaluate_with_platform(
     let globals = rt.globals_snapshot();
     report.globals = globals.len();
 
-    let mut tables: HashMap<String, Value> = HashMap::new();
+    let mut values: HashMap<String, Value> = HashMap::new();
     for (name, value) in globals {
         if matches!(value, Value::Array(_) | Value::Map(_)) {
             report.tables += 1;
         }
-        tables.insert(name, value);
+        values.insert(name, value);
     }
+    report.values = Tables { values };
 
-    // Bare variable reads are only safe to inline when the script itself
-    // promises the value never changes.
-    let consts = const_globals(prog);
-
-    let mut ctx = SubstituteCtx {
-        tables: &tables,
-        consts: &consts,
-        report: &mut report,
-    };
-    for item in &mut prog.items {
-        ctx.item(item);
-    }
+    let first = report.values.substitute(prog);
+    report.substitutions = first.substitutions;
+    report.calls_resolved = first.calls_resolved;
     report
 }
 
 /// Walks the tree replacing constant-indexed table reads.
+///
+/// Parameter defaults count: they are evaluated at call time and read the same
+/// tables as the body.
 struct SubstituteCtx<'a> {
     tables: &'a HashMap<String, Value>,
     /// Names declared `Global Const`, which a bare read may be replaced by.
     consts: &'a HashSet<String>,
-    report: &'a mut EvaluateReport,
+    substitutions: usize,
+    calls_resolved: usize,
 }
 
 impl SubstituteCtx<'_> {
     fn item(&mut self, item: &mut Item) {
         match &mut item.kind {
-            ItemKind::Func(f) => self.stmts(&mut f.body),
+            ItemKind::Func(f) => {
+                // Parameter defaults are evaluated at call time and may read
+                // the tables just like the body does.
+                for p in &mut f.params {
+                    if let Some(default) = &mut p.default {
+                        self.expr(default);
+                    }
+                }
+                self.stmts(&mut f.body);
+            }
             ItemKind::Stmt(s) => self.stmt(s),
             ItemKind::Region(r) => {
                 for it in &mut r.items {
@@ -316,7 +386,7 @@ impl SubstituteCtx<'_> {
             return;
         };
         if let Some(lit) = literal_of(&value) {
-            self.report.substitutions += 1;
+            self.substitutions += 1;
             *e = lit;
         }
     }
@@ -334,7 +404,7 @@ impl SubstituteCtx<'_> {
         ) else {
             return;
         };
-        self.report.calls_resolved += 1;
+        self.calls_resolved += 1;
         e.kind = ExprKind::Call(CallExpr {
             callee: Ident { name, span: e.span },
             args,

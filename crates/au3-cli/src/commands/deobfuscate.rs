@@ -11,7 +11,7 @@
 //! Renaming is optional (`--no-rename`): with it off, only the structure is
 //! rewritten and every original variable/function name is preserved.
 
-use autoitv3_deobf::{deobfuscate, evaluate_with_platform, Deobfuscator};
+use autoitv3_deobf::{evaluate_with_platform, DeobfReport, Deobfuscator};
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
@@ -54,6 +54,7 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     // Runtime evaluation first: it recovers values the syntactic passes cannot
     // see (the obfuscator's string table), and the later passes then fold and
     // rename the result.
+    let mut tables = None;
     if args.evaluate {
         let outcome = evaluate_with_platform(
             &mut prog,
@@ -61,13 +62,34 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
             args.win.platform()?,
         );
         super::evaluate::report(&outcome);
+        tables = Some(outcome.values);
     }
 
-    let report = if args.no_rename {
-        Deobfuscator::without_rename().run(&mut prog)
+    let deobf = if args.no_rename {
+        Deobfuscator::without_rename()
     } else {
-        deobfuscate(&mut prog)
+        Deobfuscator::new()
     };
+    let mut report = DeobfReport::default();
+    match &tables {
+        // The simplifier splices `Execute("...")` strings into the program as
+        // real code, and that code reads the same tables the run produced. Do
+        // the passes up to and including `Simplify`, substitute once more, then
+        // finish — otherwise the spliced code keeps its `$table[i]` references.
+        Some(values) => {
+            let split = deobf.after_simplify();
+            deobf.run_passes(&mut prog, &deobf.passes[..split], &mut report);
+            let again = values.substitute(&mut prog);
+            if again.total() > 0 {
+                eprintln!(
+                    "  {} more values inlined in code the simplifier spliced",
+                    again.total()
+                );
+            }
+            deobf.run_passes(&mut prog, &deobf.passes[split..], &mut report);
+        }
+        None => deobf.run_passes(&mut prog, &deobf.passes, &mut report),
+    }
     eprintln!(
         "deobfuscated: {} folds, {} vars, {} funcs renamed{}; \
          table: {} entries, {} calls, {} refs; {} indirect calls simplified",

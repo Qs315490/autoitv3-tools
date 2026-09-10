@@ -125,7 +125,17 @@ impl Deobfuscator {
     /// Run the configured pipeline over `prog`, mutating it in place.
     pub fn run(&self, prog: &mut Program) -> DeobfReport {
         let mut report = DeobfReport::default();
-        for pass in &self.passes {
+        self.run_passes(prog, &self.passes, &mut report);
+        report
+    }
+
+    /// Run `passes` — a prefix or any slice of the configured pipeline —
+    /// accumulating into `report`.
+    ///
+    /// Lets a caller run the pipeline in two halves and slip its own step in
+    /// between; see [`Deobfuscator::after_simplify`].
+    pub fn run_passes(&self, prog: &mut Program, passes: &[Pass], report: &mut DeobfReport) {
+        for pass in passes {
             match pass {
                 Pass::Fold => report.folds += fold::fold_program(prog),
                 Pass::Table => {
@@ -146,7 +156,19 @@ impl Deobfuscator {
                 }
             }
         }
-        report
+    }
+
+    /// Where [`Pass::Simplify`] sits in the configured pipeline, plus one.
+    ///
+    /// `Simplify` is the pass that turns `Execute("...")` strings into real
+    /// code, so a caller that inlined table values *before* the pipeline (see
+    /// `evaluate`) has to substitute again after this point or the spliced code
+    /// keeps its `$table[i]` references.
+    pub fn after_simplify(&self) -> usize {
+        self.passes
+            .iter()
+            .rposition(|p| *p == Pass::Simplify)
+            .map_or(0, |i| i + 1)
     }
 }
 
