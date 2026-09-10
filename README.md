@@ -25,7 +25,7 @@ autoitv3-tools/
     autoitv3-format/         # 库 crate——格式打印（原名 pretty）
       src/lib.rs    把 AST 重新打印为 AutoIt 源码（默认保留注释，可 strip；规范缩进）
       tests/
-        format.rs    格式化/注释保留/去除/空参数括号测试（5 项）
+        format.rs    格式化/注释保留/Else/空参数括号测试（6 项）
     autoitv3-runtime/        # 库 crate——AutoIt v3 运行时（值模型 + 解释器 + 扩展接口）
       src/
         value.rs      运行时值模型（Int/Float/Str/Array/Map/Binary/FuncRef）与 AutoIt 强制转换规则
@@ -59,7 +59,7 @@ autoitv3-tools/
       tests/
         platform.rs   分层、选择、注入、通用函数与宏（33 项）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
-        winemu.rs     Windows 仿真层（31 项）
+        winemu.rs     Windows 仿真层（32 项）
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
@@ -75,7 +75,7 @@ autoitv3-tools/
         orchestrator.rs 按序执行 pass 流水线，产出 Deobfuscator/Report
         lib.rs
       tests/
-        deobf.rs      反混淆 pass 单元测试（27 项）
+        deobf.rs      反混淆 pass 单元测试（30 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
     au3-cli/                # CLI 二进制 crate（产物名为 au3，使用 clap 解析参数）
       src/
@@ -115,34 +115,54 @@ autoitv3-tools/
 `au3 deobfuscate` 现在执行 4 个 pass：
 
 1. **常量折叠**（fold）：求值纯算术/字符串/拼接，原地内联。
-2. **函数表解析**（table）：静态执行 `BuildFunctionTable()`（纯数组构建，
+2. **间接调用简化**（simplify）：`Call("Foo", ...)` 改写为直接调用，并把
+   `Execute("<表达式>")` 的字符串代码**内联进 AST**（见下文「间接调用简化」）。
+3. **函数表解析**（table）：静态执行 `BuildFunctionTable()`（纯数组构建，
    `Local $x[]=[...]` + `MergeArrays` + `Return`）得到 `$fn_table` 函数表
    （1108 个函数名），把所有 `$fn_table[0x..](args)` 改写为 `FuncName(args)`、
    `$fn_table[0x..]` 改写为 `FuncName`。在真实脚本上改写约 several thousand 处引用。
-3. **间接调用简化**（simplify）：`Call("Foo", ...)` / `Execute("Foo(...)")` 改写为
-   直接调用（见下文「间接调用简化」）。
+   表名按 AutoIt 语义**大小写不敏感**匹配——样本代码里写 `$fn_table`，而
+   `Execute` 字符串里写 `$FN_TABLE`。
 4. **标识符重命名**（rename）：确定性重命名，别名自带**作用域**与**推断类型**
    （见下文「标识符重命名」）。
 
+simplify 必须排在 table **之前**：把 `Execute("<代码>")` 摊平成普通代码，table 才看得见
+`$FN_TABLE[1094](...)` 并把它解析成真实函数名；rename 最后跑，于是字符串里提到的
+`$FN_TABLE`/`$name_table` 会和它们的定义拿到同一个别名（否则改名后的脚本里，这些动态调用
+指向的变量已经不存在了）。
+
 ### 间接调用简化（simplify）
 
-混淆器常用"名字放在字符串里"的方式藏调用目标，静态看不出调用图。当字符串是字面量、
-且指向**脚本自己定义**的函数时，这层间接没有意义，直接写出来即可：
+混淆器常用"代码放在字符串里"的方式藏调用目标，静态看不出调用图：
 
 ```autoit
-Call("Foo", 1)     ->  Foo(1)
-Call("Foo")        ->  Foo()
-Execute("Foo(1)")  ->  Foo(1)
-Execute("Foo")     ->  Foo()
+Call("Foo", 1)                          ; 调用 Foo(1)
+Execute("Foo(1)")                       ; 求值该字符串，调用 Foo(1)
+Execute("$FN_TABLE[1094]($name_table[175])")  ; 调用函数表第 1094 项
 ```
 
-- 名字**大小写不敏感**，重写时用**定义处的拼写**（`Call("foobar")` → `FooBar()`）。
-- 该 pass 排在 rename **之前**，所以生成的新调用会和定义一起被重命名（`Foo` → `f000`）。
+能静态去掉的间接就去掉：
+
+```autoit
+Call("Foo", 1)                          ->  Foo(1)
+Call("Foo")                             ->  Foo()
+Execute("Foo(1)")                       ->  Foo(1)
+Execute("$FN_TABLE[1094]($name_table[175])")  ->  $FN_TABLE[1094]($name_table[175])
+                                            （随后 table 解析成真实函数名）
+```
+
+- **`Call`** 只在该名字是字面量、且指向**脚本自己定义**的函数时改写；大小写不敏感，
+  重写用定义处拼写（`Call("foobar")` → `FooBar()`）。
+- **`Execute`** 只要字符串能解析成**单个表达式**，就整个搬进 AST——不限于函数调用。
+  这一步是关键：搬进来的表达式是普通代码，后面的 `table`、`rename` 一视同仁地处理它。
+  `Execute` 是在**当前作用域**求值的（混淆器正是靠这点在字符串里引用 `$FN_TABLE`/`$name_table`），
+  所以纯表达式内联后语义不变。
 - **刻意不动**的情况：
-  - `Call($name)` / `Execute($code)` —— 名字本身是算出来的，静态无从得知；先跑 `evaluate`（或让 `fold`）把它变成字面量，下一次就能简化；
-  - 剧本里没有定义的名字，如 `Call("MsgBox", ...)`（没有内置函数表，无法验证直接调用，而且它本来就好读）；
-  - `Execute` 的字符串**不是单个调用**：赋值、多条语句、无调用的表达式都不动。AutoIt 里赋值只是**语句**（没有赋值表达式），`Execute("$x = 1")` 放进表达式位置后重新解析，`=` 会变成**比较**（`Local $v = ($x = 5)` 求值为 `true`），所以要改写只能做语句级手术，还得同时保留 `Execute` 的返回值；何况赋值本身并没有藏调用；
-  - 函数名不是整段字面量，如 `Call("Foo" & $suffix)` —— 目标随 `$suffix` 变化，静态不可知。若它其实是可静态求值的（全字面量拼接会被 `fold` 折成 `Call("FooBar")`；`Global Const` 变量则由 `evaluate` 内联成字面量），后续 pass 折完 simplify 照样能处理。
+  - `Call($name)` / `Execute($code)` —— 参数本身是算出来的；先跑 `--evaluate` 把字符串表的
+    元素（`$string_table[42]`）内联成字面量，下一次就能处理；
+  - `Call` 指向脚本里没有定义的名字，如 `Call("MsgBox", ...)`（没有内置函数表，无法验证直接调用，而且它本来就好读）；
+  - `Execute` 的字符串**不是单个表达式**：赋值、多条语句、解析不了的代码都不动。AutoIt 里赋值只是**语句**（没有赋值表达式），`Execute("$x = 1")` 放进表达式位置后重新解析，`=` 会变成**比较**（`Local $v = ($x = 5)` 求值为 `true`），所以塞不进去；
+  - 函数名不是整段字面量，如 `Call("Foo" & $suffix)` —— 目标随 `$suffix` 变化，静态不可知。若它其实可静态求值（全字面量拼接由 `fold` 折成 `Call("FooBar")`；`Global Const` 变量由 `evaluate` 内联），后面的 pass 折完照样能处理。
 
 ### 标识符重命名（rename）
 
@@ -217,17 +237,22 @@ Deobfuscator::new()
 好处是 AutoIt 的运算符语义（强制转换、字符串拼接、整数/浮点提升）只有**一份**实现，
 不会随两处代码各自演进而产生偏差。
 
-> **字符串表求值（进展）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()` 构建，
-> 其构建路径用 `DllStructCreate(OSVERSIONINFO)` + `DllCall(GetVersionExW)` 取系统版本，
-> 再按版本挑选字符串——这曾是最硬的平台边界。现在 `autoitv3-platform` 的
-> **Windows 仿真层**（`winemu`，见下文「Windows 仿真」）已实现这条路径：选定版本
-> （默认 win10）后，`DllStruct*`、`DllCall(GetVersionExW`/`A`、`RtlGetVersion`、
-> `GetVersion`、`GetSystemInfo)` 与注册表读都由仿真机器回答，所以"按版本分支"的
-> 字符串表已经可以求出来（回归测试：
+> **字符串表求值（进展）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()` 构建。它先用
+> `DllStructCreate(OSVERSIONINFO)` + `DllCall(GetVersionExW)` 取系统版本、再按版本挑字符串
+> ——这条路径 `winemu` 已经实现（回归测试：
 > `evaluate_test.rs::an_os_version_query_no_longer_blocks_the_string_table`）。
-> 仍受限于真实语义的部分是 COM/GUI/窗口，以及仿真层未列举的 `DllCall`——后者会置
-> `@error = 1` 并返回 `0`，把控制权交回脚本自身的错误处理，而不是编造结果。
+> 但实测 `--evaluate` 仍会在 `$string_table` 的构建函数里中止：它要先把一份**加密的**数据解密成
+> Map（`decrypt()` → `decompress()`），链路是 `CryptAcquireContext` /
+> `CryptCreateHash` / `CryptHashData` / `CryptDeriveKey` / `CryptDecrypt`（算法含
+> `CALG_RC4`、`CALG_AES_*`、`CALG_3DES`），外加 `RtlGetCompressionWorkSpaceSize` +
+> `RtlDecompressBuffer` 与资源加载。这些 `DllCall` 目前落进"未列举"分支：置 `@error = 1`
+> 返回 `0`，构建函数于是返回错误值，字符串表建不起来。也就是说 **`$string_table` 的边界是
+> CryptoAPI，不是版本查询**。COM/GUI/窗口等未列举调用同理，不会编造结果。
 > 用 `--no-win-emu` 可关闭仿真，回到"停在第一个 Windows 调用"的行为。
+>
+> 反过来，`$name_table`（结构体/API 名表，`$fn_table[0x454]()`，即反混淆输出里的 `f001`）
+> 是能建起来的：`--evaluate` 把它内联，`simplify` 再把 `EXECUTE($name_table[i])` 摊平成真实
+> 调用（真实脚本上 39 处）。
 
 ## 使用
 
@@ -304,7 +329,7 @@ au3 run SomeFunc --trace some.au3
 
 ```bash
 # 运行库的单元测试
-cargo test                     # 全部（230 项，含 doctest）
+cargo test                     # 全部（236 项，含 doctest）
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
 cargo test -p autoitv3-platform
@@ -468,7 +493,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows.rs` 才是正�
 | OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`、`@AutoItX64` |
 | 目录 | `WindowsPaths` 给出传统 `C:` 布局：`@WindowsDir`、`@SystemDir`、`@ProgramFilesDir`、`@HomeDrive`、`@TempDir`、`@AppDataDir`、`@LocalAppDataDir`、`@UserProfileDir`、`@StartMenuDir`、`@StartupDir`…… |
 | 原生结构 | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`/`IsDllStruct`——定义解析器支持 `struct;…;endstruct`、常见整型/浮点/指针、`char`/`wchar` 数组、无名段、`align N`；句柄指向一块本层持有的字节缓冲 |
-| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`，已实现 `GetVersionExW`/`A`、`RtlGetVersion`、`GetVersion`、`GetSystemInfo`/`GetNativeSystemInfo` 以及几个无副作用的查询 |
+| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`，已实现 `GetVersionExW`/`A`、`RtlGetVersion`、`GetVersion`、`GetSystemInfo`/`GetNativeSystemInfo` 以及几个无副作用的查询。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
 | 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存、写立刻回写文件；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
 | 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
 | 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFilesystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配） |

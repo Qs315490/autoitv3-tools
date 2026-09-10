@@ -66,9 +66,13 @@ pub enum Pass {
 }
 
 impl Pass {
-    /// The default pipeline. `Simplify` runs before `Rename` so the calls it
-    /// creates get the same aliases as the definitions they target.
-    pub const ALL: &'static [Pass] = &[Pass::Fold, Pass::Table, Pass::Simplify, Pass::Rename];
+    /// The default pipeline.
+    ///
+    /// `Simplify` runs **before** `Table`: splicing an `Execute` string into the
+    /// program is what exposes `$FN_TABLE[1094](...)` as ordinary code, which the
+    /// table pass then resolves to a real name. `Rename` comes last so
+    /// everything the earlier passes produced is renamed consistently.
+    pub const ALL: &'static [Pass] = &[Pass::Fold, Pass::Simplify, Pass::Table, Pass::Rename];
 }
 
 /// A deobfuscator configured with a set of passes.

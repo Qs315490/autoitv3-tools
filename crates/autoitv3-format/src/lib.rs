@@ -257,12 +257,20 @@ impl PrettyPrinter {
                     }
                     self.indent -= 1;
                 }
-                self.indent += 1;
-                for b in &if_.else_block {
-                    self.print_stmt(b);
+                // The `Else` keyword is easy to forget here, and forgetting it
+                // silently moves the `Else` body into the `Then` branch — the
+                // output still parses, it just means something else.
+                if !if_.else_block.is_empty() {
+                    self.pad();
+                    let _ = write!(self.out, "Else");
                     self.nl();
+                    self.indent += 1;
+                    for b in &if_.else_block {
+                        self.print_stmt(b);
+                        self.nl();
+                    }
+                    self.indent -= 1;
                 }
-                self.indent -= 1;
                 self.pad();
                 let _ = write!(self.out, "EndIf");
             }

@@ -1,40 +1,52 @@
 //! Turn indirect, name-in-a-string calls into direct ones.
 //!
-//! AutoIt can reach a function at run time by naming it in a string:
+//! AutoIt can reach code at run time by naming it in a string:
 //!
 //! ```autoit
-//! Call("Foo", 1)      ; calls Foo(1)
-//! Execute("Foo(1)")   ; evaluates the string, calling Foo(1)
+//! Call("Foo", 1)                        ; calls Foo(1)
+//! Execute("Foo(1)")                     ; evaluates the string, calling Foo(1)
+//! Execute("$FN_TABLE[1094]($name_table[175])") ; calls whatever entry 1094 names
 //! ```
 //!
 //! Obfuscators lean on this heavily — the target is hidden behind a string, so
-//! neither the call graph nor a reader can tell what actually runs. When the
-//! string is a literal naming a function **the script itself defines**, the
-//! indirection buys nothing and the call can simply be written out:
+//! neither the call graph nor a reader can tell what actually runs. This pass
+//! removes the indirection where it can be removed statically:
 //!
 //! ```text
-//! Call("Foo", 1)     ->  Foo(1)
-//! Call("Foo")        ->  Foo()
-//! Execute("Foo(1)")  ->  Foo(1)
-//! Execute("Foo")     ->  Foo()
+//! Call("Foo", 1)                        ->  Foo(1)
+//! Call("Foo")                           ->  Foo()
+//! Execute("Foo(1)")                     ->  Foo(1)
+//! Execute("$FN_TABLE[1094]($name_table[175])") ->  $FN_TABLE[1094]($name_table[175])
 //! ```
 //!
-//! The rewritten call is an ordinary one, so the later `rename` pass gives the
-//! target the same alias as its definition.
+//! `Call` is rewritten only when the name is a literal naming a function **the
+//! script itself defines**; `Execute` has its whole body spliced into the
+//! program whenever the string is a single expression. That second case matters
+//! most: the spliced expression is ordinary code, so the `table` pass that runs
+//! next turns `$FN_TABLE[1094](...)` into the real function name, and `rename`
+//! keeps the variables the string mentions — `$FN_TABLE`, `$name_table` — consistent
+//! with the rest of the script. Without the splice those dynamic calls would
+//! still name variables that renaming had removed.
+//!
+//! `Execute` is evaluated against the enclosing scope (that is exactly how
+//! those strings reach `$FN_TABLE`/`$name_table`), so a plain expression means the
+//! same thing once inlined.
 //!
 //! # What is deliberately *not* simplified
 //!
-//! * `Call($name)` / `Execute($code)` whose name is computed — there is nothing
-//!   to read statically. Running the *evaluate* pass first can turn those into
-//!   literals, after which this pass sees them on the next run.
-//! * Names the script does not define. Without a built-in table a direct call
-//!   cannot be validated, so `Call("MsgBox", ...)` is left exactly as written
-//!   (it is also perfectly readable already).
-//! * An `Execute` argument that is not a single call: an assignment, several
-//!   statements, or an expression with no call. `Execute` evaluates its code in
-//!   a fresh scope, and only a plain call is equivalent once inlined.
-//! * Anything where the function name is not the *whole* string literal —
-//!   `Call("Foo" & $suffix)` is resolved at run time.
+//! * `Call($name)` / `Execute($code)` whose argument is computed — there is
+//!   nothing to read statically. Running the *evaluate* pass first turns the
+//!   obfuscator's string-table reads (`$string_table[42]`) into literals, after which
+//!   this pass sees them.
+//! * `Call` targets the script does not define. Without a built-in table a
+//!   direct call cannot be validated, so `Call("MsgBox", ...)` is left exactly
+//!   as written (it is also perfectly readable already).
+//! * An `Execute` string that is not a single expression: an assignment,
+//!   several statements, or code that does not parse. `Execute(...)` sits in
+//!   expression position and AutoIt has no assignment *expression*, so an
+//!   assignment could not be spliced without turning `=` into a comparison.
+//! * Anything where the name is not the *whole* literal — `Call("Foo" &
+//!   $suffix)` is resolved at run time.
 
 use std::collections::HashMap;
 
@@ -282,8 +294,15 @@ impl Simplify {
         self.calls += 1;
     }
 
-    /// `Execute("Foo(...)")` → `Foo(...)`, for a string that is exactly one
-    /// call to a script-defined function.
+    /// Splice the code inside `Execute("<expr>")` into the program.
+    ///
+    /// The obfuscator reaches its payload through strings like
+    /// `Execute("$FN_TABLE[1094]($name_table[175])")`: the string is not a plain
+    /// function call but a whole expression, and the tables it names only exist
+    /// as *variables* in the enclosing scope. Inlining the expression is what
+    /// lets the later `table` and `rename` passes see it, turn
+    /// `$FN_TABLE[1094](...)` into the real function name, and keep the names it
+    /// references consistent with the rest of the script.
     fn simplify_execute(&mut self, e: &mut Expr) {
         let ExprKind::Call(call) = &e.kind else {
             return;
@@ -298,57 +317,59 @@ impl Simplify {
         else {
             return;
         };
-        let Some(mut replacement) = self.parse_execute(code, e.span) else {
+        let Some(replacement) = parse_execute(code, e.span) else {
             return;
         };
-        std::mem::swap(&mut e.kind, &mut replacement);
+        e.kind = replacement.kind;
         self.executes += 1;
     }
+}
 
-    /// Parse the code inside `Execute` and, when it is a lone call to a
-    /// script-defined function, return it as a direct call expression.
-    fn parse_execute(&self, code: &str, span: Span) -> Option<ExprKind> {
-        let inner = autoitv3_ast::parse(code).ok()?;
-        if inner.items.len() != 1 {
+/// Parse the code inside `Execute` and, when it is a single **expression**,
+/// return it to be spliced into the program.
+///
+/// Assignments and multiple statements are refused: `Execute(...)` sits in
+/// expression position, and AutoIt has no assignment *expression* — an
+/// assignment printed there would re-parse as the `=` comparison. `Execute` is
+/// evaluated against the enclosing scope (that is how the obfuscator's strings
+/// reach `$FN_TABLE`/`$name_table`), so a plain expression means the same thing
+/// inline.
+fn parse_execute(code: &str, span: Span) -> Option<Expr> {
+    let inner = autoitv3_ast::parse(code).ok()?;
+    if inner.items.len() != 1 {
+        return None;
+    }
+    let ItemKind::Stmt(stmt) = &inner.items[0].kind else {
+        return None;
+    };
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    if let ExprKind::Binary(op, _, _) = &expr.kind {
+        if is_assign(op) {
             return None;
         }
-        let ItemKind::Stmt(stmt) = &inner.items[0].kind else {
-            return None;
-        };
-        let StmtKind::Expr(expr) = &stmt.kind else {
-            return None;
-        };
-        let mut call = match &expr.kind {
-            // `Execute("Foo(1)")`
-            ExprKind::Call(c) => {
-                let target = self.funcs.get(&c.callee.name.to_ascii_lowercase())?;
-                CallExpr {
-                    callee: Ident {
-                        name: target.clone(),
-                        span,
-                    },
-                    args: c.args.clone(),
-                }
-            }
-            // `Execute("Foo")` — a bare identifier in statement position is a
-            // call in AutoIt.
-            ExprKind::Ident(id) => {
-                let target = self.funcs.get(&id.name.to_ascii_lowercase())?;
-                CallExpr {
-                    callee: Ident {
-                        name: target.clone(),
-                        span,
-                    },
-                    args: Vec::new(),
-                }
-            }
-            _ => return None,
-        };
-        // The arguments were parsed out of the string, so their spans point at
-        // text that no longer exists once the call is spliced into the program.
-        rebase_spans(&mut call, span);
-        Some(ExprKind::Call(call))
     }
+    // The expression was parsed out of the string, so its spans point at text
+    // that no longer exists once it is spliced into the program.
+    let mut expr = expr.clone();
+    rebase_expr(&mut expr, span);
+    Some(expr)
+}
+
+/// True for the operators whose left operand is a target, i.e. the ones that
+/// only make sense as a statement.
+fn is_assign(op: &BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::Assign
+            | BinaryOp::PlusAssign
+            | BinaryOp::MinusAssign
+            | BinaryOp::StarAssign
+            | BinaryOp::SlashAssign
+            | BinaryOp::CaretAssign
+            | BinaryOp::AmpAssign
+    )
 }
 
 /// Point every span inside `call` at `span`.

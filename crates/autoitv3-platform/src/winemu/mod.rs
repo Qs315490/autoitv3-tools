@@ -453,10 +453,15 @@ impl WindowsEmulation {
         match result {
             Some(value) => {
                 ctx.set_error(0, 0);
-                value
+                // AutoIt's `DllCall` returns an **array**: element 0 is the
+                // function's return value and the rest are the `type*`
+                // parameters it wrote back. Scripts index it
+                // (`If Not $r[0] Then ...`), so returning a scalar breaks them.
+                Value::array(vec![value])
             }
             // Not emulated: hand control back to the script's error handling
-            // rather than inventing a result.
+            // rather than inventing a result. AutoIt returns 0 (not an array)
+            // when a call fails, and scripts test `@error` first.
             None => {
                 ctx.set_error(1, 0);
                 Value::Int(0)

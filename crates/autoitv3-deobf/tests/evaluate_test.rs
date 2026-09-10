@@ -140,6 +140,27 @@ EndFunc
 }
 
 #[test]
+fn map_reads_with_an_integer_subscript_are_inlined() {
+    // AutoIt map keys are strings, so `$m[0x2]` looks up the key `"2"` — and
+    // that is exactly how the obfuscator indexes its string table.
+    let src = r#"
+Global $m = Build()
+Func Build()
+    Local $m = Map()
+    $m[1] = "one"
+    $m[2] = "two"
+    Return $m
+EndFunc
+Func F()
+    Return $m[0x2]
+EndFunc
+"#;
+    let (out, report) = run(src);
+    assert_eq!(report.substitutions, 1, "{out}");
+    assert!(out.contains("\"two\""), "map read not inlined: {out}");
+}
+
+#[test]
 fn assignment_targets_are_never_replaced() {
     // `$table[1] = x` must stay an assignment; replacing the left side would
     // produce `"alpha" = x`.

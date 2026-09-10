@@ -237,7 +237,7 @@ fn getversionexw_fills_the_struct_from_the_selected_version() {
         r#"Local $t = DllStructCreate("{def}")
     DllStructSetData($t, "OSVersionInfoSize", DllStructGetSize($t))
     Local $ret = DllCall("kernel32.dll", "int", "GetVersionExW", "ptr", $t)
-    Return $ret & "|" & DllStructGetData($t, "MajorVersion") & "." & _
+    Return $ret[0] & "|" & DllStructGetData($t, "MajorVersion") & "." & _
         DllStructGetData($t, "MinorVersion") & "." & DllStructGetData($t, "BuildNumber") & _
         "|" & DllStructGetData($t, "PlatformId") & "|" & DllStructGetData($t, "CSDVersion")"#,
         def = VERSION_STRUCT
@@ -254,12 +254,25 @@ fn getversionexw_fills_the_struct_from_the_selected_version() {
 }
 
 #[test]
+fn dllcall_returns_an_array_like_autio() {
+    // AutoIt returns `[return value, byref args...]`; scripts index it
+    // (`Local $r = DllCall(...)` / `If Not $r[0] Then ...`).
+    let body = r#"Local $r = DllCall("kernel32.dll", "dword", "GetVersion")
+    Return IsArray($r) & "|" & UBound($r) & "|" & $r[0]"#;
+    let expected = format!(
+        "True|1|{}",
+        WindowsVersion::Win10.packed_get_version()
+    );
+    assert_eq!(text(win10(), body), expected);
+}
+
+#[test]
 fn rtlgetversion_and_getversion_agree_with_the_version() {
     let body = format!(
         r#"Local $t = DllStructCreate("{def}")
     DllCall("ntdll.dll", "long", "RtlGetVersion", "ptr", $t)
-    Return DllStructGetData($t, "BuildNumber") & "|" & _
-        DllCall("kernel32.dll", "dword", "GetVersion")"#,
+    Local $gv = DllCall("kernel32.dll", "dword", "GetVersion")
+    Return DllStructGetData($t, "BuildNumber") & "|" & $gv[0]"#,
         def = VERSION_STRUCT
     );
     // `GetVersion` packs major | minor << 8 | build << 16.
