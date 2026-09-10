@@ -495,6 +495,12 @@ impl Analyzer {
                     self.expr(a, func);
                 }
             }
+            ExprKind::Subscript(base, indices) => {
+                self.expr(base, func);
+                for i in indices {
+                    self.expr(i, func);
+                }
+            }
             ExprKind::Member(recv, _) => self.expr(recv, func),
             ExprKind::MethodCall(recv, _, args) => {
                 self.expr(recv, func);
@@ -735,7 +741,16 @@ impl RenameCtx {
                 self.visit_expr(&mut w.expr, func);
                 self.visit_stmts(&mut w.body, func);
             }
-            StmtKind::Directive(_) => {}
+            StmtKind::Directive(name) => {
+                // `#forceref $a, $b` exists only to mark variables as used, but
+                // the names in it are real references: leaving them behind
+                // would point at a variable that no longer exists.
+                if let Some(rewritten) =
+                    rewrite_forceref(name, |v| self.var_alias(func, v))
+                {
+                    *name = rewritten;
+                }
+            }
             StmtKind::Return(None) | StmtKind::Exit(None) | StmtKind::ExitLoop(None)
             | StmtKind::ContinueLoop(None) => {}
         }
@@ -778,6 +793,12 @@ impl RenameCtx {
                     self.visit_expr(a, func);
                 }
             }
+            ExprKind::Subscript(base, indices) => {
+                self.visit_expr(base, func);
+                for i in indices {
+                    self.visit_expr(i, func);
+                }
+            }
             ExprKind::Unary(_, a) => self.visit_expr(a, func),
             ExprKind::Binary(_, a, b) => {
                 self.visit_expr(a, func);
@@ -805,5 +826,59 @@ impl RenameCtx {
             }
             ExprKind::WithSubject => {}
         }
+    }
+}
+
+/// Rewrite the `$variables` inside a `#forceref` directive body, leaving the
+/// keyword and the punctuation exactly as written. `None` for any other
+/// directive, which carries no references to rename.
+fn rewrite_forceref<F>(text: &str, mut alias: F) -> Option<String>
+where
+    F: FnMut(&str) -> String,
+{
+    let bytes = text.as_bytes();
+    let keyword_end = bytes
+        .iter()
+        .position(|b| b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    if !text[..keyword_end].eq_ignore_ascii_case("forceref") {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..keyword_end]);
+    let mut i = keyword_end;
+    while i < bytes.len() {
+        let start = i;
+        if bytes[i] == b'$' {
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if i > start + 1 {
+                out.push_str(&alias(&text[start..i]));
+                continue;
+            }
+        }
+        while i < bytes.len() && bytes[i] != b'$' {
+            i += 1;
+        }
+        out.push_str(&text[start..i]);
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod forceref_tests {
+    use super::rewrite_forceref;
+
+    #[test]
+    fn only_forceref_is_rewritten() {
+        assert!(rewrite_forceref("noinline", |v| v.to_string()).is_none());
+    }
+
+    #[test]
+    fn a_forceref_list_keeps_its_shape() {
+        let out = rewrite_forceref("forceref $unused, $other", |v| format!("<{v}>"));
+        assert_eq!(out.as_deref(), Some("forceref <$unused>, <$other>"));
     }
 }

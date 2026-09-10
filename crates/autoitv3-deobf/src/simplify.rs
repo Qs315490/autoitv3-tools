@@ -238,6 +238,12 @@ impl Simplify {
                     self.expr(a);
                 }
             }
+            ExprKind::Subscript(base, indices) => {
+                self.expr(base);
+                for i in indices {
+                    self.expr(i);
+                }
+            }
             ExprKind::Member(recv, _) => self.expr(recv),
             ExprKind::MethodCall(recv, _, args) => {
                 self.expr(recv);
@@ -399,6 +405,12 @@ fn rebase_expr(e: &mut Expr, span: Span) {
             }
             for a in args {
                 rebase_expr(a, span);
+            }
+        }
+        ExprKind::Subscript(base, indices) => {
+            rebase_expr(base, span);
+            for i in indices {
+                rebase_expr(i, span);
             }
         }
         ExprKind::Binary(_, a, b) => {

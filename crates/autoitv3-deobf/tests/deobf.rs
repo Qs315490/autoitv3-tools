@@ -500,3 +500,35 @@ fn deobfuscated_output_reparses() {
     // Deobfuscated text must remain valid AutoIt (re-parses).
     assert!(parse(&out).is_ok(), "output did not re-parse: {out}");
 }
+// ---------------------------------------------------------------------------
+// `#forceref` and subscripts on call results
+// ---------------------------------------------------------------------------
+
+#[test]
+fn forceref_variables_are_renamed_with_everything_else() {
+    // `#forceref $p` names a real variable; leaving it behind would point at a
+    // parameter that no longer exists.
+    let out = run("Func Fzz($p, $q)\n    #forceref $q\n    Return $p\nEndFunc\n");
+    let line = out
+        .lines()
+        .find(|l| l.contains("#forceref"))
+        .expect("the directive survives");
+    let param = out
+        .lines()
+        .find(|l| l.starts_with("Func"))
+        .and_then(|l| l.split(',').nth(1))
+        .map(|s| s.trim().trim_end_matches(')'))
+        .expect("second parameter");
+    assert_eq!(line.trim(), format!("#forceref {param}"));
+}
+
+#[test]
+fn a_subscript_on_a_call_result_keeps_its_arguments_inlined() {
+    // The reformatting must not split `DllCall(...)[0]` into two statements,
+    // and the table lookups inside the call still have to be substituted.
+    let src = "Global Const $T = MakeTable()\nFunc Fzz()\n    Return $T[0](\"shlwapi.dll\", \"int\", \"StrCmpLogicalW\")[0]\nEndFunc\n";
+    let out = run(src);
+    assert!(!out.contains("\n    [0]"), "subscript split off:\n{out}");
+    assert!(out.contains(")[0]"), "subscript lost:\n{out}");
+    assert!(parse(&out).is_ok(), "output did not re-parse: {out}");
+}

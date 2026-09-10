@@ -678,6 +678,10 @@ impl Runtime {
                 }
                 self.call_value(&callee, argv, e.span)
             }
+            ExprKind::Subscript(base, indices) => {
+                let base = self.eval_expr(base)?;
+                self.index_value(base, indices, e.span)
+            }
             ExprKind::Unary(op, a) => {
                 let v = self.eval_expr(a)?;
                 Ok(match op {

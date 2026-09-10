@@ -970,18 +970,45 @@ impl Parser {
                 self.bump();
                 let idx = self.parse_expr()?;
                 self.expect(&RBracket, "]")?;
-                // Fold into VarExpr if it is a variable, else wrap in a
-                // synthetic indexing expression (rare for non-vars).
+                // Subscripts on a variable live on the `VarExpr`; anything else
+                // (`DllCall(...)[0]`, `$obj.Items[1]`) gets a `Subscript` node
+                // so the base is still evaluated. Chained `[a][b]` accumulates.
                 if let ExprKind::Var(v) = &mut e.kind {
                     v.indices.push(idx);
+                    e.span = e.span.merge(self.prev_span());
+                } else if let ExprKind::Subscript(_, indices) = &mut e.kind {
+                    indices.push(idx);
                     e.span = e.span.merge(self.prev_span());
                 } else {
                     let span = e.span.merge(self.prev_span());
                     e = Expr {
-                        kind: ExprKind::Binary(BinaryOp::Concat, Box::new(e), Box::new(idx)),
+                        kind: ExprKind::Subscript(Box::new(e), vec![idx]),
                         span,
                     };
                 }
+            } else if self.at(&LParen) {
+                // User-defined array call: `$arr[0](...)` returns a function
+                // reference that is then invoked. The brackets and the call
+                // form one chain, so `$arr[0](...)[1]` keeps working.
+                let ExprKind::Var(base) = e.kind.clone() else {
+                    return Err(self.err_here("cannot call non-variable expression"));
+                };
+                self.bump();
+                let mut args = Vec::new();
+                if !self.at(&RParen) {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if self.eat(&Comma).is_none() {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&RParen, ")")?;
+                let span = Span::new(base.name.span.start, self.prev_span().end);
+                e = Expr {
+                    kind: ExprKind::IndexCall(base, args),
+                    span,
+                };
             } else {
                 break;
             }
@@ -990,32 +1017,6 @@ impl Parser {
         // A `.` with nothing after it is not a valid expression.
         if matches!(e.kind, ExprKind::WithSubject) {
             return Err(self.err_here("expected a member name after '.'"));
-        }
-        // User-defined array call: `$arr[0](...)` returns a function ref
-        // that is then invoked. Represent as `IndexCall`.
-        if self.at(&LParen) {
-            let base = match e.kind {
-                ExprKind::Var(v) => v,
-                _ => {
-                    return Err(self.err_here("cannot call non-variable expression"));
-                }
-            };
-            self.bump();
-            let mut args = Vec::new();
-            if !self.at(&RParen) {
-                loop {
-                    args.push(self.parse_expr()?);
-                    if self.eat(&Comma).is_none() {
-                        break;
-                    }
-                }
-            }
-            self.expect(&RParen, ")")?;
-            let span = Span::new(base.name.span.start, self.prev_span().end);
-            return Ok(Expr {
-                kind: ExprKind::IndexCall(base, args),
-                span,
-            });
         }
         Ok(e)
     }
