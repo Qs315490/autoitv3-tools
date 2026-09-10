@@ -347,7 +347,27 @@ impl SubstituteCtx<'_> {
                     }
                     a[*i as usize].clone()
                 }
-                (Value::Map(m), LitKind::Str(s)) => m.borrow().get(s).cloned()?,
+                // AutoIt coerces the subscript, so `$a["2"]` is `$a[2]`.
+                (Value::Array(a), LitKind::Str(s)) => {
+                    let i = Value::Str(s.clone()).to_int();
+                    let a = a.borrow();
+                    if i < 0 || i as usize >= a.len() {
+                        return None;
+                    }
+                    a[i as usize].clone()
+                }
+                // Map keys are strings, so the obfuscator's `$table[0x75]` is the
+                // key `"117"` — the same coercion the interpreter applies.
+                (Value::Map(m), other) => {
+                    let key_value = match other {
+                        LitKind::Str(s) => Value::Str(s.clone()),
+                        LitKind::Int(i) => Value::Int(*i),
+                        LitKind::Float(f) => Value::Float(*f),
+                        LitKind::Bool(b) => Value::Bool(*b),
+                        LitKind::Null | LitKind::Default => return None,
+                    };
+                    m.borrow().get(&key_value.to_autoit_string()).cloned()?
+                }
                 _ => return None,
             };
         }

@@ -232,7 +232,10 @@ impl ResolveCtx {
     fn rewrite_expr(&mut self, e: &mut Expr, tv: &str) {
         match &mut e.kind {
             ExprKind::Var(v) => {
-                if v.name.name == tv && v.indices.len() == 1 {
+                // AutoIt variable names are case-insensitive, and the
+                // obfuscator is inconsistent about it: the table is `$fn_table`
+                // in code but `$FN_TABLE` inside the `Execute` strings.
+                if v.name.name.eq_ignore_ascii_case(tv) && v.indices.len() == 1 {
                     // `$tv[expr]` where expr is a constant index -> Ident(name).
                     let idx = match &v.indices[0].kind {
                         ExprKind::Lit(Lit { kind: LitKind::Int(n), .. }) => Some(*n),
@@ -255,7 +258,7 @@ impl ResolveCtx {
                 }
             }
             ExprKind::IndexCall(v, args) => {
-                if v.name.name == tv && v.indices.len() == 1 {
+                if v.name.name.eq_ignore_ascii_case(tv) && v.indices.len() == 1 {
                     let idx = match &v.indices[0].kind {
                         ExprKind::Lit(Lit { kind: LitKind::Int(n), .. }) => Some(*n),
                         _ => None,

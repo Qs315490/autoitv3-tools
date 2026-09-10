@@ -337,7 +337,7 @@ fn simplify_can_run_without_renaming() {
 }
 
 #[test]
-fn simplify_leaves_computed_and_unknown_targets_alone() {
+fn simplify_leaves_computed_targets_and_statements_alone() {
     let src = concat!(
         "Func Foo()\n",
         "    Return 1\n",
@@ -346,10 +346,9 @@ fn simplify_leaves_computed_and_unknown_targets_alone() {
         "    Local $name = \"Foo\"\n",
         "    Local $a = Call($name)\n",
         "    Local $b = Call(\"MsgBox\", 0, \"built-in\")\n",
-        "    Local $c = Execute(\"Nope()\")\n",
         "    Local $d = Execute(\"$x = 1\")\n",
-        "    Local $e = Execute(\"Foo() & Bar()\")\n",
-        "    Return $a + $b + $c + $d + $e\n",
+        "    Local $e = Execute(\"$x = 1 : $y = 2\")\n",
+        "    Return $a + $b + $d + $e\n",
         "EndFunc\n",
         "Main()\n",
     );
@@ -362,9 +361,97 @@ fn simplify_leaves_computed_and_unknown_targets_alone() {
     assert!(out.contains("Func f000"), "{out}");
     assert!(out.contains("Call($l_str_000)"), "{out}");
     assert!(out.contains("Call(\"MsgBox\", 0, \"built-in\")"), "{out}");
-    assert!(out.contains("Execute(\"Nope()\")"), "{out}");
+    // Assignments cannot move into expression position: AutoIt has no
+    // assignment expression, so `=` would re-parse as a comparison.
     assert!(out.contains("Execute(\"$x = 1\")"), "{out}");
-    assert!(out.contains("Execute(\"Foo() & Bar()\")"), "{out}");
+    assert!(out.contains("Execute(\"$x = 1 : $y = 2\")"), "{out}");
+}
+
+#[test]
+fn simplify_inlines_any_single_expression_from_execute() {
+    // `Execute` is not limited to a lone call: the obfuscator puts whole
+    // expressions in the string, and any of them can simply be written out.
+    let src = concat!(
+        "Func Foo()\n",
+        "    Return 1\n",
+        "EndFunc\n",
+        "Func Bar()\n",
+        "    Return 2\n",
+        "EndFunc\n",
+        "Func Main()\n",
+        "    Local $n = Execute(\"Foo() & Bar()\")\n",
+        "    ConsoleWrite(Execute(\"StringLen('x')\"))\n",
+        "    Local $m = Execute(\"Nope()\")\n",
+        "    Return $n + $m\n",
+        "EndFunc\n",
+        "Main()\n",
+    );
+    let mut prog = parse(src).unwrap();
+    let report = deobfuscate(&mut prog);
+    assert_eq!(report.simplified.executes, 3);
+    let out = pretty(&prog);
+    assert!(!out.contains("Execute("), "{out}");
+    assert!(out.contains("f000() & f001()"), "{out}");
+    // An undefined name is spliced as written; the error, if any, is the same.
+    assert!(out.contains("Nope()"), "{out}");
+}
+
+#[test]
+fn execute_splices_the_expression_as_written() {
+    // `Execute("<expr>")` becomes exactly that expression. A bare function name
+    // is a *reference* in this interpreter, so it stays one — no `()` is
+    // invented for it.
+    let src = "Func Bar()\n    Return 42\nEndFunc\nFunc F()\n    Return Execute(\"Bar\")\nEndFunc\n";
+    let mut prog = parse(src).unwrap();
+    let report = deobfuscate(&mut prog);
+    assert_eq!(report.simplified.executes, 1);
+    let out = pretty(&prog);
+    assert!(!out.contains("Execute("), "{out}");
+    assert!(out.contains("Return f000"), "{out}");
+}
+
+#[test]
+fn execute_strings_reach_the_function_table_after_the_splice() {
+    // The reference sample calls through its table from inside a string, and
+    // spells the table name in upper case there:
+    //   Execute("$FN_TABLE[1]($name_table[1])")
+    // The splice has to happen *before* the table pass for this to resolve, and
+    // the table match has to be case-insensitive like AutoIt's variables.
+    let src = concat!(
+        "Func MergeArrays(ByRef $t, Const ByRef $s)\n",
+        "    ReDim $t[$t[0] + $s[0] + 1]\n",
+        "    Local $i\n",
+        "    For $i = 1 To $s[0]\n",
+        "        $t[$t[0] + $i] = $s[$i]\n",
+        "    Next\n",
+        "    $t[0] += $s[0]\n",
+        "EndFunc\n",
+        "Func Foo($v)\n",
+        "    Return $v\n",
+        "EndFunc\n",
+        "Func BuildFunctionTable()\n",
+        "    Local $x[] = [0x1, Foo]\n",
+        "    Return $x\n",
+        "EndFunc\n",
+        "Global Const $fn_table = BuildFunctionTable()\n",
+        "Global Const $name_table = [1, \"hello\"]\n",
+        "Func Main()\n",
+        "    Return Execute(\"$FN_TABLE[1]($name_table[1])\")\n",
+        "EndFunc\n",
+        "Main()\n",
+    );
+    let mut prog = parse(src).unwrap();
+    let report = deobfuscate(&mut prog);
+    assert_eq!(report.simplified.executes, 1);
+    assert_eq!(report.table.calls, 1);
+    let out = pretty(&prog);
+    assert!(!out.contains("Execute("), "{out}");
+    // The table entry became the real (renamed) function, and the string-table
+    // variable was renamed together with its definition.
+    assert!(out.contains("Func f001("), "{out}");
+    assert!(out.contains("Return f001($g_arr_001[1])"), "{out}");
+    assert!(!out.contains("$FN_TABLE"), "{out}");
+    assert!(!out.contains("$name_table"), "{out}");
 }
 
 #[test]

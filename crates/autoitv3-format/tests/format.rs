@@ -1,6 +1,6 @@
 //! Unit tests for the autoitv3-format pretty-printer crate.
 
-use autoitv3_ast::ast::ItemKind;
+use autoitv3_ast::ast::{ItemKind, StmtKind};
 use autoitv3_ast::parse;
 use autoitv3_format::PrettyPrinter;
 
@@ -63,6 +63,41 @@ fn functions_without_parameters_keep_their_parentheses() {
     // The bare form must not survive anywhere.
     assert!(!out.contains("Func NoArgs\n"), "out: {out}");
     assert!(!out.contains("Func AlsoNone\n"), "out: {out}");
+}
+
+#[test]
+fn else_branches_keep_their_keyword() {
+    // Without the `Else` keyword the else body is printed inside the `Then`
+    // branch: the output still re-parses, it just means something else.
+    let src = concat!(
+        "If $a Then\n",
+        "    $x = 1\n",
+        "ElseIf $b Then\n",
+        "    $x = 2\n",
+        "Else\n",
+        "    $x = 3\n",
+        "EndIf\n",
+    );
+    let prog = parse(src).unwrap();
+    let mut pp = PrettyPrinter::new();
+    let out = pp.print_program(&prog);
+
+    assert!(out.contains("ElseIf $b Then"), "out: {out}");
+    assert!(out.contains("Else\n"), "out: {out}");
+
+    // The re-parsed tree must still have one `ElseIf` and one `Else`, each
+    // with its own body.
+    let reparsed = parse(&out).unwrap();
+    let ItemKind::Stmt(stmt) = &reparsed.items[0].kind else {
+        panic!("expected a statement, got: {out}");
+    };
+    let StmtKind::If(if_) = &stmt.kind else {
+        panic!("expected an If, got: {out}");
+    };
+    assert_eq!(if_.then_block.len(), 1, "out: {out}");
+    assert_eq!(if_.else_ifs.len(), 1, "out: {out}");
+    assert_eq!(if_.else_ifs[0].1.len(), 1, "out: {out}");
+    assert_eq!(if_.else_block.len(), 1, "out: {out}");
 }
 
 #[test]
