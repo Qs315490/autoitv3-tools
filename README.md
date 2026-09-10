@@ -29,13 +29,13 @@ autoitv3-tools/
     autoitv3-runtime/        # 库 crate——AutoIt v3 运行时（值模型 + 解释器 + 扩展接口）
       src/
         value.rs      运行时值模型（Int/Float/Str/Array/Map/Binary/FuncRef）与 AutoIt 强制转换规则
-        interp.rs     Runtime 解释器：加载程序、调用函数、求值表达式、执行语句
+        interp.rs     Runtime 解释器：加载程序、调用函数、求值表达式、执行语句、停机交还控制权
         builtins.rs   已实现的内置函数子集（字符串/数值/位运算/数组/Map/Execute/Call...）
         host.rs       Host trait——嵌入方接入原生函数的接口（优先级高于平台层）
         platform/     Platform trait（仅接口；实现见 autoitv3-platform）
         profile.rs    执行配置：忠实语义 vs 确定性分析语义（见下文「执行配置」）
         regexp.rs     StringRegExp* ——基于纯 Rust regex 引擎，平台无关
-        debug.rs      Debugger trait / Breakpoint / FrameInfo——后续 debug 模块的接口
+        debug.rs      Debugger / DebugHost / Breakpoint / FrameInfo——调试接口（`au3 debug` 的实现端）
         error.rs      RuntimeError 与控制流信号 Flow
         lib.rs        公共 API
       tests/
@@ -90,6 +90,9 @@ autoitv3-tools/
           deobfuscate.rs au3 deobfuscate（DeobfuscateArgs + run，含 --evaluate）
           evaluate.rs   au3 evaluate（EvaluateArgs + run）
           run.rs        au3 run（RunArgs + run，含 --trace 用的 Debugger 示例实现）
+          debug.rs      au3 debug（DebugArgs + 交互式 shell：命令解析、步进策略、提示符）
+      tests/
+        debug.rs     端到端驱动真实二进制：断点/单步/条件/求值/重启/stdin（13 项）
 ```
 
 ### autoitv3-runtime 的定位
@@ -105,9 +108,10 @@ autoitv3-tools/
    `Select`/`Switch`、递归与步数护栏。
 2. **完整运行时的接口**（`host.rs`）——`Host` / `HostContext` / `NativeHost`：
    把 Win32、COM、GUI、DllCall 等原生能力注册进来，解释器核心不依赖任何平台。
-3. **后续 debug 模块的接口**（`debug.rs`）——`Debugger`（每条语句回调、可返回
-   `Continue`/`Pause`/`Abort`）、`Breakpoint`/`Breakpoints`、`FrameInfo` 调用栈快照、
-   `StopReason`。解释器每执行一条语句都会调用该接口，因此交互式调试器、DAP 服务端
+3. **调试接口**（`debug.rs`）——`Debugger`（每条语句回调，可返回
+   `Continue`/`Pause`/`Abort`；停顿时 `on_stop` 拿到活的 `DebugHost`）、
+   `Breakpoint`/`Breakpoints`（含条件）、`FrameInfo` 调用栈快照、`StopReason`。
+   解释器每执行一条语句都会调用该接口，因此交互式调试器（`au3 debug`）、DAP 服务端
    或自动化 tracer 都能直接接上。
 
 ## 反混淆现状
@@ -289,8 +293,16 @@ au3 evaluate some.au3 --no-win-emu        # 关掉仿真，停在第一个 Windo
 # run：用解释器调用函数（--arg 传参，--init 先执行脚本体以建立全局表）
 au3 run Add --arg 2 --arg 3 some.au3
 au3 run BuildFunctionTable --init some.au3
-# --trace 打印解释器执行的语句流（演示 debug 接口）
+# --trace 打印解释器执行的语句流
 au3 run SomeFunc --trace some.au3
+
+# debug：加载脚本并进入交互式调试 shell（断点/单步/查看/求值）
+au3 debug some.au3
+au3 debug some.au3 -c "break 68" -c run -c "print $string_table[0x4ea]" -c quit
+echo 'break 68
+run
+backtrace
+quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符）
 ```
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
@@ -310,6 +322,7 @@ au3 run SomeFunc --trace some.au3
 | `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值；`--no-rename` 跳过重命名；`--win-version` 等选仿真版本） |
 | `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
 | `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数（同样接受 `--win-*` 开关） |
+| `debug <FILE> [-c CMD]…` | `dbg` | 交互式调试 shell：断点、单步、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
 **缩写**：只要前缀无歧义即可使用，例如 `au3 deob`、`au3 pars`、`au3 pret`。
@@ -325,7 +338,7 @@ au3 run SomeFunc --trace some.au3
 
 ```bash
 # 运行库的单元测试
-cargo test                     # 全部（236 项，含 doctest）
+cargo test                     # 全部（276 项，含 doctest）
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
 cargo test -p autoitv3-platform
@@ -359,10 +372,10 @@ let out = pp.print_program(&prog);    // 反混淆/规范化输出
   `With/EndWith`、`Return/Exit/ExitLoop/ContinueLoop`、`#forceref` 等函数内指令
 - 声明：`Local/Global/Dim/Static/Const/ReDim`，多个作用域关键字叠加（如 `Static Local`，`Static` 优先级最高）
 
-## 设计说明（面向后续断点调试）
+## 设计说明（面向断点调试）
 
 - 每个 `Stmt`、`Expr`、`Item` 都带 `Span { start: Pos, end: Pos }`，调试器可按行/列命中源码行。
-- `Stmt` 是一个可执行的单元节点，未来解释器/调试器只需遍历语句并在命中断点位置暂停。
+- `Stmt` 是可执行的单元节点，解释器在每条语句前把 span 交给调试器（见下节 `au3 debug`）。
 - 解析器与打印器分离：反混淆时可先打印出规范化文本，再对其做常量替换等变换。
 
 ## 运行时求值（`au3 evaluate`）
@@ -416,6 +429,69 @@ script body did not finish: undefined function: DLLSTRUCTCREATE (at 42:1)
 跑完的规模：能在本机求出的表都内联了（globals、名字表、字符串表），`deobfuscated`
 阶段没有留下未解析的表引用。脚本体停在 `GUICreate`：GUI 不在仿真范围内，
 但**在那之前求出的表都已经内联**（--evaluate 的设计即如此）。
+
+## 交互式调试（`au3 debug`）
+
+`au3 debug <FILE>` 加载脚本后**不立即运行**，进入一个 gdb/pdb 风格的 shell：`run` 启动
+（再敲一次就是重启），断点与单步处停下，停下时可以查看调用栈、当前帧的局部变量、
+全局变量，以及直接在**当前帧**里求值。
+
+```text
+$ au3 debug a.au3
+(au3) break 69
+Breakpoint 1 at line 69
+(au3) run
+Breakpoint 1, line 69
+    69  $fn_table[0x439]($string_table[0x784], $string_table[0xa9a])
+(au3:69:1) print $name_table[169]
+"DataPswAlgo1"
+(au3:69:1) next
+(au3:69:1) info breakpoints
+  1  line 69     enabled=y  hits=1
+```
+
+| 命令 | 说明 |
+| ---- | ---- |
+| `run` / `restart` | 启动脚本体；在断点处再敲一次 = 从头再来（断点保留） |
+| `continue` / `c` | 继续到下一个断点 |
+| `step` / `s` | 单步，进入函数调用 |
+| `next` / `n` | 单步，不进入调用（停在同层或更浅的语句） |
+| `finish` / `fin` | 跑到当前函数返回 |
+| `until <line>` | 跑到某一行 |
+| `break <line> [if <expr>]` / `b` | 断点，可带条件 |
+| `delete [id]` / `enable` / `disable` | 增删与开关断点 |
+| `print <expr>` / `p` | 在当前帧求值（`p $string_table[0x4ea]`、`p Add(1,2)`） |
+| `set $x = <expr>` | 在当前帧赋值，**会真的改到正在跑的程序** |
+| `info breakpoints\|locals\|globals\|functions` | 查看断点/局部/全局/函数 |
+| `backtrace` / `bt` / `where` | 调用栈（`#0` 为最内层） |
+| `list [line]` / `l` | 看停点附近的源码，`=>` 标出当前行 |
+| `trace on\|off` | 打开后逐条打印执行的语句 |
+| `quit` / `q` | 退出 |
+
+### 停止是怎么实现的
+
+`Debugger::on_stop` 是**从解释器内部**被调用的 —— Rust 栈还活着，提示符就跑在那里，
+用户敲 `continue` 之后它才返回、解释器才继续。因此不需要把解释器改写成状态机或协程：
+栈帧、局部变量、求值上下文全都是现成的。单步是 shell 自己的记账（`StepMode`），
+解释器只负责"每条语句前问一次"，不做任何步进语义建模。
+
+调试器在回调期间被 `take()` 出字段，因此它能拿到 `&mut Runtime`（`DebugHost`）来读帧、
+求值和改断点；同一时刻 `in_debugger` 置位，保证 `print` 引起的嵌套执行不会递归进调试器。
+shell 侧的句柄用 `try_borrow_mut`，所以"命令正在执行时又被递语句"这种情况会被安静地
+当成 `Continue`。
+
+### 两个容易踩的语义细节
+
+- **断点条件按表达式解析**。AutoIt 里 `$i = 5` 单独成句是**赋值**，出现在表达式位置才是
+  **比较**；条件若被当成语句，既会误触发又会改坏被调试的程序。因此条件一律走
+  `Runtime::evaluate_expression`（借 `Return` 强制表达式语法），`$i = 5` 是比较。
+- **`print` 同理**：`print $i = 3` 是比较，赋值请用 `set`。
+
+### 与 `-c` / stdin 的关系
+
+命令来自**同一个队列**：先是所有 `-c` 参数，然后是 stdin。外层循环与断点处的提示符都从
+这个队列取，所以 `-c run -c next -c 'print $x' -c quit` 的含义和字面一致 —— `run` 停下后，
+剩下的命令由提示符消费。stdin 是管道时不画提示符，方便脚本化。
 
 ## 语法覆盖
 

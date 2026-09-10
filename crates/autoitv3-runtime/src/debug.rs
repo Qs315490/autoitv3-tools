@@ -1,16 +1,30 @@
-//! Debug interfaces — the seam a future debugger plugs into.
+//! Debug interfaces — the seam a debugger plugs into.
 //!
 //! The interpreter is built to be *instrumentable*: every `Stmt` carries a
 //! `Span`, and [`crate::Runtime`] exposes structured call frames plus an
 //! expression evaluator that works inside any frame. A debugger therefore only
 //! needs to implement [`Debugger`] and register it.
 //!
-//! Nothing here performs I/O or blocks: the debugger decides what to do and
-//! returns a [`DebugAction`], so the same interface serves an interactive
-//! console, a DAP server, or an automated tracer.
+//! Nothing here performs I/O: the debugger decides what to do and returns a
+//! [`DebugAction`], so the same interface serves an interactive console, a DAP
+//! server, or an automated tracer. When the debugger *does* want to look at the
+//! program it is handed a [`DebugHost`] — the live interpreter — so it can read
+//! frames, evaluate expressions and edit breakpoints at the stop point.
+//!
+//! ## The shape of a stop
+//!
+//! The interpreter calls [`Debugger::on_statement`] before every statement,
+//! whether or not anything is stopped, and the debugger answers with a
+//! [`DebugAction`]. Answering [`DebugAction::Pause`] is what stops: the
+//! interpreter then calls [`Debugger::on_stop`] *on the spot*, with the whole
+//! Rust stack still live, and only carries on once that call returns. Stepping
+//! is therefore the debugger's own bookkeeping — it remembers "stop at the next
+//! statement" or "stop once we leave this frame" and picks the moment to say
+//! `Pause` — rather than something the interpreter has to model.
 
 use autoitv3_ast::span::Span;
 
+use crate::error::RuntimeError;
 use crate::value::Value;
 
 /// A breakpoint, identified by source position.
@@ -64,10 +78,23 @@ impl Breakpoints {
 
     /// Add an enabled breakpoint on `line`, returning its id.
     pub fn add_line(&mut self, line: u32) -> u32 {
+        self.add(line, None)
+    }
+
+    /// Add an enabled breakpoint on `line`, optionally guarded by an AutoIt
+    /// expression that must evaluate to a true value for it to fire.
+    pub fn add(&mut self, line: u32, condition: Option<String>) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.items.push(Breakpoint::at_line(id, line));
+        let mut bp = Breakpoint::at_line(id, line);
+        bp.condition = condition;
+        self.items.push(bp);
         id
+    }
+
+    /// Look up a breakpoint by id.
+    pub fn get(&self, id: u32) -> Option<&Breakpoint> {
+        self.items.iter().find(|b| b.id == id)
     }
 
     /// Remove a breakpoint by id. Returns whether it existed.
@@ -93,16 +120,27 @@ impl Breakpoints {
         &self.items
     }
 
+    /// The first enabled breakpoint on `span`, without counting a hit.
+    ///
+    /// The interpreter asks this first so it can evaluate the breakpoint's
+    /// condition; only a breakpoint that actually fires is counted.
+    pub fn matching(&self, span: Span) -> Option<&Breakpoint> {
+        self.items.iter().find(|b| b.matches(span))
+    }
+
+    /// Count one hit for the breakpoint with this id.
+    pub fn record_hit(&mut self, id: u32) {
+        if let Some(b) = self.items.iter_mut().find(|b| b.id == id) {
+            b.hits += 1;
+        }
+    }
+
     /// The first enabled breakpoint matching `span`, if any. Increments its
     /// hit counter.
-    pub fn hit(&mut self, span: Span) -> Option<&Breakpoint> {
-        if let Some(b) = self.items.iter_mut().find(|b| b.matches(span)) {
-            b.hits += 1;
-            // Re-borrow immutably for the return value.
-            let id = b.id;
-            return self.items.iter().find(|b| b.id == id);
-        }
-        None
+    pub fn hit(&mut self, span: Span) -> Option<Breakpoint> {
+        let id = self.matching(span)?.id;
+        self.record_hit(id);
+        self.get(id).cloned()
     }
 }
 
@@ -140,8 +178,16 @@ pub struct FrameInfo {
 /// what it needs.
 pub trait Debugger {
     /// Called before a statement executes. Return an action to control flow.
-    fn on_statement(&mut self, span: Span, frame_depth: usize) -> DebugAction {
-        let _ = (span, frame_depth);
+    ///
+    /// This fires for *every* statement, stopped or not: that is what lets a
+    /// debugger implement stepping itself.
+    fn on_statement(
+        &mut self,
+        span: Span,
+        frame_depth: usize,
+        host: &mut dyn DebugHost,
+    ) -> DebugAction {
+        let _ = (span, frame_depth, host);
         DebugAction::Continue
     }
 
@@ -160,10 +206,58 @@ pub trait Debugger {
         let _ = (name, value);
     }
 
-    /// Called when the interpreter stops for any reason.
-    fn on_stop(&mut self, reason: &StopReason) {
-        let _ = reason;
+    /// Called when the interpreter stops.
+    ///
+    /// For [`StopReason::Breakpoint`], [`StopReason::Step`] and
+    /// [`StopReason::Pause`] the interpreter is *suspended here*: the whole
+    /// Rust stack is live, `host` can read and evaluate freely, and execution
+    /// resumes when this returns. [`StopReason::Finished`] and
+    /// [`StopReason::Error`] are end-of-run notifications — an interactive
+    /// debugger should report those rather than prompt.
+    fn on_stop(&mut self, reason: &StopReason, host: &mut dyn DebugHost) {
+        let _ = (reason, host);
     }
+}
+
+/// The live interpreter, as seen by a stopped debugger.
+///
+/// Everything here is a read or an edit of the program *at the stop point*, so
+/// an expression like `$x` resolves exactly as it would in the statement about
+/// to run. Implemented by [`crate::Runtime`]; kept as a trait so a debugger can
+/// be written — and tested — against a stub.
+pub trait DebugHost {
+    /// The call stack, outermost first. The last entry is the frame the
+    /// interpreter is currently executing.
+    fn frames(&self) -> Vec<FrameInfo>;
+
+    /// Every global, sorted by name.
+    fn globals(&self) -> Vec<(String, Value)>;
+
+    /// Every function the program defines, sorted by name.
+    fn function_names(&self) -> Vec<String>;
+
+    /// Evaluate AutoIt source in the current frame. Assignments are allowed and
+    /// take effect on the paused program, which is how `set` works.
+    fn evaluate(&mut self, source: &str) -> Result<Value, RuntimeError>;
+
+    /// Evaluate `source` as an *expression* in the current frame.
+    ///
+    /// Prefer this for anything a user typed as an expression: `$i = 5` is a
+    /// comparison here and an assignment in [`DebugHost::evaluate`], and a
+    /// `print` that quietly assigned would be a nasty surprise.
+    fn evaluate_expression(&mut self, source: &str) -> Result<Value, RuntimeError>;
+
+    /// The current breakpoints.
+    fn breakpoints(&self) -> Vec<Breakpoint>;
+
+    /// Add a breakpoint, optionally with a condition, returning its id.
+    fn add_breakpoint(&mut self, line: u32, condition: Option<String>) -> u32;
+
+    /// Remove a breakpoint by id.
+    fn remove_breakpoint(&mut self, id: u32) -> bool;
+
+    /// Enable or disable a breakpoint by id.
+    fn set_breakpoint_enabled(&mut self, id: u32, enabled: bool) -> bool;
 }
 
 /// What the interpreter should do after a debug callback.
@@ -190,7 +284,7 @@ pub struct TracingDebugger {
 }
 
 impl Debugger for TracingDebugger {
-    fn on_statement(&mut self, span: Span, _depth: usize) -> DebugAction {
+    fn on_statement(&mut self, span: Span, _depth: usize, _host: &mut dyn DebugHost) -> DebugAction {
         self.trace.push(span);
         DebugAction::Continue
     }

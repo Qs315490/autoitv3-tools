@@ -5,11 +5,12 @@
 //! [`Debugger`](autoitv3_runtime::debug::Debugger) to show the statement stream
 //! the future debug module consumes.
 
-use autoitv3_runtime::debug::{DebugAction, Debugger, StopReason};
+use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 use clap::Args;
 
 use crate::args::{load_program, parse_arg_value, CliError, CliResult, WinEmuArgs};
+use crate::output::format_value;
 
 /// Arguments for `au3 run`.
 #[derive(Args, Debug)]
@@ -94,23 +95,6 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
     }
 }
 
-/// Render a runtime value for display, summarising arrays.
-fn format_value(v: &Value) -> String {
-    match v {
-        Value::Array(a) => {
-            let a = a.borrow();
-            let preview: Vec<String> = a
-                .iter()
-                .take(6)
-                .map(|x| format!("{:?}", x.to_autoit_string()))
-                .collect();
-            let more = if a.len() > preview.len() { ", ..." } else { "" };
-            format!("Array[{}] {{{}{}}}", a.len(), preview.join(", "), more)
-        }
-        other => format!("{other:?}"),
-    }
-}
-
 /// A debugger that prints the statement stream to stderr.
 ///
 /// A deliberately thin demonstration of the [`Debugger`] interface: the
@@ -127,7 +111,12 @@ impl TracePrinter {
 }
 
 impl Debugger for TracePrinter {
-    fn on_statement(&mut self, span: autoitv3_ast::span::Span, depth: usize) -> DebugAction {
+    fn on_statement(
+        &mut self,
+        span: autoitv3_ast::span::Span,
+        depth: usize,
+        _host: &mut dyn DebugHost,
+    ) -> DebugAction {
         self.statements += 1;
         // Keep the output usable on a 23k-line script.
         if self.statements <= 40 {
@@ -148,7 +137,7 @@ impl Debugger for TracePrinter {
         }
     }
 
-    fn on_stop(&mut self, reason: &StopReason) {
+    fn on_stop(&mut self, reason: &StopReason, _host: &mut dyn DebugHost) {
         eprintln!("[trace] stop: {reason:?}");
     }
 }

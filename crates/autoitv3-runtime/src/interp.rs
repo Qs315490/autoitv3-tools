@@ -19,7 +19,9 @@ use autoitv3_ast::ast::*;
 use autoitv3_ast::span::Span;
 
 use crate::builtins;
-use crate::debug::{Breakpoints, DebugAction, Debugger, FrameInfo, StopReason};
+use crate::debug::{
+    Breakpoint, Breakpoints, DebugAction, DebugHost, Debugger, FrameInfo, StopReason,
+};
 use crate::error::{Flow, RuntimeError};
 use crate::host::{Host, HostContext};
 use crate::platform::Platform;
@@ -66,6 +68,12 @@ pub struct Runtime {
     max_depth: usize,
     /// Set when a debugger asked to stop, read by [`Runtime::take_pause`].
     paused: Option<StopReason>,
+    /// True while a debugger callback is running.
+    ///
+    /// The callback may evaluate expressions, which re-enters [`Runtime::exec_stmt`];
+    /// without this guard a `print` inside a stop would recurse into the
+    /// debugger for ever.
+    in_debugger: bool,
     /// Set by `Exit [code]`.
     exit_code: Option<i32>,
     /// Functions named by `OnAutoItExitRegister`, in registration order.
@@ -87,6 +95,48 @@ impl Default for Runtime {
     }
 }
 
+impl DebugHost for Runtime {
+    fn frames(&self) -> Vec<FrameInfo> {
+        self.frames_snapshot()
+    }
+
+    fn globals(&self) -> Vec<(String, Value)> {
+        self.globals_snapshot()
+    }
+
+    fn function_names(&self) -> Vec<String> {
+        Runtime::function_names(self)
+    }
+
+    fn evaluate(&mut self, source: &str) -> Result<Value, RuntimeError> {
+        // Evaluate in the frame the interpreter is stopped in, so `$x` means
+        // what it means in the statement about to run.
+        let span = self.frames.last().and_then(|f| f.span).unwrap_or_default();
+        self.execute_source(source, span)
+    }
+
+    fn evaluate_expression(&mut self, source: &str) -> Result<Value, RuntimeError> {
+        let span = self.frames.last().and_then(|f| f.span).unwrap_or_default();
+        Runtime::evaluate_expression(self, source, span)
+    }
+
+    fn breakpoints(&self) -> Vec<Breakpoint> {
+        self.breakpoints.items().to_vec()
+    }
+
+    fn add_breakpoint(&mut self, line: u32, condition: Option<String>) -> u32 {
+        self.breakpoints.add(line, condition)
+    }
+
+    fn remove_breakpoint(&mut self, id: u32) -> bool {
+        self.breakpoints.remove(id)
+    }
+
+    fn set_breakpoint_enabled(&mut self, id: u32, enabled: bool) -> bool {
+        self.breakpoints.set_enabled(id, enabled)
+    }
+}
+
 impl Runtime {
     /// Create a runtime with no program loaded.
     pub fn new() -> Self {
@@ -105,6 +155,7 @@ impl Runtime {
             max_steps: DEFAULT_MAX_STEPS,
             max_depth: DEFAULT_MAX_DEPTH,
             paused: None,
+            in_debugger: false,
             exit_code: None,
             exit_handlers: Vec::new(),
             profile: ExecutionProfile::default(),
@@ -178,11 +229,13 @@ impl Runtime {
                 }
                 Err(e) => {
                     self.script = stmts;
+                    self.notify_stop(StopReason::Error);
                     return Err(e);
                 }
             }
         }
         self.script = stmts;
+        self.notify_stop(StopReason::Finished);
         Ok(flow)
     }
 
@@ -921,35 +974,12 @@ impl Runtime {
     pub fn exec_stmt(&mut self, s: &Stmt) -> Result<Flow, RuntimeError> {
         self.tick()?;
 
-        // Debug hooks: breakpoints, then the debugger's per-statement callback.
-        if self.debugger.is_some() || !self.breakpoints.items().is_empty() {
-            let depth = self.frames.len();
-            if let Some(bp) = self.breakpoints.hit(s.span) {
-                let reason = StopReason::Breakpoint { id: bp.id, line: bp.line };
-                if let Some(dbg) = self.debugger.as_mut() {
-                    dbg.on_stop(&reason);
-                }
-                self.paused = Some(reason);
-            }
-            if let Some(dbg) = self.debugger.as_mut() {
-                match dbg.on_statement(s.span, depth) {
-                    DebugAction::Continue => {}
-                    DebugAction::Pause => {
-                        self.paused = Some(StopReason::Step);
-                    }
-                    DebugAction::Abort => {
-                        return Err(RuntimeError::Unsupported {
-                            what: "aborted by debugger".to_string(),
-                            span: Some(s.span),
-                        })
-                    }
-                }
-            }
-        }
-
+        // The frame's span is the statement being executed, so a debugger
+        // inspecting a stopped frame sees the line it is stopped on.
         if let Some(f) = self.frames.last_mut() {
             f.span = Some(s.span);
         }
+        self.debug_hook(s.span)?;
 
         match &s.kind {
             StmtKind::Directive(_) => Ok(Flow::Normal),
@@ -1135,6 +1165,87 @@ impl Runtime {
         Ok(n as usize)
     }
 
+    // ------------------------------------------------------------------
+    // Debugger
+    // ------------------------------------------------------------------
+
+    /// Offer the statement about to run to the debugger, and stop if it asks.
+    ///
+    /// The debugger is moved out of its field for the duration of the callback
+    /// so it can be handed `&mut self` — it needs the live interpreter to read
+    /// frames and evaluate expressions. Because the field is empty while the
+    /// callback runs, anything it evaluates (a `print`, a breakpoint condition)
+    /// cannot re-enter the debugger.
+    fn debug_hook(&mut self, span: Span) -> Result<(), RuntimeError> {
+        if self.in_debugger {
+            return Ok(());
+        }
+        let depth = self.frames.len();
+        // A breakpoint only fires when its condition, if any, holds. Ask before
+        // counting the hit, so a guarded breakpoint's counter means what it says.
+        let mut stopped = None;
+        if let Some(bp) = self.breakpoints.matching(span) {
+            let (id, line, condition) = (bp.id, bp.line, bp.condition.clone());
+            let fires = match &condition {
+                None => true,
+                Some(cond) => {
+                    self.in_debugger = true;
+                    let verdict = self
+                        .evaluate_expression(cond, span)
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(false);
+                    self.in_debugger = false;
+                    verdict
+                }
+            };
+            if fires {
+                self.breakpoints.record_hit(id);
+                stopped = Some(StopReason::Breakpoint { id, line });
+            }
+        }
+
+        let Some(mut dbg) = self.debugger.take() else {
+            if let Some(reason) = stopped {
+                self.paused = Some(reason);
+            }
+            return Ok(());
+        };
+        self.in_debugger = true;
+        let action = dbg.on_statement(span, depth, self);
+
+        if stopped.is_none() && matches!(action, DebugAction::Pause) {
+            stopped = Some(StopReason::Step);
+        }
+        if let Some(reason) = &stopped {
+            self.paused = Some(reason.clone());
+            dbg.on_stop(reason, self);
+        }
+        self.in_debugger = false;
+        self.debugger = Some(dbg);
+
+        match action {
+            DebugAction::Abort => Err(RuntimeError::Unsupported {
+                what: "aborted by debugger".to_string(),
+                span: Some(span),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Run the debugger's end-of-run callback, if one is installed.
+    fn notify_stop(&mut self, reason: StopReason) {
+        if self.in_debugger {
+            return;
+        }
+        let Some(mut dbg) = self.debugger.take() else {
+            return;
+        };
+        self.in_debugger = true;
+        dbg.on_stop(&reason, self);
+        self.in_debugger = false;
+        self.debugger = Some(dbg);
+    }
+
     fn exec_if(&mut self, if_: &IfStmt) -> Result<Flow, RuntimeError> {
         if self.eval_expr(&if_.cond)?.is_truthy() {
             if let Some(ts) = &if_.then_stmt {
@@ -1273,6 +1384,47 @@ impl Runtime {
     }
 
     /// Execute a string as AutoIt source (`Execute()`), in the current frame.
+    /// Evaluate `source` as an **expression**, in the current frame.
+    ///
+    /// This is what a breakpoint condition and a debugger's `print` need, and
+    /// it is not the same thing as [`Runtime::execute_source`]: `$i = 5` is an
+    /// assignment when it stands alone as a statement, but a comparison inside
+    /// an expression. A condition that silently assigned would both fire
+    /// wrongly and corrupt the program it is watching, so conditions are always
+    /// parsed in expression position — by way of a `Return`, which is the one
+    /// place the grammar insists on one.
+    pub fn evaluate_expression(&mut self, source: &str, span: Span) -> Result<Value, RuntimeError> {
+        let wrapped = format!("Func __au3_expr__()\n    Return {source}\nEndFunc\n");
+        let prog = autoitv3_ast::parse(&wrapped).map_err(|e| RuntimeError::Unsupported {
+            what: format!("not an expression: {} ({source})", e.msg),
+            span: Some(span),
+        })?;
+        let body = prog
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                ItemKind::Func(f) => Some(&f.body),
+                _ => None,
+            })
+            .ok_or_else(|| RuntimeError::Unsupported {
+                what: format!("not an expression: {source}"),
+                span: Some(span),
+            })?;
+        let expr = body.iter().find_map(|stmt| match &stmt.kind {
+            StmtKind::Return(Some(e)) => Some(e),
+            _ => None,
+        });
+        let Some(expr) = expr else {
+            return Err(RuntimeError::Unsupported {
+                what: format!("not an expression: {source}"),
+                span: Some(span),
+            });
+        };
+        // Evaluated in the caller's frame: `evaluate_expression` deliberately
+        // does not push one, so `$local` means what it means at the stop.
+        self.eval_expr(expr)
+    }
+
     pub fn execute_source(&mut self, src: &str, span: Span) -> Result<Value, RuntimeError> {
         let prog = autoitv3_ast::parse(src).map_err(|e| RuntimeError::Unsupported {
             what: format!("Execute() parse error: {}", e.msg),
