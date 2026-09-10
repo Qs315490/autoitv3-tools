@@ -6,10 +6,10 @@
 //! the future debug module consumes.
 
 use autoitv3_runtime::debug::{DebugAction, Debugger, StopReason};
-use autoitv3_runtime::{ExecutionProfile, Value};
+use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 use clap::Args;
 
-use crate::args::{load_program, parse_arg_value, CliError, CliResult};
+use crate::args::{load_program, parse_arg_value, CliError, CliResult, WinEmuArgs};
 
 /// Arguments for `au3 run`.
 #[derive(Args, Debug)]
@@ -43,14 +43,19 @@ pub struct RunArgs {
     /// reproducible and refuses writes (see `ExecutionProfile`).
     #[arg(long)]
     pub faithful: bool,
+
+    #[command(flatten)]
+    pub win: WinEmuArgs,
 }
 
 /// Entry point for the `run` subcommand.
 pub fn run(args: &RunArgs) -> CliResult<()> {
     let prog = load_program(&args.input)?;
     // Install the platform layer for this OS so OS-specific builtins can be
-    // reached (see `autoitv3-platform`).
-    let mut rt = autoitv3_platform::runtime_with_platform(&prog);
+    // reached (see `autoitv3-platform`); off Windows the Windows emulation
+    // layer answers first, with the version these arguments select.
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(args.win.platform()?);
     // Probing a script wants reproducibility and no side effects; `--faithful`
     // switches to AutoIt's own semantics instead.
     rt.set_profile(if args.faithful {

@@ -52,13 +52,30 @@ pub struct EvaluateReport {
 ///
 /// `prog` is modified in place. The script body itself stays in the tree — the
 /// caller decides whether to keep it (see `EvaluateReport::completed`).
+///
+/// Uses [`autoitv3_platform::host_platform`], i.e. the Windows emulation layer
+/// configured from the environment. Use [`evaluate_with_platform`] to pass an
+/// explicit stack (the CLI's `--win-version`, a test with a custom registry).
 pub fn evaluate(prog: &mut Program, profile: ExecutionProfile) -> EvaluateReport {
+    evaluate_with_platform(prog, profile, autoitv3_platform::host_platform())
+}
+
+/// [`evaluate`] with an explicit platform stack.
+///
+/// This is how `au3 evaluate --win-version win11` reaches the run: the caller
+/// builds the [`Platform`](autoitv3_runtime::platform::Platform) it wants and
+/// hands it over.
+pub fn evaluate_with_platform(
+    prog: &mut Program,
+    profile: ExecutionProfile,
+    platform: Box<dyn autoitv3_runtime::platform::Platform>,
+) -> EvaluateReport {
     let mut report = EvaluateReport::default();
 
     // Run the script body. A failure part-way through is expected and useful:
     // keep the globals it managed to build.
     let mut rt = Runtime::with_program(prog);
-    rt.set_platform(autoitv3_platform::host_platform());
+    rt.set_platform(platform);
     rt.set_profile(profile);
     rt.set_max_steps(20_000_000);
     match rt.run_script() {

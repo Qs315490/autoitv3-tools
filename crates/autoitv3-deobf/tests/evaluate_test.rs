@@ -173,14 +173,17 @@ fn unrepresentable_strings_are_not_inlined() {
 #[test]
 fn partial_evaluation_keeps_what_the_run_produced() {
     // The run stops at the OS boundary, but the tables built before it are
-    // still usable — that is the normal case for a real script.
+    // still usable — that is the normal case for a real script. `GUICreate` is
+    // used because it stays unimplemented on every platform, including under
+    // the Windows emulation layer (which answers `RegRead`, version queries,
+    // ... but has no window manager).
     let src = r#"
 Global $early = Build()
 Func Build()
     Local $t[] = [1, "recovered"]
     Return $t
 EndFunc
-Global $late = RegRead("HKEY_LOCAL_MACHINE\X", "Y")
+Global $late = GUICreate("title")
 Func F()
     Return $early[1]
 EndFunc
@@ -192,6 +195,71 @@ EndFunc
     // Everything before the boundary is still inlined.
     assert!(out.contains("\"recovered\""), "lost the early table: {out}");
     assert_eq!(report.tables, 1);
+}
+
+#[test]
+fn the_windows_emulation_moves_the_boundary_past_registry_reads() {
+    // The complement of the test above: with the default platform stack a
+    // `RegRead` is answered by the emulated registry, so the run gets further
+    // and the table is still recovered.
+    let src = r#"
+Global $early = Build()
+Func Build()
+    Local $t[] = [1, "recovered"]
+    Return $t
+EndFunc
+Global $late = RegRead("HKEY_LOCAL_MACHINE\SOFTWARE\X", "Y")
+Func F()
+    Return $early[1]
+EndFunc
+"#;
+    let (out, report) = run(src);
+    assert!(report.completed, "stopped at: {:?}", report.stopped);
+    assert!(out.contains("\"recovered\""), "{out}");
+}
+
+/// The reference sample selects its string table by the OS version, which it
+/// reads with `DllStructCreate` + `DllCall(GetVersionExW)`.
+const VERSION_SELECTED_TABLE: &str = r#"
+Global $strings = Build()
+Func Build()
+    Local $t = DllStructCreate("struct;dword OSVersionInfoSize;dword MajorVersion;" & _
+        "dword MinorVersion;dword BuildNumber;dword PlatformId;wchar CSDVersion[128];endstruct")
+    DllStructSetData($t, "OSVersionInfoSize", DllStructGetSize($t))
+    DllCall("kernel32.dll", "int", "GetVersionExW", "ptr", $t)
+    Local $major = DllStructGetData($t, "MajorVersion")
+    Local $s[] = ["legacy", "modern"]
+    If $major >= 10 Then $s[0] = "windows-10-plus"
+    Return $s
+EndFunc
+Func F()
+    Return $strings[0]
+EndFunc
+"#;
+
+#[test]
+fn an_os_version_query_no_longer_blocks_the_string_table() {
+    // Before the emulation layer this stopped at `DllStructCreate`; now the
+    // version is answered and the value the table selected is inlined.
+    let (out, report) = run(VERSION_SELECTED_TABLE);
+    assert!(report.completed, "stopped at: {:?}", report.stopped);
+    assert!(out.contains("\"windows-10-plus\""), "{out}");
+}
+
+#[test]
+fn without_the_emulation_layer_the_version_query_is_the_boundary() {
+    let mut prog = parse(VERSION_SELECTED_TABLE).expect("parses");
+    let platform = autoitv3_platform::host_platform_with(
+        autoitv3_platform::WindowsEmulation::new().disabled(),
+    );
+    let report = autoitv3_deobf::evaluate_with_platform(
+        &mut prog,
+        ExecutionProfile::deterministic(),
+        platform,
+    );
+    assert!(!report.completed);
+    let stopped = report.stopped.expect("a reason");
+    assert!(stopped.contains("undefined function"), "got: {stopped}");
 }
 
 #[test]

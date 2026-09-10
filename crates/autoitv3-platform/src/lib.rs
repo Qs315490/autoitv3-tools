@@ -8,12 +8,20 @@
 //! | layer | module | installed on | contents |
 //! |---|---|---|---|
 //! | portable | [`portable`] | **every** platform | file/directory I/O, environment, math, timers, console — the parts AutoIt does the same way everywhere |
+//! | emulation | [`winemu`] | non-Windows | Windows-flavoured identity, paths, `DllStruct*`/`DllCall`, registry, clipboard and drives, so a Windows-targeted script keeps running off Windows |
 //! | system | [`linux`] / [`windows`] | one OS each | what genuinely differs: process queries on Linux; registry, COM, `DllCall`, GUI on Windows |
 //!
 //! [`host_platform`] builds the right stack for the target at compile time; a
 //! build only ever compiles its own system layer. The layers are tried in order
 //! by [`CompositePlatform`], so the portable functions are available on Windows
 //! too and a system layer only has to add what is actually system-specific.
+//!
+//! On non-Windows targets the stack is **emulation → portable → linux**: the
+//! [`WindowsEmulation`] layer answers first (it deliberately shadows the
+//! portable directory macros), and anything it does not know falls through to
+//! the host. Set `AU3_WIN_EMU=0` — or install a disabled [`WindowsEmulation`]
+//! with [`host_platform_with`] — for the plain `portable+linux` stack, where
+//! Windows-only calls stay undefined functions.
 //!
 //! # Layering with the runtime
 //!
@@ -27,7 +35,7 @@
 //! ```
 //! let prog = autoitv3_ast::parse("Func F()\n    Return 1\nEndFunc\n").unwrap();
 //! let mut rt = autoitv3_platform::runtime_with_platform(&prog);
-//! assert!(rt.platform_name().starts_with("portable"));
+//! assert!(rt.platform_name().contains("portable"));
 //! ```
 //!
 //! Lookup order for a call the interpreter cannot resolve itself is
@@ -37,12 +45,17 @@
 
 pub mod linux;
 pub mod portable;
+pub mod winemu;
 
 #[cfg(windows)]
 pub mod windows;
 
 pub use linux::LinuxPlatform;
 pub use portable::PortablePlatform;
+pub use winemu::{
+    FileRegistry, MemoryRegistry, RegistryData, RegistryStore, WindowsArch, WindowsEmulation,
+    WindowsVersion,
+};
 
 #[cfg(windows)]
 pub use windows::WindowsPlatform;
@@ -107,19 +120,49 @@ impl Platform for CompositePlatform {
 
 /// The platform stack for the operating system this build targets.
 ///
-/// Always starts with the portable layer, then adds the system layer.
+/// On a Windows build this is `portable+windows`. On every other target it is
+/// `winemu+portable+linux`: the [`WindowsEmulation`] layer is configured from
+/// the environment (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`) and
+/// defaults to emulating **Windows 10 x64**.
+///
+/// Use [`host_platform_with`] when the emulation has to be configured in code
+/// (the CLI's `--win-version`, a test, an embedding application).
 pub fn host_platform() -> Box<dyn Platform> {
-    let mut layers: Vec<Box<dyn Platform>> = vec![Box::new(PortablePlatform::new())];
+    host_platform_with(WindowsEmulation::from_env())
+}
 
+/// Like [`host_platform`], but with an explicit [`WindowsEmulation`] layer.
+///
+/// The layer is installed first so its macros win over the portable ones; a
+/// disabled emulation is left out entirely. Windows builds ignore `emulation`
+/// and use the real [`WindowsPlatform`].
+pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
     #[cfg(windows)]
     {
-        layers.push(Box::new(WindowsPlatform::new()));
-        Box::new(CompositePlatform::new("portable+windows", layers))
+        let _ = emulation;
+        Box::new(CompositePlatform::new(
+            "portable+windows",
+            vec![
+                Box::new(PortablePlatform::new()),
+                Box::new(WindowsPlatform::new()),
+            ],
+        ))
     }
     #[cfg(not(windows))]
     {
+        let emulated = emulation.is_enabled();
+        let mut layers: Vec<Box<dyn Platform>> = Vec::new();
+        if emulated {
+            layers.push(Box::new(emulation));
+        }
+        layers.push(Box::new(PortablePlatform::new()));
         layers.push(Box::new(LinuxPlatform::new()));
-        Box::new(CompositePlatform::new("portable+linux", layers))
+        let name = if emulated {
+            "winemu+portable+linux"
+        } else {
+            "portable+linux"
+        };
+        Box::new(CompositePlatform::new(name, layers))
     }
 }
 

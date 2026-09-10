@@ -4,6 +4,8 @@
 //! than one command needs are here.
 
 use autoitv3_ast::{parse, Program};
+use autoitv3_platform::{WindowsArch, WindowsEmulation, WindowsVersion};
+use autoitv3_runtime::platform::Platform;
 use clap::Args;
 
 /// `-o FILE` output redirection, shared by the source-emitting commands.
@@ -15,6 +17,57 @@ pub struct OutputArgs {
     /// Write the result to FILE instead of stdout (use `-` for stdout)
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: Option<String>,
+}
+
+/// Windows-emulation selection, shared by the commands that install a platform.
+///
+/// Off Windows the platform stack starts with the emulation layer described in
+/// `autoitv3_platform::winemu`; these flags choose what machine it presents.
+/// When a flag is omitted the matching environment variable is consulted
+/// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`), and then the default —
+/// **Windows 10 x64**.
+#[derive(Args, Debug, Clone, Default)]
+pub struct WinEmuArgs {
+    /// Emulated Windows version: xp, vista, 7, 8, 81, 10, 11
+    #[arg(long = "win-version", value_name = "VER")]
+    pub win_version: Option<String>,
+
+    /// Emulated architecture: x86, x64, arm64
+    #[arg(long = "win-arch", value_name = "ARCH")]
+    pub win_arch: Option<String>,
+
+    /// Do not install the emulation layer; Windows-only calls become
+    /// undefined-function errors
+    #[arg(long = "no-win-emu")]
+    pub no_win_emu: bool,
+}
+
+impl WinEmuArgs {
+    /// Build the platform stack these arguments select.
+    ///
+    /// The environment is read first so `AU3_WIN_VERSION` keeps working, then
+    /// the flags override it, so an explicit `--win-version` always wins.
+    pub fn platform(&self) -> CliResult<Box<dyn Platform>> {
+        let mut emu = WindowsEmulation::from_env();
+        if self.no_win_emu {
+            emu = emu.disabled();
+        }
+        if let Some(raw) = &self.win_version {
+            let version = WindowsVersion::from_name(raw).ok_or_else(|| {
+                CliError::failure(format!(
+                    "unknown --win-version {raw:?} (try win7, win8, win81, win10, win11)"
+                ))
+            })?;
+            emu = emu.with_version(version);
+        }
+        if let Some(raw) = &self.win_arch {
+            let arch = WindowsArch::from_name(raw).ok_or_else(|| {
+                CliError::failure(format!("unknown --win-arch {raw:?} (try x86, x64, arm64)"))
+            })?;
+            emu = emu.with_arch(arch);
+        }
+        Ok(autoitv3_platform::host_platform_with(emu))
+    }
 }
 
 /// A CLI failure carrying the process exit code it should produce.

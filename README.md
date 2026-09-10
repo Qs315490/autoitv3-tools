@@ -25,7 +25,7 @@ autoitv3-tools/
     autoitv3-format/         # 库 crate——格式打印（原名 pretty）
       src/lib.rs    把 AST 重新打印为 AutoIt 源码（默认保留注释，可 strip；规范缩进）
       tests/
-        format.rs    格式化/注释保留/去除测试（3 项）
+        format.rs    格式化/注释保留/去除/空参数括号测试（5 项）
     autoitv3-runtime/        # 库 crate——AutoIt v3 运行时（值模型 + 解释器 + 扩展接口）
       src/
         value.rs      运行时值模型（Int/Float/Str/Array/Map/Binary/FuncRef）与 AutoIt 强制转换规则
@@ -41,28 +41,41 @@ autoitv3-tools/
       tests/
         runtime.rs    解释器/host/debug 接口 + 真实集成测试（32 项）
         regexp.rs     StringRegExp / StringRegExpReplace（27 项）
-    autoitv3-platform/       # 库 crate——平台层（分层：通用 + 系统）
+    autoitv3-platform/       # 库 crate——平台层（分层：仿真 + 通用 + 系统）
       src/
-        lib.rs        Platform 分层组合（CompositePlatform）、host_platform() 工厂、
-                      runtime_with_platform() 便捷构造
+        lib.rs        Platform 分层组合（CompositePlatform）、host_platform() /
+                      host_platform_with() 工厂、runtime_with_platform() 便捷构造
         portable.rs   通用层：文件/目录 I/O、环境变量、数学、计时器、控制台
                       —— Linux 与 Windows 都安装
         linux.rs      系统层（Linux）：/proc 进程查询、OS 标识宏
         windows.rs    系统层（Windows）：注册表/COM/DllCall/GUI 扩展点（骨架）
+        winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
+          mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
+          version.rs    WindowsVersion / WindowsArch：选定仿真系统版本（默认 win10）
+          paths.rs      WindowsPaths：C:\ 目录布局（@WindowsDir、@AppDataDir…）
+          dllstruct.rs  DllStruct* 定义解析与按字段读写（OSVERSIONINFO 等）
+          registry.rs   RegistryStore 接口 + FileRegistry（默认，落盘 .au3_registry）
+                        + MemoryRegistry（可选，不落盘）
       tests/
-        platform.rs   分层、选择、注入、通用函数与宏（31 项）
+        platform.rs   分层、选择、注入、通用函数与宏（33 项）
+        profile.rs    执行配置（忠实 / 确定性）（14 项）
+        winemu.rs     Windows 仿真层（31 项）
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
-        rename.rs      确定性重命名混淆的变量/函数/宏为可读别名（可复现）
+        rename.rs      确定性重命名：变量按 作用域_类型_序号（$g_int_000 /
+                       $l_str_003 / $arg_arr_001），函数 fNNN（**只改脚本内
+                       定义**的名字；内置函数与宏不动）；整趟 pass 可关（可复现）
         table.rs       函数表解析：用 runtime 执行 $fn_table 构建函数，把 $fn_table[0x..](...)
                        改写为真实函数名调用（解开函数间接层）
+        simplify.rs    间接调用简化：Call("Foo", ...) / Execute("Foo(...)") 改写为
+                       直接调用 Foo(...)，让藏在字符串里的目标现形
         evaluate.rs    运行时求值：跑脚本主体，把它算出来的表值内联回源码
                        （唯一能解开字符串表的途径）
         orchestrator.rs 按序执行 pass 流水线，产出 Deobfuscator/Report
         lib.rs
       tests/
-        deobf.rs      反混淆 pass 单元测试（13 项）
+        deobf.rs      反混淆 pass 单元测试（27 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
     au3-cli/                # CLI 二进制 crate（产物名为 au3，使用 clap 解析参数）
       src/
@@ -99,14 +112,97 @@ autoitv3-tools/
 
 ## 反混淆现状
 
-`au3 deobfuscate` 现在执行 3 个 pass：
+`au3 deobfuscate` 现在执行 4 个 pass：
 
 1. **常量折叠**（fold）：求值纯算术/字符串/拼接，原地内联。
 2. **函数表解析**（table）：静态执行 `BuildFunctionTable()`（纯数组构建，
    `Local $x[]=[...]` + `MergeArrays` + `Return`）得到 `$fn_table` 函数表
    （1108 个函数名），把所有 `$fn_table[0x..](args)` 改写为 `FuncName(args)`、
    `$fn_table[0x..]` 改写为 `FuncName`。在真实脚本上改写约 several thousand 处引用。
-3. **标识符重命名**（rename）：确定性重命名变量/函数/宏为可读别名。
+3. **间接调用简化**（simplify）：`Call("Foo", ...)` / `Execute("Foo(...)")` 改写为
+   直接调用（见下文「间接调用简化」）。
+4. **标识符重命名**（rename）：确定性重命名，别名自带**作用域**与**推断类型**
+   （见下文「标识符重命名」）。
+
+### 间接调用简化（simplify）
+
+混淆器常用"名字放在字符串里"的方式藏调用目标，静态看不出调用图。当字符串是字面量、
+且指向**脚本自己定义**的函数时，这层间接没有意义，直接写出来即可：
+
+```autoit
+Call("Foo", 1)     ->  Foo(1)
+Call("Foo")        ->  Foo()
+Execute("Foo(1)")  ->  Foo(1)
+Execute("Foo")     ->  Foo()
+```
+
+- 名字**大小写不敏感**，重写时用**定义处的拼写**（`Call("foobar")` → `FooBar()`）。
+- 该 pass 排在 rename **之前**，所以生成的新调用会和定义一起被重命名（`Foo` → `f000`）。
+- **刻意不动**的情况：
+  - `Call($name)` / `Execute($code)` —— 名字本身是算出来的，静态无从得知；先跑 `evaluate`（或让 `fold`）把它变成字面量，下一次就能简化；
+  - 剧本里没有定义的名字，如 `Call("MsgBox", ...)`（没有内置函数表，无法验证直接调用，而且它本来就好读）；
+  - `Execute` 的字符串**不是单个调用**：赋值、多条语句、无调用的表达式都不动。AutoIt 里赋值只是**语句**（没有赋值表达式），`Execute("$x = 1")` 放进表达式位置后重新解析，`=` 会变成**比较**（`Local $v = ($x = 5)` 求值为 `true`），所以要改写只能做语句级手术，还得同时保留 `Execute` 的返回值；何况赋值本身并没有藏调用；
+  - 函数名不是整段字面量，如 `Call("Foo" & $suffix)` —— 目标随 `$suffix` 变化，静态不可知。若它其实是可静态求值的（全字面量拼接会被 `fold` 折成 `Call("FooBar")`；`Global Const` 变量则由 `evaluate` 内联成字面量），后续 pass 折完 simplify 照样能处理。
+
+### 标识符重命名（rename）
+
+变量别名形如 `$<作用域>_<类型>_<序号>`，三段信息一眼可读，且可 grep：
+
+| 作用域 | 含义 |
+| ------ | ---- |
+| `g` | 脚本级：`Global` 声明，或顶层（函数外）的声明/赋值 |
+| `l` | 函数内局部：`Local`/`Dim`/`Static`、`For` 循环变量，或函数内首次赋值 |
+| `arg` | 函数参数（含 `ByRef`） |
+
+| 类型 | 来源 |
+| ---- | ---- |
+| `int` / `float` / `str` / `bool` | 初始值或首次赋值的字面量 |
+| `arr` | 数组字面量 `[...]`，或声明带维度 `Local $a[3]` |
+| `map` | `Map()` |
+| `var` | 静态推不出来（无初值、参数无默认值、运算结果等） |
+
+```autoit
+Global $count = 1              ->  Global $g_int_000 = 1
+Func F($p, $ratio = 1.5)       ->  Func f000($arg_var_000, $arg_float_001 = 1.5)
+    Local $name = "x"          ->      Local $l_str_000 = "x"
+    Local $items[] = [1, 2]    ->      Local $l_arr_001[] = [1, 2]
+    For $i = 1 To 10           ->      For $l_int_002 = 1 To 10
+EndFunc
+```
+
+作用域是**静态推断**的，规则按 AutoIt 的实际语义来：
+
+- `Global` 声明（无论在哪儿）与顶层声明/赋值 → 该名字在**任何位置**都用全局别名；
+  函数内读一个脚本级变量必须保持同一别名，否则函数就看不到它了。
+- 函数内的 `Local`/`Dim`/`Static`、`For` 变量 → 该函数自己的局部别名
+  （与同名全局变量**不同**别名，因为它们是两个变量）。
+- 函数内未声明就赋值 → 视为局部；但若该名字同时是脚本级变量，则仍用全局别名
+  （AutoIt 的隐式规则是"读全局、写建局部"，同名才能保持行为不变）。
+- 参数名在其所属函数内优先。
+- **变量名大小写不敏感**（AutoIt 语义）：`$Foo`/`$foo`/`$FOO` 是同一个变量，
+  必定得到同一个别名——否则重命名会改变行为。
+
+类型只是可读性提示，纯静态推断、从不执行脚本；推不出来就是 `var`。
+
+**函数与宏**：只重命名**脚本自己 `Func` 定义**的函数（改 `f000` 这类别名），
+定义处与所有调用点一致；**内置函数**（`MsgBox`、`UBound`、`StringLen`…）和
+**宏**（`@error`、`@CRLF`…）一律原样保留——它们是运行时按名字解析的，改名只会把
+脚本改坏。
+
+**重命名可选**：
+
+```bash
+au3 deobfuscate sample.au3 --no-rename     # 跳过重命名，名字全保留（简化照做）
+```
+
+```rust
+use autoitv3_deobf::{Deobfuscator, RenameOptions};
+
+Deobfuscator::without_rename().run(&mut prog);                    // 整趟关掉
+Deobfuscator::new()
+    .with_rename_options(RenameOptions { vars: true, funcs: false })
+    .run(&mut prog);                                              // 只改变量
+```
 
 ### 运行时相关代码的迁移
 
@@ -121,11 +217,17 @@ autoitv3-tools/
 好处是 AutoIt 的运算符语义（强制转换、字符串拼接、整数/浮点提升）只有**一份**实现，
 不会随两处代码各自演进而产生偏差。
 
-> **TODO（字符串表求值）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()` 构建，
-> 其内部依赖 `Execute`、`Map`、二进制运算等。解释器骨架已就绪并跑通函数表，
-> 但要完整求值字符串表，还需继续补齐：运行整个脚本体时的数组语义细节
-> （当前在 `--init` 全量执行时遇到索引越界）、以及更多内置函数
-> （`StringRegExp*`、`DllCall` 真实语义等）。这属于下一步工作。
+> **字符串表求值（进展）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()` 构建，
+> 其构建路径用 `DllStructCreate(OSVERSIONINFO)` + `DllCall(GetVersionExW)` 取系统版本，
+> 再按版本挑选字符串——这曾是最硬的平台边界。现在 `autoitv3-platform` 的
+> **Windows 仿真层**（`winemu`，见下文「Windows 仿真」）已实现这条路径：选定版本
+> （默认 win10）后，`DllStruct*`、`DllCall(GetVersionExW`/`A`、`RtlGetVersion`、
+> `GetVersion`、`GetSystemInfo)` 与注册表读都由仿真机器回答，所以"按版本分支"的
+> 字符串表已经可以求出来（回归测试：
+> `evaluate_test.rs::an_os_version_query_no_longer_blocks_the_string_table`）。
+> 仍受限于真实语义的部分是 COM/GUI/窗口，以及仿真层未列举的 `DllCall`——后者会置
+> `@error = 1` 并返回 `0`，把控制权交回脚本自身的错误处理，而不是编造结果。
+> 用 `--no-win-emu` 可关闭仿真，回到"停在第一个 Windows 调用"的行为。
 
 ## 使用
 
@@ -142,9 +244,10 @@ au3 parse some.au3
 # pretty：规范化重打印（默认保留注释、统一缩进）——反混淆输出基础
 au3 pretty some.au3
 
-# deobfuscate：常量折叠 + 函数表解析 + 标识符重命名 + 去注释
+# deobfuscate：常量折叠 + 函数表解析 + 间接调用简化 + 标识符重命名 + 去注释
 #              统计信息走 stderr，stdout 保持为干净的 AutoIt 源码
 au3 deobfuscate some.au3
+au3 deobfuscate some.au3 --no-rename      # 跳过重命名，保留原始变量/函数名
 
 # -o FILE 将输出写入文件；-o - 或省略 -o 则输出到 stdout（原文件永不被修改）
 au3 pretty      some.au3 -o out.au3
@@ -157,6 +260,11 @@ au3 evaluate some.au3 --faithful          # 按 AutoIt 语义真跑
 # 也可以一步到位：先求值再做常规反混淆
 au3 deobfuscate some.au3 --evaluate -o clean.au3
 
+# 选定仿真的 Windows 系统版本（非 Windows 主机默认 win10；见「Windows 仿真」）
+au3 evaluate some.au3 --win-version win11 -o resolved.au3
+au3 evaluate some.au3 --win-version win7 --win-arch x86 -o resolved.au3
+au3 evaluate some.au3 --no-win-emu        # 关掉仿真，停在第一个 Windows 调用
+
 # run：用解释器调用函数（--arg 传参，--init 先执行脚本体以建立全局表）
 au3 run Add --arg 2 --arg 3 some.au3
 au3 run BuildFunctionTable --init some.au3
@@ -164,13 +272,23 @@ au3 run BuildFunctionTable --init some.au3
 au3 run SomeFunc --trace some.au3
 ```
 
+`--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
+`deobfuscate --evaluate` 与 `run`；省略时读环境变量，再回落到默认值：
+
+| 开关 | 环境变量 | 默认 |
+| ---- | -------- | ---- |
+| `--win-version <VER>` | `AU3_WIN_VERSION` | `win10` |
+| `--win-arch <ARCH>` | `AU3_WIN_ARCH` | `x64` |
+| （无开关） | `AU3_WIN_REGISTRY` | `./.au3_registry` |
+| `--no-win-emu` | `AU3_WIN_EMU=0` | 启用（非 Windows 主机） |
+
 | 子命令 | 别名 | 说明 |
 | ------ | ---- | ---- |
 | `parse <FILE>` | `p`, `check` | 解析并报告顶层条目/函数数量 |
 | `pretty <FILE> [-o FILE]` | `fmt`, `format` | 规范化重打印，保留注释 |
-| `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值） |
-| `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--faithful` 按 AutoIt 语义） |
-| `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数 |
+| `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值；`--no-rename` 跳过重命名；`--win-version` 等选仿真版本） |
+| `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
+| `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数（同样接受 `--win-*` 开关） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
 **缩写**：只要前缀无歧义即可使用，例如 `au3 deob`、`au3 pars`、`au3 pret`。
@@ -186,7 +304,7 @@ au3 run SomeFunc --trace some.au3
 
 ```bash
 # 运行库的单元测试
-cargo test                     # 全部（123 项）
+cargo test                     # 全部（230 项，含 doctest）
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
 cargo test -p autoitv3-platform
@@ -308,12 +426,15 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 
 | 层 | 模块 | 安装于 | 内容 |
 | -- | ---- | ------ | ---- |
+| 仿真 | `winemu/` | **仅非 Windows** | Windows 身份、路径、`DllStruct*`/`DllCall`、注册表、剪贴板、驱动器——让 Windows 目标脚本能在 Linux 上继续跑（见下文「Windows 仿真」） |
 | 通用 | `portable.rs` | **所有**平台 | 文件与目录 I/O、环境变量、数学、计时器、控制台——AutoIt 在各系统上行为一致的部分 |
 | 系统 | `linux.rs` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
 | 系统 | `windows.rs` | 仅 Windows | 注册表、COM、`DllCall`、GUI（**骨架**，后续填充） |
 
-`host_platform()` 按目标平台组装成 `CompositePlatform`（Linux 为 `portable+linux`），
-逐层查找；通用层在 Windows 上同样生效，系统层只补真正系统相关的部分。
+`host_platform()` 按目标平台组装成 `CompositePlatform`：Windows 为 `portable+windows`，
+其余平台为 `winemu+portable+linux`（仿真层在最前，因此它的宏会**有意覆盖**通用层的
+同名宏）。逐层查找；通用层在 Windows 上同样生效，系统层只补真正系统相关的部分。
+需要显式指定仿真配置时用 `host_platform_with(WindowsEmulation::new()...)`。
 
 `Platform` **trait** 留在 `autoitv3-runtime`（解释器调用的接缝），**实现**在此 crate。
 依赖方向单向——运行时不知道任何具体操作系统——因此 `Runtime::new()` 默认**没有**平台层，
@@ -335,6 +456,73 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 
 宏由**平台**提供（解释器只负责 `@error`/`@extended`/`@ScriptLineNumber`/`@NumParams`/
 `@CRLF` 等纯状态与常量），因此 `@TempDir` 之类不再是空串。
+
+### Windows 仿真（`winemu`）——非 Windows 主机上的 Windows 机器
+
+AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows.rs` 才是正解。但在 Linux/macOS
+上分析 Windows 样本时，"如实报 `undefined function`"会让求值卡在第一个 Win32 调用上。
+`winemu` 用一台**仿真机器**回答这些调用，让脚本继续跑：
+
+| 区域 | 行为 |
+| ---- | ---- |
+| OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`、`@AutoItX64` |
+| 目录 | `WindowsPaths` 给出传统 `C:` 布局：`@WindowsDir`、`@SystemDir`、`@ProgramFilesDir`、`@HomeDrive`、`@TempDir`、`@AppDataDir`、`@LocalAppDataDir`、`@UserProfileDir`、`@StartMenuDir`、`@StartupDir`…… |
+| 原生结构 | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`/`IsDllStruct`——定义解析器支持 `struct;…;endstruct`、常见整型/浮点/指针、`char`/`wchar` 数组、无名段、`align N`；句柄指向一块本层持有的字节缓冲 |
+| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`，已实现 `GetVersionExW`/`A`、`RtlGetVersion`、`GetVersion`、`GetSystemInfo`/`GetNativeSystemInfo` 以及几个无副作用的查询 |
+| 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存、写立刻回写文件；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
+| 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
+| 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFilesystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配） |
+
+**选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
+`Win10`/`Win11`，**默认 Win10**：
+
+```rust
+use autoitv3_platform::winemu::{WindowsEmulation, WindowsVersion};
+
+let emu = WindowsEmulation::new().with_version(WindowsVersion::Win11);
+let rt  = /* Runtime::with_program(&prog) */;
+rt.set_platform(autoitv3_platform::host_platform_with(emu));
+```
+
+选择版本的三种方式（优先级由低到高）：代码里 `with_version()` → 环境变量
+`AU3_WIN_VERSION` → CLI `--win-version`。同族的还有 `AU3_WIN_ARCH`/`--win-arch`
+（`x86`/`x64`/`arm64`，影响指针宽度与结构体布局）。
+
+#### 注册表落盘（`FileRegistry`）
+
+注册表操作**重定向到文件**：默认路径 `./.au3_registry`（可用 `AU3_WIN_REGISTRY`
+或 `with_registry_file()` 改）。行式 UTF-8，四个制表符分隔字段
+（键 / 值名 / 类型 / 载荷），`KEY` 记录只有键没有值：
+
+```text
+# au3-registry v1
+HKLM\SOFTWARE\Vendor            KEY
+HKLM\SOFTWARE\Vendor    Name    REG_SZ      hello
+HKLM\SOFTWARE\Vendor    Count   REG_DWORD   7
+```
+
+- **文件是记录，不是种子快照**：先铺按版本生成的种子（`CurrentVersion`、`Shell Folders`、
+  会话管理器环境……），再把文件记录覆盖上去；回写时只写文件自己的记录与新写入，
+  所以换 `--win-version` 后未被文件提及的键仍随版本更新。
+  把真实机器抓下来的注册表放进这个文件，就是给仿真一台特定机器。
+- **没写就不建文件**：`evaluate` 的确定性配置会拒绝 `RegWrite`，因此分析样本不会在
+  工作目录留下文件；`--faithful` 真跑时才会落盘。
+- `MemoryRegistry`（纯内存、不落盘）用 `WindowsEmulation::with_memory_registry()`
+  选回；任何自定义 `RegistryStore` 仍可用 `with_registry()` 注入。
+- 写入走"同目录临时文件 + rename"，写到一半崩溃不会留下半个注册表；`\`、`|`、
+  制表符、CR/LF、NUL 都会被转义，`REG_MULTI_SZ` 用 `|` 连接（项内的 `|` 转义），
+  因此任意文本都不会破坏记录边界。已知取舍：删除**种子里的**值不会跨运行记住
+  （格式里没有墓碑记录）。
+
+**边界仍然存在，而且是有意的**：仿真层不是 PE 加载器，没有 COM、没有窗口管理器、
+不调用真实 DLL。因此
+- 未列举的 `DllCall` 置 `@error = 1`、返回 `0`，把决定权交回脚本；
+- `GUICreate`/`ObjCreate`/`Win*` 等仍报 `undefined function`；
+- 注册表/剪贴板写入遵循 `ExecutionProfile`：确定性分析配置下同样被拒绝（`@error = 1`），
+  也就不会生成 `.au3_registry` / `.au3_clipboard`；
+- 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，
+  回到"停在第一个 Windows 调用"的诚实行为；`with_host_paths()` 则只让**目录**宏回落到
+  主机路径（`@TempDir` 等仍可用于真实文件 I/O），Windows 专有宏照旧仿真。
 
 ### 执行配置（ExecutionProfile）——近似行为按用途区分
 
@@ -374,8 +562,10 @@ au3 run F --faithful sample.au3   # 真的 Sleep、真的随机、真的写文�
 - 文本按 UTF-8 读写；`FileOpen` 的 `$FO_UNICODE` 系列标志被接受但按 UTF-8 处理
 - 控制台输出不算"修改状态"的副作用，两种配置下都会写出（可重定向）
 
-> **不静默编造值**：注册表、COM、`DllCall`、GUI、剪贴板等 Windows 专有函数在非 Windows
-> 上**没有桩**，会如实报 `undefined function`；平台层未提供前同样如此。
+> **不静默编造值**：没有仿真的那些 Windows 专有函数（COM、GUI、窗口/控件、以及未列举的
+> `DllCall`）在非 Windows 上仍然**没有桩**，会如实报 `undefined function` 或置
+> `@error = 1`；`winemu` 只回答它真正实现的部分，且每一处近似都写在模块文档里。
+> 关掉仿真（`--no-win-emu`）即可回到"非 Windows 一律 undefined function"的行为。
 
 ### 正则表达式（平台无关）
 

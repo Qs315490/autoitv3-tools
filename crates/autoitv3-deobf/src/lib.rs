@@ -6,19 +6,27 @@
 //! Current passes:
 //! - `fold`    : constant folding — evaluate pure arithmetic/string/concat
 //!   expressions on literals and inline them.
-//! - `rename`  : deterministic renaming of generated/obfuscated identifiers
-//!   and macros, so output is greppable and reproducible.
 //! - `table`   : resolve the `$fn_table` function table and rewrite indexed
 //!   calls/references to real function names.
+//! - `simplify`: turn `Call("Foo", ...)` / `Execute("Foo(...)")` into direct
+//!   calls, so a function named in a string stops hiding the call graph.
+//! - `rename`  : deterministic renaming of variables to
+//!   `$<scope>_<type>_<n>` aliases (`$g_int_000`, `$l_str_003`,
+//!   `$arg_arr_001`) and of the functions the script itself defines (`fNNN`),
+//!   so output is greppable and reproducible. Built-in functions and macros are
+//!   left alone, and the whole pass is optional ([`RenameOptions`]).
 //! - `evaluate`: run the script body and inline the values it computed —
 //!   the only way to recover the obfuscator's *string* table.
 //! - `orchestrator`: runs a pipeline of passes over a program.
 
 pub mod evaluate;
 pub mod fold;
-pub mod rename;
-pub mod table;
 pub mod orchestrator;
+pub mod rename;
+pub mod simplify;
+pub mod table;
 
-pub use evaluate::{evaluate, EvaluateReport};
+pub use evaluate::{evaluate, evaluate_with_platform, EvaluateReport};
 pub use orchestrator::{deobfuscate, Deobfuscator};
+pub use rename::{rename_program, rename_program_with, RenameOptions, RenameReport};
+pub use simplify::{simplify_program, SimplifyReport};
