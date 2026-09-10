@@ -52,4 +52,8 @@ pub enum Command {
     /// Interpret one function (probes the obfuscator's builders)
     #[command(visible_aliases = ["r", "exec"])]
     Run(commands::run::RunArgs),
+
+    /// Load a script and debug it: breakpoints, stepping, a prompt
+    #[command(visible_aliases = ["dbg"])]
+    Debug(commands::debug::DebugArgs),
 }

@@ -1,6 +1,8 @@
 //! Tests for the autoitv3-runtime interpreter, host and debug interfaces.
 
-use autoitv3_runtime::debug::{DebugAction, Debugger, StopReason, TracingDebugger};
+use std::rc::Rc;
+
+use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason, TracingDebugger};
 use autoitv3_runtime::host::{HostContext, NativeHost};
 use autoitv3_runtime::{Runtime, Value};
 
@@ -332,8 +334,9 @@ fn tracing_debugger_records_spans() {
             &mut self,
             span: autoitv3_ast::span::Span,
             depth: usize,
+            host: &mut dyn autoitv3_runtime::debug::DebugHost,
         ) -> DebugAction {
-            self.0.borrow_mut().on_statement(span, depth)
+            self.0.borrow_mut().on_statement(span, depth, host)
         }
         fn on_call_enter(&mut self, name: &str, args: &[Value]) {
             self.0.borrow_mut().on_call_enter(name, args);
@@ -613,4 +616,143 @@ fn exit_handlers_are_recorded_rather_than_run() {
     let mut r = Runtime::with_program(&prog);
     assert!(matches!(r.call_function("F", vec![]).unwrap(), Value::Int(1)));
     assert_eq!(r.exit_handlers(), ["Cleanup", "Cleanup2"]);
+}
+
+// ---------------------------------------------------------------------------
+// Stopping, inspecting and resuming
+// ---------------------------------------------------------------------------
+
+/// A debugger that stops on one line, reads the live frame, and writes to it.
+struct Inspector {
+    stop_line: u32,
+    /// `$arg` as seen at the stop, and the value of `$local` after a write.
+    seen: Vec<(String, String)>,
+    /// How many times it stopped.
+    stops: usize,
+    /// Assign to `$local` at the stop, to prove writes reach the program.
+    assign: Option<i64>,
+}
+
+impl Debugger for Inspector {
+    fn on_statement(
+        &mut self,
+        span: autoitv3_ast::span::Span,
+        _depth: usize,
+        _host: &mut dyn autoitv3_runtime::debug::DebugHost,
+    ) -> DebugAction {
+        if span.start.line == self.stop_line {
+            DebugAction::Pause
+        } else {
+            DebugAction::Continue
+        }
+    }
+
+    fn on_stop(
+        &mut self,
+        _reason: &StopReason,
+        host: &mut dyn autoitv3_runtime::debug::DebugHost,
+    ) {
+        self.stops += 1;
+        let arg = host.evaluate("$arg").unwrap().to_autoit_string();
+        let local = host.evaluate("$local").unwrap().to_autoit_string();
+        self.seen.push((arg, local));
+        if let Some(v) = self.assign {
+            host.evaluate(&format!("$local = {v}")).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_stop_sees_the_live_frame_and_can_write_to_it() {
+    let src = "Func F($arg)\n    Local $local = $arg * 2\n    Return $local\nEndFunc\n";
+    let mut r = rt(src);
+    r.set_debugger(Box::new(Inspector {
+        stop_line: 3,
+        seen: Vec::new(),
+        stops: 0,
+        assign: Some(7),
+    }));
+    let v = r.call_function("F", vec![Value::Int(21)]).unwrap();
+    // The write at the stop is what the function returns.
+    assert!(matches!(v, Value::Int(7)), "got {v:?}");
+}
+
+#[test]
+fn a_stateful_debugger_sees_every_stop() {
+    // The trait object is owned by the runtime, so a debugger that wants its
+    // results back shares them through an `Rc`.
+    struct Share(Rc<std::cell::RefCell<Inspector>>);
+    impl Debugger for Share {
+        fn on_statement(
+            &mut self,
+            span: autoitv3_ast::span::Span,
+            depth: usize,
+            host: &mut dyn autoitv3_runtime::debug::DebugHost,
+        ) -> DebugAction {
+            self.0.borrow_mut().on_statement(span, depth, host)
+        }
+        fn on_stop(
+            &mut self,
+            reason: &StopReason,
+            host: &mut dyn autoitv3_runtime::debug::DebugHost,
+        ) {
+            self.0.borrow_mut().on_stop(reason, host);
+        }
+    }
+
+    let src = "Func F($arg)\n    Local $local = $arg + 1\n    Local $local = $arg + 2\n    Return $local\nEndFunc\n";
+    let mut r = rt(src);
+    let inner = Rc::new(std::cell::RefCell::new(Inspector {
+        stop_line: 4,
+        seen: Vec::new(),
+        stops: 0,
+        assign: None,
+    }));
+    r.set_debugger(Box::new(Share(inner.clone())));
+    let v = r.call_function("F", vec![Value::Int(1)]).unwrap();
+    assert!(matches!(v, Value::Int(3)), "got {v:?}");
+    let seen = inner.borrow();
+    assert_eq!(seen.stops, 1);
+    // `$arg` and the second `$local` are both visible at the stop.
+    assert_eq!(seen.seen, vec![("1".to_string(), "3".to_string())]);
+}
+
+#[test]
+fn a_conditional_breakpoint_only_fires_when_its_condition_holds() {
+    let src = "Func F()\n    Local $hit = 0\n    For $i = 1 To 5\n        $hit += 1\n    Next\n    Return $hit\nEndFunc\n";
+    let mut r = rt(src);
+    // Break inside the loop only on the last iteration.
+    let id = r.breakpoints_mut().add(4, Some("$i = 5".to_string()));
+    r.set_debugger(Box::new(TracingDebugger::default()));
+    assert!(matches!(
+        r.call_function("F", vec![]).unwrap(),
+        Value::Int(5)
+    ));
+    let hits = r.breakpoints().iter().find(|b| b.id == id).unwrap().hits;
+    assert_eq!(hits, 1, "a guarded breakpoint counted the wrong number of hits");
+}
+
+#[test]
+fn breakpoint_edits_apply_through_the_host() {
+    let src = "Func F()\n    Return 1\nEndFunc\n";
+    let mut r = rt(src);
+    let id = r.add_breakpoint(2, Some("True".to_string()));
+    assert_eq!(r.breakpoints().len(), 1);
+    assert_eq!(r.breakpoints()[0].condition.as_deref(), Some("True"));
+    assert!(r.set_breakpoint_enabled(id, false));
+    assert!(!r.breakpoints()[0].enabled);
+    assert!(r.remove_breakpoint(id));
+    assert!(r.breakpoints().is_empty());
+}
+
+#[test]
+fn the_host_reports_frames_and_functions() {
+    let src = "Func F()\n    Local $x = 1\n    Return G()\nEndFunc\nFunc G()\n    Return 2\nEndFunc\n";
+    let mut r = rt(src);
+    r.call_function("F", vec![]).unwrap();
+    let names = r.function_names();
+    assert!(names.contains(&"F".to_string()) && names.contains(&"G".to_string()));
+    // Nothing is running any more, so there are no frames to report.
+    assert!(r.frames().is_empty());
+    assert!(r.globals().is_empty());
 }

@@ -9,6 +9,7 @@
 //! au3 pretty      <FILE> [-o FILE]
 //! au3 deobfuscate <FILE> [-o FILE]
 //! au3 run         <FUNC> <FILE> [--arg V]... [--init] [--trace]
+//! au3 debug       <FILE> [-c CMD]...
 //! ```
 //!
 //! Subcommands may be abbreviated when unambiguous (`au3 deob`) and have
