@@ -18,6 +18,7 @@
 //! | [`interp`] | the [`Runtime`]: load a program, call functions, evaluate expressions |
 //! | [`builtins`] | the implemented subset of AutoIt's function library |
 //! | [`host`] | [`host::Host`] — how a *complete* runtime plugs native functions in |
+//! | [`platform`] | [`platform::Platform`] — OS-specific builtins (Linux generic / Windows) |
 //! | [`debug`] | [`debug::Debugger`], breakpoints and call frames — the debug module's seam |
 //! | [`error`] | [`error::RuntimeError`] and control-flow signals |
 //!
@@ -37,6 +38,7 @@ pub mod debug;
 pub mod error;
 pub mod host;
 pub mod interp;
+pub mod platform;
 pub mod value;
 
 pub use debug::{
@@ -45,4 +47,5 @@ pub use debug::{
 pub use error::{Flow, RuntimeError};
 pub use host::{Host, HostContext, NativeFn, NativeHost};
 pub use interp::{is_constant_expr, Runtime};
+pub use platform::{host_platform, GenericPlatform, Platform};
 pub use value::{ArrayRef, MapRef, Value};

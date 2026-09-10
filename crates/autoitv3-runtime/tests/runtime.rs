@@ -464,3 +464,76 @@ fn sample_script() -> Option<String> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Platform layer (the seam for OS-specific builtins)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_platform_matches_the_target_os() {
+    let r = rt("Func F()\nEndFunc\n");
+    let expected = if cfg!(windows) { "windows" } else { "linux-generic" };
+    assert_eq!(r.platform_name(), expected);
+}
+
+#[test]
+fn platform_is_consulted_after_the_host() {
+    use autoitv3_runtime::platform::Platform;
+
+    /// A platform that answers one function with a marker value.
+    struct ProbePlatform;
+    impl Platform for ProbePlatform {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
+        fn provides(&self, name: &str) -> bool {
+            name.eq_ignore_ascii_case("PlatformOnly")
+        }
+        fn call(
+            &mut self,
+            name: &str,
+            _args: Vec<Value>,
+            _ctx: &mut dyn HostContext,
+        ) -> Result<Option<Value>, autoitv3_runtime::RuntimeError> {
+            if name.eq_ignore_ascii_case("PlatformOnly") {
+                return Ok(Some(Value::str("from-platform")));
+            }
+            Ok(None)
+        }
+    }
+
+    let src = "Func F()\n    Return PlatformOnly()\nEndFunc\n";
+    let mut r = rt(src);
+    r.set_platform(Box::new(ProbePlatform));
+    assert_eq!(r.platform_name(), "probe");
+    assert_eq!(r.call_function("F", vec![]).unwrap().to_autoit_string(), "from-platform");
+
+    // An explicit host takes precedence over the platform.
+    let mut host = NativeHost::new();
+    host.register("PlatformOnly", |_ctx: &mut dyn HostContext, _a: Vec<Value>| {
+        Ok(Value::str("from-host"))
+    });
+    r.set_host(Box::new(host));
+    assert_eq!(r.call_function("F", vec![]).unwrap().to_autoit_string(), "from-host");
+}
+
+#[test]
+fn nothing_os_specific_is_silently_invented() {
+    // No Windows-only function is implemented off Windows, so an unknown name
+    // must fail loudly rather than quietly returning a made-up value.
+    let src = "Func F()\n    Return ObjCreate(\"WScript.Shell\")\nEndFunc\n";
+    let err = rt(src).call_function("F", vec![]).unwrap_err();
+    // `ObjCreate` is not a neutral stub on this platform.
+    assert!(
+        matches!(err, autoitv3_runtime::RuntimeError::UndefinedFunction { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn member_access_reports_that_it_needs_a_platform_host() {
+    let src = "Func F()\n    Return $obj.Prop\nEndFunc\n";
+    let err = rt(src).call_function("F", vec![]).unwrap_err();
+    let msg = err.message();
+    assert!(msg.contains("platform host"), "got: {msg}");
+}

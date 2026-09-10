@@ -51,8 +51,15 @@ impl PrettyPrinter {
                 break;
             }
             if !self.strip_comments {
-                self.pad();
-                let _ = writeln!(self.out, ";{}", c.text);
+                if c.block {
+                    // A `#cs ... #ce` block already carries its own delimiters
+                    // and layout, so it is reproduced verbatim rather than
+                    // re-spelled as `;` line comments.
+                    let _ = writeln!(self.out, "{}", c.text);
+                } else {
+                    self.pad();
+                    let _ = writeln!(self.out, ";{}", c.text);
+                }
             }
             *ci += 1;
         }
@@ -89,6 +96,9 @@ impl PrettyPrinter {
 
     fn print_func(&mut self, f: &FuncDef) {
         self.pad();
+        if f.is_volatile {
+            let _ = write!(self.out, "Volatile ");
+        }
         let _ = write!(self.out, "Func {}", f.name.name);
         if !f.params.is_empty() {
             let _ = write!(self.out, "(");
@@ -134,6 +144,9 @@ impl PrettyPrinter {
                 };
                 if v.is_redim {
                     let _ = write!(self.out, "ReDim");
+                } else if v.is_enum && v.kind == VarKind::Local {
+                    // A bare `Enum` is local by default; printing `Local Enum`
+                    // would be noise (and `Global Enum` must keep `Global`).
                 } else {
                     let _ = write!(self.out, "{kw}");
                 }
@@ -142,6 +155,10 @@ impl PrettyPrinter {
                 }
                 if v.is_enum {
                     let _ = write!(self.out, " Enum");
+                }
+                if let Some(step) = &v.enum_step {
+                    let _ = write!(self.out, " Step ");
+                    self.print_expr(step);
                 }
                 for (i, item) in v.vars.iter().enumerate() {
                     if i > 0 {
@@ -491,6 +508,7 @@ impl PrettyPrinter {
                     BinaryOp::CaretAssign => " ^= ",
                     BinaryOp::AmpAssign => " &= ",
                     BinaryOp::Eq => " == ",
+                    BinaryOp::EqLoose => " = ",
                     BinaryOp::NotEq => " <> ",
                     BinaryOp::Lt => " < ",
                     BinaryOp::Le => " <= ",
@@ -560,6 +578,26 @@ impl PrettyPrinter {
                     self.print_expr(a);
                 }
                 let _ = write!(self.out, ")");
+            }
+            ExprKind::Member(recv, name) => {
+                // The implicit `With` subject prints as nothing, so a leading
+                // `.Value` comes out exactly as written.
+                self.print_expr(recv);
+                let _ = write!(self.out, ".{}", name.name);
+            }
+            ExprKind::MethodCall(recv, name, args) => {
+                self.print_expr(recv);
+                let _ = write!(self.out, ".{}(", name.name);
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        let _ = write!(self.out, ", ");
+                    }
+                    self.print_expr(a);
+                }
+                let _ = write!(self.out, ")");
+            }
+            ExprKind::WithSubject => {
+                // Printed by the enclosing `Member`/`MethodCall`.
             }
             ExprKind::Ternary(c, a, b) => {
                 self.print_expr(c);

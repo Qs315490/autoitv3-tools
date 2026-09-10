@@ -47,11 +47,16 @@ pub enum TokenKind {
     Default,
     /// The `Null` keyword.
     Null,
+    /// The `Volatile` function modifier (`Volatile Func Foo()`).
+    Volatile,
 
     // ----- Comments -----
-    /// A `;` comment. The string holds the text after the `;` (without the
-    /// leading `;`), trimmed of trailing `\r`. The newline is a separate token.
-    Comment(String),
+    /// A comment. For a `;` line comment `text` holds what follows the `;`
+    /// (trailing `\r` trimmed) and `block` is false; for a `#cs ... #ce`
+    /// block `text` holds the whole block verbatim, `#cs`/`#ce` lines
+    /// included, and `block` is true. The newline after a line comment is a
+    /// separate token.
+    Comment { text: String, block: bool },
 
     // ----- Statement separators -----
     Newline,
@@ -66,6 +71,9 @@ pub enum TokenKind {
     RParen,
     LBracket,
     RBracket,
+    /// `.` — member access on a COM/object value (`$obj.Prop`, `$obj.Method()`),
+    /// and the implicit `With` subject when it starts an expression.
+    Dot,
     Comma,
 
     // ----- Keywords -----

@@ -22,6 +22,7 @@ use crate::builtins;
 use crate::debug::{Breakpoints, DebugAction, Debugger, FrameInfo, StopReason};
 use crate::error::{Flow, RuntimeError};
 use crate::host::{Host, HostContext};
+use crate::platform::{self, Platform};
 use crate::value::Value;
 
 /// Default runaway-loop guard.
@@ -46,6 +47,8 @@ pub struct Runtime {
     func_names: HashMap<String, String>,
     /// Plugged-in provider of native functions (the full-runtime seam).
     host: Option<Box<dyn Host>>,
+    /// OS integration; supplies builtins that cannot be portable.
+    platform: Box<dyn Platform>,
     /// Attached debugger (the debug-module seam).
     debugger: Option<Box<dyn Debugger>>,
     /// Breakpoints consulted before each statement.
@@ -78,6 +81,7 @@ impl Runtime {
             funcs: HashMap::new(),
             func_names: HashMap::new(),
             host: None,
+            platform: platform::host_platform(),
             debugger: None,
             breakpoints: Breakpoints::new(),
             error: 0,
@@ -164,8 +168,21 @@ impl Runtime {
     }
 
     /// Attach a host providing native functions.
+    ///
+    /// A host is consulted before the built-in [`Platform`], so an embedding
+    /// application can override any platform-provided function.
     pub fn set_host(&mut self, host: Box<dyn Host>) {
         self.host = Some(host);
+    }
+
+    /// Replace the platform layer (defaults to the current OS's).
+    pub fn set_platform(&mut self, platform: Box<dyn Platform>) {
+        self.platform = platform;
+    }
+
+    /// The name of the active platform, e.g. `linux-generic` or `windows`.
+    pub fn platform_name(&self) -> &'static str {
+        self.platform.name()
     }
 
     /// Attach a debugger.
@@ -298,19 +315,26 @@ impl Runtime {
         if let Some(v) = builtins::call(self, name, &args, span)? {
             return Ok(v);
         }
+        // An explicit host wins over the platform default.
         if self.host.is_some() {
             let Runtime { globals, error, extended, host, .. } = self;
             let mut ctx = HostBridge { globals, error, extended };
             if let Some(host) = host.as_mut() {
-                if let Some(v) = host.call(name, args, &mut ctx)? {
+                if let Some(v) = host.call(name, args.clone(), &mut ctx)? {
                     return Ok(v);
                 }
             }
-            return Err(RuntimeError::UndefinedFunction {
-                name: name.to_string(),
-                span: Some(span),
-            });
         }
+
+        // Then the OS layer (nothing but the scaffold on non-Windows).
+        {
+            let Runtime { globals, error, extended, platform, .. } = self;
+            let mut ctx = HostBridge { globals, error, extended };
+            if let Some(v) = platform.call(name, args, &mut ctx)? {
+                return Ok(v);
+            }
+        }
+
         Err(RuntimeError::UndefinedFunction { name: name.to_string(), span: Some(span) })
     }
 
@@ -540,6 +564,27 @@ impl Runtime {
             }
             ExprKind::Binary(op, a, b) => self.eval_binary(op, a, b, e.span),
             ExprKind::Paren(p) => self.eval_expr(p),
+            // COM/object member access has no portable semantics: it needs a
+            // platform host (see `crate::platform`) to resolve the member
+            // against a real object.
+            ExprKind::Member(_, name) => {
+                return Err(RuntimeError::Unsupported {
+                    what: format!("member access `.{}` (needs a platform host)", name.name),
+                    span: Some(e.span),
+                })
+            }
+            ExprKind::MethodCall(_, name, _) => {
+                return Err(RuntimeError::Unsupported {
+                    what: format!("method call `.{}()` (needs a platform host)", name.name),
+                    span: Some(e.span),
+                })
+            }
+            ExprKind::WithSubject => {
+                return Err(RuntimeError::Unsupported {
+                    what: "`With` subject outside a platform host".to_string(),
+                    span: Some(e.span),
+                })
+            }
             ExprKind::Ternary(c, x, y) => {
                 if self.eval_expr(c)?.is_truthy() {
                     self.eval_expr(x)
@@ -610,7 +655,9 @@ impl Runtime {
         let l = self.eval_expr(a)?;
         let r = self.eval_expr(b)?;
         Ok(match op {
+            // `==` is case-sensitive for strings; `=` and `<>` are not.
             Eq => Value::Bool(l.eq_strict(&r)),
+            EqLoose => Value::Bool(l.eq_loose(&r)),
             NotEq => Value::Bool(!l.eq_loose(&r)),
             Lt => Value::Bool(l.compare(&r) == std::cmp::Ordering::Less),
             Le => Value::Bool(l.compare(&r) != std::cmp::Ordering::Greater),
@@ -891,6 +938,13 @@ impl Runtime {
             VarKind::Global => VarScope::Global,
             VarKind::Local | VarKind::Dim | VarKind::Static => VarScope::Local,
         };
+        // Running state for `Enum` numbering (ignored for other declarations).
+        let enum_step = match &v.enum_step {
+            Some(e) => self.eval_expr(e)?.to_int(),
+            None => 1,
+        };
+        let mut enum_next: Option<i64> = None;
+
         for item in &v.vars {
             let key = var_key(&item.name.name);
             if v.is_redim {
@@ -922,13 +976,18 @@ impl Runtime {
             };
 
             if v.is_enum {
-                // Enum members are successive integers from the first value.
-                let base = if let Some(init) = &item.init {
-                    self.eval_expr(init)?.to_int()
-                } else {
-                    0
+                // Enum numbering: an explicit value resets the counter,
+                // otherwise the member continues the sequence, advancing by
+                // `Step n` (default 1).
+                let value = match &item.init {
+                    Some(init) => self.eval_expr(init)?.to_int(),
+                    None => match enum_next {
+                        Some(prev) => prev + enum_step,
+                        None => 0,
+                    },
                 };
-                self.write_var(&item.name.name, Value::Int(base), scope, span);
+                enum_next = Some(value);
+                self.write_var(&item.name.name, Value::Int(value), scope, span);
                 continue;
             }
             let _ = key;

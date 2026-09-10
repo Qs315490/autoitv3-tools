@@ -226,6 +226,16 @@ impl RenameCtx {
                     self.visit_expr(it);
                 }
             }
+            // COM member names are not AutoIt variables or functions, so they
+            // are left exactly as written; only the receiver is visited.
+            ExprKind::Member(recv, _) => self.visit_expr(recv),
+            ExprKind::MethodCall(recv, _, args) => {
+                self.visit_expr(recv);
+                for a in args {
+                    self.visit_expr(a);
+                }
+            }
+            ExprKind::WithSubject => {}
         }
     }
 }

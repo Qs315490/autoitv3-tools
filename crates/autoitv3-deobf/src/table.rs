@@ -308,6 +308,14 @@ impl ResolveCtx {
                 self.rewrite_expr(a, tv);
                 self.rewrite_expr(b, tv);
             }
+            ExprKind::Member(recv, _) => self.rewrite_expr(recv, tv),
+            ExprKind::MethodCall(recv, _, args) => {
+                self.rewrite_expr(recv, tv);
+                for a in args {
+                    self.rewrite_expr(a, tv);
+                }
+            }
+            ExprKind::WithSubject => {}
             ExprKind::Lit(_) | ExprKind::Macro(_) | ExprKind::Ident(_) => {}
         }
     }

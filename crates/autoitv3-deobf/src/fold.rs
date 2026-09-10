@@ -85,6 +85,13 @@ impl FoldCtx<'_> {
                     changed |= self.fold_expr(it);
                 }
             }
+            ExprKind::Member(recv, _) => changed |= self.fold_expr(recv),
+            ExprKind::MethodCall(recv, _, args) => {
+                changed |= self.fold_expr(recv);
+                for a in args {
+                    changed |= self.fold_expr(a);
+                }
+            }
             _ => {}
         }
 

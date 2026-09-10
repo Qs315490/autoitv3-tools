@@ -48,11 +48,32 @@ pub fn parse(src: &str) -> Result<Program, ParseError> {
 }
 
 impl Parser {
+    /// Build a parser over `tokens`.
+    ///
+    /// Comment tokens are filtered out of the stream up front and collected
+    /// into [`Parser::comments`]. That way comments are preserved for the
+    /// pretty-printer while the grammar never has to special-case them — a
+    /// comment may then appear anywhere, including in the middle of an
+    /// expression such as a multi-line array literal.
     pub fn new(tokens: Vec<Token>) -> Self {
+        let mut code = Vec::with_capacity(tokens.len());
+        let mut comments = Vec::new();
+        for t in tokens {
+            match t.kind {
+                TokenKind::Comment { ref text, block } => {
+                    comments.push(crate::ast::Comment {
+                        text: text.clone(),
+                        block,
+                        span: t.span,
+                    });
+                }
+                _ => code.push(t),
+            }
+        }
         Self {
-            tokens,
+            tokens: code,
             pos: 0,
-            comments: Vec::new(),
+            comments,
         }
     }
 
@@ -71,13 +92,6 @@ impl Parser {
         let t = self.peek().clone();
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
-        }
-        // Capture comment tokens so the pretty-printer can re-emit them.
-        if let TokenKind::Comment(text) = &t.kind {
-            self.comments.push(crate::ast::Comment {
-                text: text.clone(),
-                span: t.span,
-            });
         }
         t
     }
@@ -143,9 +157,6 @@ impl Parser {
                 Newline | Colon => {
                     self.bump();
                 }
-                TokenKind::Comment(_) => {
-                    self.bump();
-                }
                 _ => break,
             }
         }
@@ -178,6 +189,15 @@ impl Parser {
             }
             Func => {
                 let def = self.parse_func_def()?;
+                ItemKind::Func(def)
+            }
+            // `Volatile Func Foo()` — the modifier is optional and only
+            // meaningful on a function.
+            Volatile => {
+                self.bump();
+                let mut def = self.parse_func_def()?;
+                def.is_volatile = true;
+                def.span = Span::new(start.start, self.prev_span().end);
                 ItemKind::Func(def)
             }
             _ => ItemKind::Stmt(self.parse_stmt()?),
@@ -226,6 +246,7 @@ impl Parser {
             name: name.clone(),
             params,
             body,
+            is_volatile: false,
             span: Span::merge(name.span, self.prev_span()),
         })
     }
@@ -306,7 +327,7 @@ impl Parser {
             Select => self.parse_select()?,
             Switch => self.parse_switch()?,
             With => self.parse_with()?,
-            _ => StmtKind::Expr(self.parse_expr()?),
+            _ => StmtKind::Expr(self.parse_stmt_expr()?),
         };
         Ok(Stmt {
             kind,
@@ -331,7 +352,12 @@ impl Parser {
         };
         // `Local Const` / `Global Const` / `Global Enum` ordering, plus
         // multiple leading scope keywords such as `Static Local $x`.
-        let mut is_enum = false;
+        // A leading `Enum` (without `Global`) is already consumed above, so it
+        // has to seed `is_enum` here as well.
+        let mut is_enum = matches!(kw.kind, Enum);
+        // `Enum Step n` / `Enum $A = 1, $B` — captured below, once `Enum` is
+        // known to be in play.
+        let mut enum_step: Option<Expr> = None;
         // `Static` is the strongest scope modifier and wins over the others,
         // regardless of order (`Static Local $x` == `Local Static $x`).
         let mut saw_static = kind == VarKind::Static;
@@ -341,6 +367,9 @@ impl Parser {
             } else if self.eat(&Enum).is_some() {
                 is_enum = true;
                 is_const = true; // enumeration members are constants
+                if self.eat(&Step).is_some() {
+                    enum_step = Some(self.parse_expr()?);
+                }
             } else if self.at(&Local) {
                 self.bump();
                 if !saw_static {
@@ -376,6 +405,7 @@ impl Parser {
             is_const,
             is_enum,
             is_redim,
+            enum_step,
             vars,
         }))
     }
@@ -653,32 +683,50 @@ impl Parser {
 
     // ----- expressions -----
 
+    /// Parse an expression in *expression* context.
+    ///
+    /// AutoIt overloads `=`: at statement level it assigns, but inside an
+    /// expression it compares. Everything reached from here is an expression,
+    /// so `=` becomes [`BinaryOp::EqLoose`]. The statement form (`$x = 1`) is
+    /// handled by [`Parser::parse_stmt_expr`].
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_assignment()
+        self.parse_ternary()
     }
 
-    fn parse_assignment(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_ternary()?;
-        let op = match self.peek_kind() {
-            Assign => Some(BinaryOp::Assign),
-            PlusAssign => Some(BinaryOp::PlusAssign),
-            MinusAssign => Some(BinaryOp::MinusAssign),
-            StarAssign => Some(BinaryOp::StarAssign),
-            SlashAssign => Some(BinaryOp::SlashAssign),
-            CaretAssign => Some(BinaryOp::CaretAssign),
-            AmpAssign => Some(BinaryOp::AmpAssign),
-            _ => None,
-        };
-        if let Some(op) = op {
-            self.bump();
-            let rhs = self.parse_assignment()?;
-            let span = lhs.span.merge(rhs.span);
-            return Ok(Expr {
-                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
-                span,
-            });
+    /// Parse the expression of an expression-statement.
+    ///
+    /// A leading `lvalue = value` — or any compound form such as `lvalue +=
+    /// value` — is an assignment; anything else is an ordinary expression.
+    fn parse_stmt_expr(&mut self) -> Result<Expr, ParseError> {
+        let save = self.pos;
+        if let Some(lhs) = self.try_parse_lvalue() {
+            if let Some(op) = assign_op(self.peek_kind()) {
+                self.bump();
+                let rhs = self.parse_expr()?;
+                let span = lhs.span.merge(rhs.span);
+                return Ok(Expr {
+                    kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+                    span,
+                });
+            }
         }
-        Ok(lhs)
+        // Not an assignment: re-read as an ordinary expression.
+        self.pos = save;
+        self.parse_expr()
+    }
+
+    /// Try to read `$var` with optional `[...]` subscripts. Restores the
+    /// cursor and returns `None` when the tokens are not an lvalue.
+    fn try_parse_lvalue(&mut self) -> Option<Expr> {
+        let save = self.pos;
+        match self.parse_postfix() {
+            // Members are assignable too (`$obj.Prop = 1`, `.Prop = 1`).
+            Ok(e) if matches!(e.kind, ExprKind::Var(_) | ExprKind::Member(..)) => Some(e),
+            _ => {
+                self.pos = save;
+                None
+            }
+        }
     }
 
     /// `cond ? a : b` — the ternary conditional. `?` binds looser than the
@@ -748,6 +796,10 @@ impl Parser {
             let op = if self.at(&Eq) {
                 self.bump();
                 BinaryOp::Eq
+            } else if self.at(&Assign) {
+                // `=` inside an expression is comparison, not assignment.
+                self.bump();
+                BinaryOp::EqLoose
             } else if self.at(&NotEq) {
                 self.bump();
                 BinaryOp::NotEq
@@ -873,10 +925,48 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
-        let mut e = self.parse_primary()?;
-        // Array indexing: `$a[0][1]`, `Foo()[2]`.
+        // A leading `.` is the implicit `With ... EndWith` subject.
+        let mut e = if self.at(&Dot) {
+            let span = self.peek().span;
+            Expr {
+                kind: ExprKind::WithSubject,
+                span,
+            }
+        } else {
+            self.parse_primary()?
+        };
+
+        // Array indexing (`$a[0][1]`) and member access (`$obj.Prop`,
+        // `$obj.Method()`, chains of both).
         loop {
-            if self.at(&LBracket) {
+            if self.at(&Dot) {
+                self.bump(); // '.'
+                let name = self.parse_ident()?;
+                if self.at(&LParen) {
+                    self.bump();
+                    let mut args = Vec::new();
+                    if !self.at(&RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if self.eat(&Comma).is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    let close = self.expect(&RParen, ")")?;
+                    let span = Span::new(e.span.start, close.span.end);
+                    e = Expr {
+                        kind: ExprKind::MethodCall(Box::new(e), name, args),
+                        span,
+                    };
+                } else {
+                    let span = Span::new(e.span.start, name.span.end);
+                    e = Expr {
+                        kind: ExprKind::Member(Box::new(e), name),
+                        span,
+                    };
+                }
+            } else if self.at(&LBracket) {
                 self.bump();
                 let idx = self.parse_expr()?;
                 self.expect(&RBracket, "]")?;
@@ -895,6 +985,11 @@ impl Parser {
             } else {
                 break;
             }
+        }
+
+        // A `.` with nothing after it is not a valid expression.
+        if matches!(e.kind, ExprKind::WithSubject) {
+            return Err(self.err_here("expected a member name after '.'"));
         }
         // User-defined array call: `$arr[0](...)` returns a function ref
         // that is then invoked. Represent as `IndexCall`.
@@ -1114,4 +1209,18 @@ impl Parser {
             span,
         }
     }
+}
+
+/// Map an assignment token to its operator, or `None` for anything else.
+fn assign_op(kind: &TokenKind) -> Option<BinaryOp> {
+    Some(match kind {
+        Assign => BinaryOp::Assign,
+        PlusAssign => BinaryOp::PlusAssign,
+        MinusAssign => BinaryOp::MinusAssign,
+        StarAssign => BinaryOp::StarAssign,
+        SlashAssign => BinaryOp::SlashAssign,
+        CaretAssign => BinaryOp::CaretAssign,
+        AmpAssign => BinaryOp::AmpAssign,
+        _ => return None,
+    })
 }
