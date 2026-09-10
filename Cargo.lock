@@ -98,6 +98,7 @@ name = "autoitv3-platform"
 version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
+ "autoitv3-deobf",
  "autoitv3-runtime",
 ]
 

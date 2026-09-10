@@ -11,6 +11,7 @@
 //! which keeps the interpreter core independent of any platform.
 
 use crate::error::RuntimeError;
+use crate::profile::ExecutionProfile;
 use crate::value::Value;
 
 /// A native function callable from interpreted AutoIt code.
@@ -29,6 +30,9 @@ pub trait HostContext {
     fn error(&self) -> i64;
     /// Set `@error` / `@extended`, mirroring `SetError()`.
     fn set_error(&mut self, error: i64, extended: i64);
+    /// The execution profile in force, so a platform can honour it (skipping
+    /// `Sleep`, seeding `Random`, refusing writes).
+    fn profile(&self) -> &ExecutionProfile;
 }
 
 /// A pluggable provider of native functions.

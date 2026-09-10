@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 use autoitv3_ast::ast::*;
-use autoitv3_runtime::{Runtime, Value};
+use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 
 /// Result of resolving the function table.
 #[derive(Debug, Default)]
@@ -104,6 +104,9 @@ struct ResolveCtx {
 /// the builder is missing or cannot be evaluated.
 fn eval_builder(prog: &Program, builder_func: &str) -> Option<Vec<String>> {
     let mut rt = Runtime::with_program(prog);
+    // Deobfuscation must be reproducible and must not touch the machine, so it
+    // uses the deterministic profile rather than AutoIt's own semantics.
+    rt.set_profile(ExecutionProfile::deterministic());
     // Table builders are finite, but keep a generous guard against a builder
     // that loops forever on an unsupported construct.
     rt.set_max_steps(20_000_000);

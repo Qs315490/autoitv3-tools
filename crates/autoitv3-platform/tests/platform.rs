@@ -245,17 +245,14 @@ fn math_functions() {
 }
 
 #[test]
-fn random_is_deterministic_by_default() {
-    // Reproducibility matters more than entropy for a deobfuscation tool.
-    let body = "Return Random(1, 1000)";
-    assert_eq!(text(body), text(body));
-
-    // ...and RandomSeed makes it explicit.
-    let seeded = r#"RandomSeed(42)
+fn randomseed_pins_the_sequence_in_any_profile() {
+    // Determinism is a *profile* choice now (see the `profile` test file);
+    // what is unconditional is that an explicit seed reproduces exactly.
+    let body = r#"RandomSeed(42)
     Local $a = Random(1, 1000)
     RandomSeed(42)
     Return $a = Random(1, 1000)"#;
-    assert_eq!(text(seeded), "True");
+    assert_eq!(text(body), "True");
 }
 
 #[test]

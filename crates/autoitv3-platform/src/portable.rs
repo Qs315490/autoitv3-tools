@@ -42,6 +42,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use autoitv3_runtime::error::RuntimeError;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::platform::Platform;
+use autoitv3_runtime::profile::{EffectPolicy, RandomPolicy, DEFAULT_RANDOM_SEED};
 use autoitv3_runtime::value::Value;
 
 /// Every function this layer implements.
@@ -118,14 +119,11 @@ struct FileEntry {
 /// The portable platform.
 pub struct PortablePlatform {
     files: Vec<Option<FileEntry>>,
-    /// xorshift64 state; deterministic so deobfuscation is reproducible.
-    rng: u64,
+    /// xorshift64 state. `None` until first use, so the seed can come from the
+    /// execution profile (deterministic or entropy) or from `RandomSeed`.
+    rng: Option<u64>,
     origin: Instant,
 }
-
-/// The seed `Random` starts from, so a script that never calls `RandomSeed`
-/// still produces the same values on every run.
-const DEFAULT_SEED: u64 = 0x2545_F491_4F6C_DD1D;
 
 impl Default for PortablePlatform {
     fn default() -> Self {
@@ -138,7 +136,7 @@ impl PortablePlatform {
     pub fn new() -> Self {
         Self {
             files: Vec::new(),
-            rng: DEFAULT_SEED,
+            rng: None,
             origin: Instant::now(),
         }
     }
@@ -180,13 +178,27 @@ impl PortablePlatform {
         }
     }
 
+    /// Seed the generator on first use, honouring the execution profile.
+    ///
+    /// `RandomPolicy::Deterministic` makes a run reproducible;
+    /// `RandomPolicy::Entropy` behaves like AutoIt.
+    fn ensure_rng(&mut self, ctx: &dyn HostContext) {
+        if self.rng.is_some() {
+            return;
+        }
+        self.rng = Some(match ctx.profile().random {
+            RandomPolicy::Deterministic(seed) => seed,
+            RandomPolicy::Entropy => entropy_seed(),
+        });
+    }
+
     fn next_u64(&mut self) -> u64 {
         // xorshift64*
-        let mut x = self.rng;
+        let mut x = self.rng.unwrap_or(0);
         x ^= x >> 12;
         x ^= x << 25;
         x ^= x >> 27;
-        self.rng = x;
+        self.rng = Some(x);
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
@@ -201,6 +213,12 @@ impl PortablePlatform {
             _ => Access::Read,
         };
         let create_path = mode & 8 != 0;
+
+        // Opening for write creates or truncates the file: a state change.
+        if access != Access::Read && !Self::writes_allowed(ctx) {
+            ctx.set_error(1, 0);
+            return Value::Int(-1);
+        }
 
         let p = PathBuf::from(&path);
         if create_path {
@@ -302,6 +320,10 @@ impl PortablePlatform {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
+        if !Self::writes_allowed(ctx) {
+            ctx.set_error(1, 0);
+            return Value::Int(0);
+        }
         // `FileWriteLine` terminates the line with @CRLF, like AutoIt.
         let payload = if line_mode {
             format!("{text}\r\n")
@@ -335,6 +357,11 @@ impl PortablePlatform {
             total += Self::dir_size(&e.path());
         }
         total
+    }
+
+    /// Whether the profile allows modifying state.
+    fn writes_allowed(ctx: &dyn HostContext) -> bool {
+        matches!(ctx.profile().effects, EffectPolicy::Allow)
     }
 
     // ----- dispatch -----
@@ -441,12 +468,20 @@ impl PortablePlatform {
             // closest portable answer.
             "filegetshortname" => Value::Str(arg_str(args, 0)),
             "filedelete" => {
+                if !Self::writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
                 let path = arg_str(args, 0);
                 let ok = fs::remove_file(&path).is_ok();
                 ctx.set_error(if ok { 0 } else { 1 }, 0);
                 Value::Int(i64::from(ok))
             }
             "filecopy" | "filemove" => {
+                if !Self::writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
                 let src = arg_str(args, 0);
                 let dst = arg_str(args, 1);
                 let overwrite = arg_int(args, 2) == 1;
@@ -482,6 +517,10 @@ impl PortablePlatform {
                 Value::Int(i64::from(ok))
             }
             "filesetattrib" => {
+                if !Self::writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
                 let path = arg_str(args, 0);
                 let attrib = arg_str(args, 1).to_ascii_uppercase();
                 let Ok(meta) = fs::metadata(&path) else {
@@ -502,11 +541,19 @@ impl PortablePlatform {
 
             // ---------------- directories ----------------
             "dircreate" => {
+                if !Self::writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
                 let ok = fs::create_dir_all(arg_str(args, 0)).is_ok();
                 ctx.set_error(if ok { 0 } else { 1 }, 0);
                 Value::Int(i64::from(ok))
             }
             "dirremove" => {
+                if !Self::writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
                 let path = arg_str(args, 0);
                 let recurse = arg_int(args, 1) == 1;
                 let r = if recurse {
@@ -523,6 +570,10 @@ impl PortablePlatform {
                 Value::Int(Self::dir_size(Path::new(&path)) as i64)
             }
             "dircopy" | "dirmove" => {
+                if !Self::writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
                 let src = arg_str(args, 0);
                 let dst = arg_str(args, 1);
                 let overwrite = arg_int(args, 2) == 1;
@@ -549,6 +600,10 @@ impl PortablePlatform {
             // ---------------- environment ----------------
             "envget" => Value::Str(std::env::var(arg_str(args, 0)).unwrap_or_default()),
             "envset" => {
+                if !Self::writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
                 let key = arg_str(args, 0);
                 if args.len() > 1 {
                     std::env::set_var(key, arg_str(args, 1));
@@ -582,10 +637,11 @@ impl PortablePlatform {
             "ceiling" => Value::Float(arg_f64(args, 0).ceil()),
             "randomseed" => {
                 let seed = arg_int(args, 0) as u64;
-                self.rng = if seed == 0 { DEFAULT_SEED } else { seed };
+                self.rng = Some(if seed == 0 { DEFAULT_RANDOM_SEED } else { seed });
                 Value::Int(1)
             }
             "random" => {
+                self.ensure_rng(ctx);
                 if args.is_empty() {
                     let r = self.next_u64() >> 11;
                     Value::Float(r as f64 / (1u64 << 53) as f64)
@@ -737,6 +793,25 @@ fn arg_int(args: &[Value], i: usize) -> i64 {
 
 fn arg_f64(args: &[Value], i: usize) -> f64 {
     args.get(i).map(|v| v.to_f64()).unwrap_or(0.0)
+}
+
+/// A best-effort entropy seed (not cryptographic).
+///
+/// Mixes the clock with the process id and an address from the stack, which is
+/// enough to make a faithful run differ from the next one.
+fn entropy_seed() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let pid = std::process::id() as u64;
+    let local = 0u8;
+    let addr = &local as *const u8 as u64;
+    // splitmix64 finaliser
+    let mut z = nanos ^ pid.rotate_left(17) ^ addr.rotate_left(31);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Recursively copy `from` into the existing directory `to`.
