@@ -525,21 +525,15 @@ pub(crate) fn call(
         }
 
         // ---------------- benign no-ops ----------------
-        // Only *portable* calls that have no observable effect on the values a
-        // deobfuscator computes are neutralised here. Anything OS-specific
-        // (registry, COM, DllCall, GUI, clipboard, process control) is
-        // deliberately NOT stubbed: a silent fake value would corrupt results.
-        // Those belong to a `Platform` implementation, and until one provides
-        // them the interpreter reports an undefined function.
+        // Only calls that are pure *interpreter state* are neutralised here.
+        // Everything with an external effect (files, environment, processes,
+        // registry, COM, DllCall, GUI, console) belongs to a `Platform`
+        // implementation: a silent stub in this table would both invent a
+        // value and shadow the platform that could answer properly.
         "opt" | "autoitsetoption" => Value::Int(1),
+        // Deliberately does not sleep: honouring it would make evaluating a
+        // script's start-up code take minutes for no benefit.
         "sleep" => Value::Int(0),
-        "consolewrite" => Value::Int(0),
-        "filewrite" | "fileflush" | "fileclose" | "dircreate" => Value::Int(1),
-        "filegetsize" => Value::Int(0),
-        "filegetversion" => Value::Str("0.0.0.0".into()),
-        "filegetattrib" => Value::Str(String::new()),
-        "fileexists" => Value::Int(0),
-        "stdoutread" => Value::Str(String::new()),
 
         _ => return Ok(None),
     };
