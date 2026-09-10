@@ -7,6 +7,7 @@
 //! | `parse` | [`parse`] |
 //! | `pretty` | [`pretty`] |
 //! | `deobfuscate` | [`deobfuscate`] |
+//! | `evaluate` | [`evaluate`] |
 //! | `run` | [`run`] |
 //!
 //! The registry itself (names, aliases, help) is declared in
@@ -14,6 +15,7 @@
 //! there.
 
 pub mod deobfuscate;
+pub mod evaluate;
 pub mod parse;
 pub mod pretty;
 pub mod run;
@@ -27,6 +29,7 @@ pub fn dispatch(cli: &Cli) -> CliResult<()> {
         Command::Parse(args) => parse::run(args),
         Command::Pretty(args) => pretty::run(args),
         Command::Deobfuscate(args) => deobfuscate::run(args),
+        Command::Evaluate(args) => evaluate::run(args),
         Command::Run(args) => run::run(args),
     }
 }

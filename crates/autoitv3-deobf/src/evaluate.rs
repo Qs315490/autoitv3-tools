@@ -1,0 +1,406 @@
+//! Runtime evaluation: run the script body, then inline what it computed.
+//!
+//! The earlier passes work purely on syntax. [`crate::table`] can resolve the
+//! obfuscator's *function* table because that is built from array literals
+//! alone, but its *string* table is produced by running generated code
+//! (`Execute`, maps, `Binary`, string surgery) — nothing static can recover it.
+//!
+//! So this pass simply **runs** the script's top-level body on
+//! [`autoitv3_runtime::Runtime`] and then replaces every constant-indexed
+//! reference into a global table with the value that actually came out:
+//!
+//! ```text
+//! $string_table[0xc03]   ->   "Windows\\System32"     (a string the script built)
+//! $fn_table[0x33d]() ->   ResolvedFunc()        (a function name from the table)
+//! ```
+//!
+//! # Partial evaluation is the normal case
+//!
+//! A real script's start-up code quickly reaches the operating system —
+//! `DllCall`, the registry, GUI — which is exactly the boundary the
+//! `autoitv3-platform` crate marks with an undefined-function error. The
+//! obfuscator, however, builds its tables *early*, so an aborted run still
+//! leaves them in the globals. This pass therefore keeps whatever the run
+//! managed to produce and reports where it stopped, instead of discarding
+//! everything because the last line failed.
+
+use std::collections::{HashMap, HashSet};
+
+use autoitv3_ast::ast::*;
+use autoitv3_ast::span::Span;
+use autoitv3_runtime::profile::ExecutionProfile;
+use autoitv3_runtime::{Runtime, Value};
+
+/// What an [`evaluate`] run achieved.
+#[derive(Debug, Default, Clone)]
+pub struct EvaluateReport {
+    /// True when the script body ran to completion.
+    pub completed: bool,
+    /// Where the run stopped, when it did not complete.
+    pub stopped: Option<String>,
+    /// Number of globals the runtime produced.
+    pub globals: usize,
+    /// Number of those that are arrays or maps (i.e. candidate tables).
+    pub tables: usize,
+    /// Number of constant-indexed references replaced with runtime values.
+    pub substitutions: usize,
+    /// Number of indexed calls resolved to a real function name.
+    pub calls_resolved: usize,
+}
+
+/// Run `prog`'s script body and inline the resulting table values.
+///
+/// `prog` is modified in place. The script body itself stays in the tree — the
+/// caller decides whether to keep it (see `EvaluateReport::completed`).
+pub fn evaluate(prog: &mut Program, profile: ExecutionProfile) -> EvaluateReport {
+    let mut report = EvaluateReport::default();
+
+    // Run the script body. A failure part-way through is expected and useful:
+    // keep the globals it managed to build.
+    let mut rt = Runtime::with_program(prog);
+    rt.set_platform(autoitv3_platform::host_platform());
+    rt.set_profile(profile);
+    rt.set_max_steps(20_000_000);
+    match rt.run_script() {
+        Ok(flow) => {
+            report.completed = flow.is_normal();
+        }
+        Err(e) => {
+            report.stopped = Some(e.to_string());
+        }
+    }
+
+    let globals = rt.globals_snapshot();
+    report.globals = globals.len();
+
+    let mut tables: HashMap<String, Value> = HashMap::new();
+    for (name, value) in globals {
+        if matches!(value, Value::Array(_) | Value::Map(_)) {
+            report.tables += 1;
+        }
+        tables.insert(name, value);
+    }
+
+    // Bare variable reads are only safe to inline when the script itself
+    // promises the value never changes.
+    let consts = const_globals(prog);
+
+    let mut ctx = SubstituteCtx {
+        tables: &tables,
+        consts: &consts,
+        report: &mut report,
+    };
+    for item in &mut prog.items {
+        ctx.item(item);
+    }
+    report
+}
+
+/// Walks the tree replacing constant-indexed table reads.
+struct SubstituteCtx<'a> {
+    tables: &'a HashMap<String, Value>,
+    /// Names declared `Global Const`, which a bare read may be replaced by.
+    consts: &'a HashSet<String>,
+    report: &'a mut EvaluateReport,
+}
+
+impl SubstituteCtx<'_> {
+    fn item(&mut self, item: &mut Item) {
+        match &mut item.kind {
+            ItemKind::Func(f) => self.stmts(&mut f.body),
+            ItemKind::Stmt(s) => self.stmt(s),
+            ItemKind::Region(r) => {
+                for it in &mut r.items {
+                    self.item(it);
+                }
+            }
+            ItemKind::Directive(_) => {}
+        }
+    }
+
+    fn stmts(&mut self, stmts: &mut [Stmt]) {
+        for s in stmts {
+            self.stmt(s);
+        }
+    }
+
+    fn stmt(&mut self, s: &mut Stmt) {
+        match &mut s.kind {
+            StmtKind::VarDecl(v) => {
+                for item in &mut v.vars {
+                    for d in &mut item.dims {
+                        self.expr(d);
+                    }
+                    if let Some(init) = &mut item.init {
+                        self.expr(init);
+                    }
+                }
+            }
+            StmtKind::Expr(e) => self.expr(e),
+            StmtKind::Return(Some(e))
+            | StmtKind::Exit(Some(e))
+            | StmtKind::ExitLoop(Some(e))
+            | StmtKind::ContinueLoop(Some(e)) => self.expr(e),
+            StmtKind::If(if_) => {
+                self.expr(&mut if_.cond);
+                if let Some(ts) = &mut if_.then_stmt {
+                    self.stmt(ts);
+                }
+                self.stmts(&mut if_.then_block);
+                for (c, body) in &mut if_.else_ifs {
+                    self.expr(c);
+                    self.stmts(body);
+                }
+                self.stmts(&mut if_.else_block);
+            }
+            StmtKind::While(w) => {
+                self.expr(&mut w.cond);
+                self.stmts(&mut w.body);
+            }
+            StmtKind::DoUntil(d) => {
+                self.stmts(&mut d.body);
+                self.expr(&mut d.cond);
+            }
+            StmtKind::For(f) => {
+                if let Some(it) = &mut f.iter {
+                    self.expr(it);
+                }
+                self.expr(&mut f.from);
+                self.expr(&mut f.to);
+                if let Some(st) = &mut f.step {
+                    self.expr(st);
+                }
+                self.stmts(&mut f.body);
+            }
+            StmtKind::Select(cases) => {
+                for c in cases {
+                    self.case(c);
+                }
+            }
+            StmtKind::Switch(sw) => {
+                self.expr(&mut sw.expr);
+                for c in &mut sw.cases {
+                    self.case(c);
+                }
+            }
+            StmtKind::With(w) => {
+                self.expr(&mut w.expr);
+                self.stmts(&mut w.body);
+            }
+            StmtKind::Directive(_)
+            | StmtKind::Return(None)
+            | StmtKind::Exit(None)
+            | StmtKind::ExitLoop(None)
+            | StmtKind::ContinueLoop(None) => {}
+        }
+    }
+
+    fn case(&mut self, c: &mut CaseClause) {
+        for v in &mut c.values {
+            self.expr(v);
+        }
+        self.stmts(&mut c.body);
+    }
+
+    fn expr(&mut self, e: &mut Expr) {
+        // Recurse first so inner tables collapse before outer ones.
+        match &mut e.kind {
+            ExprKind::Unary(_, a) => self.expr(a),
+            ExprKind::Binary(op, a, b) => {
+                if is_assign(op) {
+                    // `$x = ...`: the target has to stay a variable, or the
+                    // statement becomes `"value" = ...`. Its *subscripts* may
+                    // still be substituted (`$a[$string_table[1]] = ...`).
+                    self.target(a);
+                } else {
+                    self.expr(a);
+                }
+                self.expr(b);
+            }
+            ExprKind::Paren(p) => self.expr(p),
+            ExprKind::Ternary(c, a, b) => {
+                self.expr(c);
+                self.expr(a);
+                self.expr(b);
+            }
+            ExprKind::Call(c) => {
+                for a in &mut c.args {
+                    self.expr(a);
+                }
+            }
+            ExprKind::ArrayLit(items) => {
+                for it in items {
+                    self.expr(it);
+                }
+            }
+            ExprKind::Member(recv, _) => self.expr(recv),
+            ExprKind::MethodCall(recv, _, args) => {
+                self.expr(recv);
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            ExprKind::IndexCall(v, args) => {
+                for i in &mut v.indices {
+                    self.expr(i);
+                }
+                for a in args {
+                    self.expr(a);
+                }
+                self.index_call(e);
+            }
+            ExprKind::Var(v) => {
+                for i in &mut v.indices {
+                    self.expr(i);
+                }
+                self.var(e);
+            }
+            _ => {}
+        }
+    }
+
+    /// Visit an assignment target: subscripts are fair game, the target
+    /// variable itself is not.
+    fn target(&mut self, e: &mut Expr) {
+        match &mut e.kind {
+            ExprKind::Var(v) => {
+                for i in &mut v.indices {
+                    self.expr(i);
+                }
+            }
+            ExprKind::Member(recv, _) => self.expr(recv),
+            _ => self.expr(e),
+        }
+    }
+
+    /// Replace `$table[i][j]...` with the value the runtime produced.
+    ///
+    /// A bare `$name` is only substituted when it is `Global Const`: a mutable
+    /// global could be reassigned later, and inlining its value would then be
+    /// wrong. Indexed reads assume the table is immutable once built, which is
+    /// how the obfuscator uses them.
+    fn var(&mut self, e: &mut Expr) {
+        let ExprKind::Var(v) = &e.kind else { return };
+        if v.indices.is_empty() {
+            let key = v.name.name.trim_start_matches('$').to_ascii_lowercase();
+            if !self.consts.contains(&key) {
+                return;
+            }
+        }
+        let Some(value) = self.resolve(&v.name.name, &v.indices) else {
+            return;
+        };
+        if let Some(lit) = literal_of(&value) {
+            self.report.substitutions += 1;
+            *e = lit;
+        }
+    }
+
+    /// Replace `$table[i](args)` with a call to the function the table holds.
+    fn index_call(&mut self, e: &mut Expr) {
+        let ExprKind::IndexCall(v, _) = &e.kind else { return };
+        let Some(value) = self.resolve(&v.name.name, &v.indices) else {
+            return;
+        };
+        let Value::FuncRef(name) = value else { return };
+        let ExprKind::IndexCall(_, args) = std::mem::replace(
+            &mut e.kind,
+            ExprKind::Lit(Lit { kind: LitKind::Null, span: e.span }),
+        ) else {
+            return;
+        };
+        self.report.calls_resolved += 1;
+        e.kind = ExprKind::Call(CallExpr {
+            callee: Ident { name, span: e.span },
+            args,
+        });
+    }
+
+    /// Walk constant subscripts through the runtime value.
+    fn resolve(&self, name: &str, indices: &[Expr]) -> Option<Value> {
+        let key = name.trim_start_matches('$').to_ascii_lowercase();
+        let mut cur = self.tables.get(&key)?.clone();
+        for idx in indices {
+            let ExprKind::Lit(lit) = &idx.kind else { return None };
+            cur = match (&cur, &lit.kind) {
+                (Value::Array(a), LitKind::Int(i)) => {
+                    let a = a.borrow();
+                    if *i < 0 || *i as usize >= a.len() {
+                        return None;
+                    }
+                    a[*i as usize].clone()
+                }
+                (Value::Map(m), LitKind::Str(s)) => m.borrow().get(s).cloned()?,
+                _ => return None,
+            };
+        }
+        Some(cur)
+    }
+}
+
+/// A scalar value as an AST literal; arrays and maps have no literal form.
+///
+/// Strings that cannot appear inside an AutoIt `"..."` literal — AutoIt has no
+/// escape for a line break, and a literal newline would end the statement — are
+/// left alone rather than producing source that does not parse.
+fn literal_of(v: &Value) -> Option<Expr> {
+    if let Value::Str(s) = v {
+        if s.contains(['\r', '\n', '\0']) {
+            return None;
+        }
+    }
+    let kind = v.to_lit_kind()?;
+    Some(Expr {
+        kind: ExprKind::Lit(Lit { kind, span: Span::default() }),
+        span: Span::default(),
+    })
+}
+
+/// Names declared `Global Const`, lower-cased without the `$`.
+fn const_globals(prog: &Program) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for item in &prog.items {
+        collect_consts(item, &mut out);
+    }
+    out
+}
+
+fn collect_consts(item: &Item, out: &mut HashSet<String>) {
+    let mut visit = |s: &Stmt| {
+        if let StmtKind::VarDecl(v) = &s.kind {
+            if v.is_const && matches!(v.kind, VarKind::Global) {
+                for vi in &v.vars {
+                    out.insert(vi.name.name.trim_start_matches('$').to_ascii_lowercase());
+                }
+            }
+        }
+    };
+    match &item.kind {
+        ItemKind::Stmt(s) => visit(s),
+        ItemKind::Func(f) => {
+            for s in &f.body {
+                visit(s);
+            }
+        }
+        ItemKind::Region(r) => {
+            for it in &r.items {
+                collect_consts(it, out);
+            }
+        }
+        ItemKind::Directive(_) => {}
+    }
+}
+
+/// True for the assignment operators, whose left operand is an lvalue.
+fn is_assign(op: &BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::Assign
+            | BinaryOp::PlusAssign
+            | BinaryOp::MinusAssign
+            | BinaryOp::StarAssign
+            | BinaryOp::SlashAssign
+            | BinaryOp::CaretAssign
+            | BinaryOp::AmpAssign
+    )
+}

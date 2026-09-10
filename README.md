@@ -57,6 +57,8 @@ autoitv3-tools/
         rename.rs      确定性重命名混淆的变量/函数/宏为可读别名（可复现）
         table.rs       函数表解析：用 runtime 执行 $fn_table 构建函数，把 $fn_table[0x..](...)
                        改写为真实函数名调用（解开函数间接层）
+        evaluate.rs    运行时求值：跑脚本主体，把它算出来的表值内联回源码
+                       （唯一能解开字符串表的途径）
         orchestrator.rs 按序执行 pass 流水线，产出 Deobfuscator/Report
         lib.rs
       tests/
@@ -72,7 +74,8 @@ autoitv3-tools/
           mod.rs        子命令模块与 dispatch 表
           parse.rs      au3 parse（ParseArgs + run）
           pretty.rs     au3 pretty（PrettyArgs + run）
-          deobfuscate.rs au3 deobfuscate（DeobfuscateArgs + run）
+          deobfuscate.rs au3 deobfuscate（DeobfuscateArgs + run，含 --evaluate）
+          evaluate.rs   au3 evaluate（EvaluateArgs + run）
           run.rs        au3 run（RunArgs + run，含 --trace 用的 Debugger 示例实现）
 ```
 
@@ -147,6 +150,13 @@ au3 deobfuscate some.au3
 au3 pretty      some.au3 -o out.au3
 au3 deobfuscate some.au3 -o -
 
+# evaluate：跑一遍脚本主体，把它运行时算出来的表值内联回源码
+#           （唯一能解开字符串表的途径；撞到平台边界时会报告并保留已求出的值）
+au3 evaluate some.au3 -o resolved.au3
+au3 evaluate some.au3 --faithful          # 按 AutoIt 语义真跑
+# 也可以一步到位：先求值再做常规反混淆
+au3 deobfuscate some.au3 --evaluate -o clean.au3
+
 # run：用解释器调用函数（--arg 传参，--init 先执行脚本体以建立全局表）
 au3 run Add --arg 2 --arg 3 some.au3
 au3 run BuildFunctionTable --init some.au3
@@ -158,7 +168,8 @@ au3 run SomeFunc --trace some.au3
 | ------ | ---- | ---- |
 | `parse <FILE>` | `p`, `check` | 解析并报告顶层条目/函数数量 |
 | `pretty <FILE> [-o FILE]` | `fmt`, `format` | 规范化重打印，保留注释 |
-| `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释 |
+| `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值） |
+| `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--faithful` 按 AutoIt 语义） |
 | `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数 |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
@@ -214,6 +225,58 @@ let out = pp.print_program(&prog);    // 反混淆/规范化输出
 - 每个 `Stmt`、`Expr`、`Item` 都带 `Span { start: Pos, end: Pos }`，调试器可按行/列命中源码行。
 - `Stmt` 是一个可执行的单元节点，未来解释器/调试器只需遍历语句并在命中断点位置暂停。
 - 解析器与打印器分离：反混淆时可先打印出规范化文本，再对其做常量替换等变换。
+
+## 运行时求值（`au3 evaluate`）
+
+纯语法改写能解开**函数表**（`$fn_table` 完全由数组字面量拼成），但**字符串表**是运行生成的
+代码（`Execute`、Map、`Binary`、字符串运算）算出来的——静态方法无解。因此提供运行时求值：
+
+```bash
+au3 evaluate sample.au3 -o resolved.au3     # 跑脚本主体，内联它算出来的值
+au3 deobfuscate sample.au3 --evaluate -o clean.au3   # 求值 + 常规反混淆一步到位
+```
+
+实现（`autoitv3-deobf/src/evaluate.rs`）：跑脚本顶层主体 → 把每个**常量下标**的表引用
+换成运行时真正得到的值：
+
+```text
+$name_table[0x38]    ->  2
+$fn_table[0x33d]() ->  ResolvedFunc()      （函数名调用）
+```
+
+安全规则：
+
+- **赋值左值不会被替换**（否则会写出 `0 -= 1` 这种非法语句），只替换其下标
+- **裸变量读取仅在 `Global Const` 时内联**（可变全局可能被改写，内联其值会出错）
+- 带下标读取视表为"建成后不再变"，这是混淆器的实际用法
+- 含换行的字符串**不内联**（AutoIt 字面量无法表示换行，内联会导致输出无法解析）
+
+### 部分求值是常态
+
+真实脚本的启动代码很快会触碰操作系统（`DllCall`、注册表、GUI）——正是平台层标注的边界。
+但混淆器**很早就把表建好**，所以中断的运行仍留下可用的表。因此求值失败时**保留已算出的值**
+并报告停在哪里，而不是整体丢弃：
+
+```
+$ au3 evaluate sample.au3 -o resolved.au3
+evaluated: 23 globals, 4 tables, 827 values inlined, 57 calls resolved
+script body did not finish: undefined function: DLLSTRUCTCREATE (at 42:1)
+  (that is the platform boundary: this function is not implemented for the current OS)
+  values produced before that point were still inlined
+```
+
+在真实脚本上的实际效果：
+
+| 引用 | 求值前 | 求值后 |
+| ---- | ------ | ------ |
+| `$fn_table[...]` | several thousand | **127** |
+| `$name_table[...]` | 817 | **3** |
+| 字符串字面量 | 41 | **406**（解出 `Execute` 的动态代码） |
+| `$string_table[...]` | several thousand | several thousand（**卡在 Windows 边界**） |
+
+`$string_table` 未解开的原因是它本身依赖 Windows API：其构建路径调用
+`DllStructCreate(OSVERSIONINFO)` + `DllCall(GetVersionEx)` 取系统版本，
+再按版本选择字符串。这部分要等 `windows.rs` 平台层实现。
 
 ## 语法覆盖
 

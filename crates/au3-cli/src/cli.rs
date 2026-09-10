@@ -45,6 +45,10 @@ pub enum Command {
     #[command(visible_aliases = ["deobf", "deob"])]
     Deobfuscate(commands::deobfuscate::DeobfuscateArgs),
 
+    /// Run the script body and inline the table values it computed
+    #[command(visible_aliases = ["eval", "e"])]
+    Evaluate(commands::evaluate::EvaluateArgs),
+
     /// Interpret one function (probes the obfuscator's builders)
     #[command(visible_aliases = ["r", "exec"])]
     Run(commands::run::RunArgs),

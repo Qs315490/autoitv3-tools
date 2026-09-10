@@ -7,6 +7,7 @@ description.workspace = true
 [dependencies]
 autoitv3-ast = { path = "../autoitv3-ast" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
+autoitv3-platform = { path = "../autoitv3-platform" }
 
 [dev-dependencies]
 autoitv3-format = { path = "../autoitv3-format" }
