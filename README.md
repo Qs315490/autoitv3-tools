@@ -48,7 +48,16 @@ autoitv3-tools/
         deobf.rs      反混淆 pass 单元测试（13 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
     au3-cli/                # CLI 二进制 crate（产物名为 au3）
-      src/main.rs
+      src/
+        main.rs     入口：收集 argv、分发、把 CliError 转成退出码
+        args.rs     共用参数解析（输入文件、-o、--arg）与 CliError
+        output.rs   输出目标：文件或 stdout（`-` 表示 stdout）
+        commands/
+          mod.rs        子命令注册表、dispatch 与帮助文本
+          parse.rs      au3 parse
+          pretty.rs     au3 pretty
+          deobfuscate.rs au3 deobfuscate
+          run.rs        au3 run（含 --trace 用的 Debugger 示例实现）
 ```
 
 ### autoitv3-runtime 的定位
@@ -71,7 +80,7 @@ autoitv3-tools/
 
 ## 反混淆现状
 
-`au3 --deobfuscate` 现在执行 3 个 pass：
+`au3 deobfuscate` 现在执行 3 个 pass：
 
 1. **常量折叠**（fold）：求值纯算术/字符串/拼接，原地内联。
 2. **函数表解析**（table）：静态执行 `BuildFunctionTable()`（纯数组构建，
@@ -101,22 +110,44 @@ autoitv3-tools/
 
 ## 使用
 
+CLI 采用**子命令**形式（一级参数不带 `--` 前缀），每个命令一个模块：
+
 ```bash
 cargo build --release
-# 统计信息（顶层条目数、函数数）
-./target/release/au3 some.au3
-# 规范化重打印（默认保留注释、统一缩进）——反混淆输出基础
-./target/release/au3 --pretty some.au3
-# 反混淆（常量折叠 + 标识符重命名 + 去除注释），输出可重解析的规范 AutoIt 源码
-./target/release/au3 --deobfuscate some.au3
-# -o FILE 将格式化输出重定向到文件；-o - 或省略 -o 则输出到 stdout（原文件永不被修改）
-./target/release/au3 --pretty -o out.au3 some.au3
-./target/release/au3 --deobfuscate -o - some.au3
-# 用解释器调用函数（--arg 传参，--init 先执行脚本体以建立全局表）
-./target/release/au3 --run Add --arg 2 --arg 3 some.au3
-./target/release/au3 --run BuildFunctionTable some.au3
+au3 help                                   # 查看全部命令
+
+# parse：只做解析与统计（顶层条目数、函数数）
+au3 parse some.au3
+
+# pretty：规范化重打印（默认保留注释、统一缩进）——反混淆输出基础
+au3 pretty some.au3
+
+# deobfuscate：常量折叠 + 函数表解析 + 标识符重命名 + 去注释
+#              统计信息走 stderr，stdout 保持为干净的 AutoIt 源码
+au3 deobfuscate some.au3
+
+# -o FILE 将输出写入文件；-o - 或省略 -o 则输出到 stdout（原文件永不被修改）
+au3 pretty      some.au3 -o out.au3
+au3 deobfuscate some.au3 -o -
+
+# run：用解释器调用函数（--arg 传参，--init 先执行脚本体以建立全局表）
+au3 run Add --arg 2 --arg 3 some.au3
+au3 run BuildFunctionTable --init some.au3
 # --trace 打印解释器执行的语句流（演示 debug 接口）
-./target/release/au3 --run SomeFunc --trace some.au3
+au3 run SomeFunc --trace some.au3
+```
+
+| 子命令 | 说明 |
+| ------ | ---- |
+| `parse <file>` | 解析并报告顶层条目/函数数量 |
+| `pretty <file> [-o FILE]` | 规范化重打印，保留注释 |
+| `deobfuscate <file> [-o FILE]` | 反混淆流水线，去除注释 |
+| `run <Func> <file> [--arg V]… [--init] [--trace]` | 解释执行一个函数 |
+| `help` | 帮助 |
+
+退出码：`0` 成功，`1` 输入处理失败（解析/运行时错误），`2` 用法或 IO 错误。
+
+```bash
 # 运行库的单元测试
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
