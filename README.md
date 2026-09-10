@@ -20,7 +20,8 @@ autoitv3-tools/
         parser.rs 递归下降分析器：语句按行/冒号分隔，表达式用优先级爬升
         lib.rs    库入口，统一导出
       tests/
-        integration.rs   库集成单元测试（22 项）
+        integration.rs     库集成单元测试（25 项）
+        syntax_coverage.rs 语法覆盖回归集（14 项，见下文「语法覆盖」）
     autoitv3-format/         # 库 crate——格式打印（原名 pretty）
       src/lib.rs    把 AST 重新打印为 AutoIt 源码（默认保留注释，可 strip；规范缩进）
       tests/
@@ -30,7 +31,9 @@ autoitv3-tools/
         value.rs      运行时值模型（Int/Float/Str/Array/Map/Binary/FuncRef）与 AutoIt 强制转换规则
         interp.rs     Runtime 解释器：加载程序、调用函数、求值表达式、执行语句
         builtins.rs   已实现的内置函数子集（字符串/数值/位运算/数组/Map/Execute/Call...）
-        host.rs       Host trait——完整运行时接入原生函数（Win32/COM/GUI/DllCall）的接口
+        host.rs       Host trait——嵌入方接入原生函数的接口（优先级高于平台层）
+        platform/     Platform trait + 各平台实现：generic.rs（Linux，无 OS 特有功能）
+                      / windows.rs（Windows 独有内容的扩展点，当前为骨架）
         debug.rs      Debugger trait / Breakpoint / FrameInfo——后续 debug 模块的接口
         error.rs      RuntimeError 与控制流信号 Flow
         lib.rs        公共 API
@@ -197,6 +200,42 @@ let out = pp.print_program(&prog);    // 反混淆/规范化输出
 - 每个 `Stmt`、`Expr`、`Item` 都带 `Span { start: Pos, end: Pos }`，调试器可按行/列命中源码行。
 - `Stmt` 是一个可执行的单元节点，未来解释器/调试器只需遍历语句并在命中断点位置暂停。
 - 解析器与打印器分离：反混淆时可先打印出规范化文本，再对其做常量替换等变换。
+
+## 语法覆盖
+
+AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固化：
+一份 80+ 条构造的清单（预处理指令、行继续符、字面量、运算符、语句、声明、函数、
+对象/COM、宏与关键字），外加对**语义**敏感的定点断言（`=` 的上下文含义、
+`ContinueLoop`/`ExitLoop` 区分、`ReDim`、`Enum Step`、块注释、`Volatile`、
+`With` 隐式主语、成员/方法调用形状）。清单同时包含**必须被拒绝**的非法构造
+（嵌套 `Func`、单行 `If … Else`、孤立 `.`、未闭合字符串）。
+
+这样做的原因是：早期覆盖率是靠"能解析手头那一个样本"来推断的，而该样本恰好
+没用到若干构造。现在新增语法支持必须同时进清单，避免回归。
+
+已支持的要点：
+
+- **行继续符 `_`**（前面带空格、行尾，可跟注释）——把多行并成一条语句
+- **`#cs`/`#ce` 与 `#comments-start`/`#comments-end` 块注释**——原样保留并可重新打印
+- **单引号字符串** `'…'`（含 `''` 转义），与双引号等价
+- **`=` 的双重含义**——语句层是赋值，表达式内（`If`/`While`/`Case`/实参）是
+  大小写不敏感比较（AST 用独立变体 `EqLoose` 表示，`==` 仍为大小写敏感）
+- **对象/COM 点语法**——`$obj.Prop`、`$obj.Method(args)`、成员链、以及
+  `With` 块内的隐式主语 `.Member`
+- **`Enum` 编号**——`Enum $A, $B`、显式初值重置计数、`Enum Step n`
+
+## 平台层
+
+解释器核心、值模型与可移植内置函数子集都与平台无关；AutoIt 自身的函数库大多是
+Win32 的封装，因此每个操作系统对应一个 `Platform` 实现：
+
+| 模块 | 适用 | 内容 |
+| ---- | ---- | ---- |
+| `platform/generic.rs` | Linux（及任何非 Windows 目标） | 不提供 OS 特有功能——AutoIt 是 Windows 工具，这里如实返回"未提供" |
+| `platform/windows.rs` | Windows | **扩展点骨架**：注册表、COM、`DllCall`、GUI、进程/窗口等后续在此填充 |
+
+查找顺序为 **内置函数 → Host → Platform**，因此嵌入方可以通过 `Host` 覆盖任何
+平台默认实现。平台通过 `cfg` 选择，一次构建只编译本平台的模块。
 
 ## 测试
 

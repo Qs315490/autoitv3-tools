@@ -25,6 +25,9 @@ struct Lexer<'a> {
     idx: usize,
     line: u32,
     col: u32,
+    /// Set when a `_` line continuation was consumed: the next newline
+    /// belongs to the continued statement and must not become a separator.
+    pending_continuation: bool,
 }
 
 pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
@@ -33,6 +36,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
         idx: 0,
         line: 1,
         col: 1,
+        pending_continuation: false,
     };
     let mut out = Vec::new();
     loop {
@@ -69,17 +73,54 @@ impl<'a> Lexer<'a> {
     }
 
 
-    fn eat_ws_and_comments(&mut self) {
-        // Skip only spaces, tabs and carriage returns. `;` comments are NOT
-        // dropped here; they are turned into `Comment` tokens by `next_token`
-        // so the parser can preserve them.
+    /// Skip spaces, tabs and carriage returns, reporting whether any were
+    /// skipped. `;` comments are NOT dropped here; they become `Comment`
+    /// tokens in [`Lexer::next_token`] so the parser can preserve them.
+    fn eat_ws(&mut self) -> bool {
+        let before = self.idx;
         while matches!(self.peek(), Some(b' ' | b'\t' | b'\r')) {
             self.bump();
         }
+        self.idx != before
+    }
+
+    /// True when the `_` at the current position ends the line, i.e. it is a
+    /// line continuation. AutoIt requires the `_` to be preceded by a blank
+    /// (the caller checks that) and followed by optional blanks, an optional
+    /// `;` comment and then the newline.
+    fn underscore_continues(&self) -> bool {
+        debug_assert_eq!(self.peek(), Some(b'_'));
+        let mut i = self.idx + 1;
+        while matches!(self.src.get(i), Some(b' ' | b'\t' | b'\r')) {
+            i += 1;
+        }
+        matches!(self.src.get(i), Some(b'\n') | Some(b';'))
     }
 
     fn next_token(&mut self) -> Result<Token, LexError> {
-        self.eat_ws_and_comments();
+        loop {
+            let had_blank = self.eat_ws();
+
+            // A `_` preceded by a blank and followed by end-of-line is a line
+            // continuation: it joins the next line to this statement. Consume
+            // it and remember to swallow the newline (any `;` comment that
+            // trails the underscore is still emitted as a comment token).
+            if had_blank && self.peek() == Some(b'_') && self.underscore_continues() {
+                self.bump(); // '_'
+                self.eat_ws();
+                self.pending_continuation = true;
+                continue;
+            }
+
+            // The newline that terminates a continued line is not a statement
+            // separator.
+            if self.peek() == Some(b'\n') && self.pending_continuation {
+                self.pending_continuation = false;
+                self.bump();
+                continue;
+            }
+            break;
+        }
 
         let start = self.pos();
         let Some(c) = self.peek() else {
@@ -99,7 +140,10 @@ impl<'a> Lexer<'a> {
                     s.push(c as char);
                     self.bump();
                 }
-                TokenKind::Comment(s.trim_end().to_string())
+                TokenKind::Comment {
+                    text: s.trim_end().to_string(),
+                    block: false,
+                }
             }
             b'\n' => {
                 self.bump();
@@ -129,10 +173,15 @@ impl<'a> Lexer<'a> {
                 self.bump();
                 TokenKind::Comma
             }
+            b'.' => {
+                self.bump();
+                TokenKind::Dot
+            }
             b'#' => self.preproc(start),
             b'$' => self.var(start),
             b'@' => self.r#macro(start),
-            b'"' => self.str(start)?,
+            b'"' => self.str(b'"', start)?,
+            b'\'' => self.str(b'\'', start)?,
             b'0'..=b'9' => self.number(start),
             b'+' => {
                 self.bump();
@@ -238,14 +287,27 @@ impl<'a> Lexer<'a> {
     fn preproc(&mut self, _start: Pos) -> TokenKind {
         self.bump(); // '#'
         let mut s = String::new();
+        // `-` is part of directive names such as `#comments-start` and
+        // `#include-once`; the rest of the line is appended verbatim below
+        // either way, so widening this only affects name comparisons.
         while let Some(c) = self.peek() {
-            if c.is_ascii_alphanumeric() || c == b'_' {
+            if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' {
                 s.push(c as char);
                 self.bump();
             } else {
                 break;
             }
         }
+
+        // `#cs ... #ce` (long form: `#comments-start ... #comments-end`) is a
+        // block comment, not a directive: consume the whole block and hand it
+        // to the parser as a single comment token so the pretty-printer can
+        // reproduce it verbatim.
+        let name = s.to_ascii_lowercase();
+        if name == "cs" || name == "comments-start" {
+            return self.block_comment(s);
+        }
+
         // Keep the rest of the directive line verbatim (arguments such as
         // `<file.au3>`, `Icon\app.ico`, `=value`). AutoIt directives are
         // line-oriented: everything up to the newline belongs to the directive.
@@ -257,6 +319,68 @@ impl<'a> Lexer<'a> {
             self.bump();
         }
         TokenKind::Preproc(s.trim_end().to_string())
+    }
+
+    /// Consume a `#cs ... #ce` block, returning it as one block comment token.
+    ///
+    /// An unterminated block runs to end of file, matching AutoIt's behaviour
+    /// of treating the remainder of the script as commented out.
+    fn block_comment(&mut self, opener: String) -> TokenKind {
+        let mut raw = String::from("#");
+        raw.push_str(&opener);
+        self.take_line(&mut raw);
+        loop {
+            if let Some(end) = self.block_closer_end() {
+                while self.idx < end {
+                    let c = self.bump().unwrap();
+                    raw.push(c as char);
+                }
+                self.take_line(&mut raw);
+                break;
+            }
+            if self.peek().is_none() {
+                break;
+            }
+            self.take_line(&mut raw);
+        }
+        TokenKind::Comment {
+            text: raw.trim_end().to_string(),
+            block: true,
+        }
+    }
+
+    /// Index just past a `#ce` / `#comments-end` directive at the start of the
+    /// current line, if the cursor is on such a line.
+    fn block_closer_end(&self) -> Option<usize> {
+        let mut i = self.idx;
+        while matches!(self.src.get(i), Some(b' ' | b'\t' | b'\r')) {
+            i += 1;
+        }
+        if self.src.get(i) != Some(&b'#') {
+            return None;
+        }
+        let rest = self.src.get(i + 1..)?;
+        for closer in [&b"ce"[..], &b"comments-end"[..]] {
+            if rest.len() >= closer.len() && rest[..closer.len()].eq_ignore_ascii_case(closer) {
+                let after = rest.get(closer.len()).copied();
+                let boundary = !matches!(after, Some(c) if c.is_ascii_alphanumeric() || c == b'_');
+                if boundary {
+                    return Some(i + 1 + closer.len());
+                }
+            }
+        }
+        None
+    }
+
+    /// Append the rest of the current line (newline included) to `out`.
+    fn take_line(&mut self, out: &mut String) {
+        while let Some(c) = self.peek() {
+            out.push(c as char);
+            self.bump();
+            if c == b'\n' {
+                break;
+            }
+        }
     }
 
     fn var(&mut self, _start: Pos) -> TokenKind {
@@ -287,7 +411,9 @@ impl<'a> Lexer<'a> {
         TokenKind::Macro(s)
     }
 
-    fn str(&mut self, start: Pos) -> Result<TokenKind, LexError> {
+    /// Read a string literal. AutoIt accepts both `"..."` and `'...'`, and
+    /// escapes the active quote by doubling it (`""` or `''`).
+    fn str(&mut self, quote: u8, start: Pos) -> Result<TokenKind, LexError> {
         self.bump(); // opening quote
         let mut s = String::new();
         loop {
@@ -298,12 +424,11 @@ impl<'a> Lexer<'a> {
                         pos: start,
                     })
                 }
-                Some(b'"') => {
+                Some(c) if c == quote => {
                     self.bump();
-                    // AutoIt escapes a quote by doubling it: `""`.
-                    if self.peek() == Some(b'"') {
+                    if self.peek() == Some(quote) {
                         self.bump();
-                        s.push('"');
+                        s.push(quote as char);
                         continue;
                     }
                     break;
@@ -392,6 +517,7 @@ fn keyword(s: &str) -> Option<TokenKind> {
         "not" => Not,
         "in" => In,
         "enum" => Enum,
+        "volatile" => Volatile,
         "true" => True,
         "false" => False,
         "default" => Default,

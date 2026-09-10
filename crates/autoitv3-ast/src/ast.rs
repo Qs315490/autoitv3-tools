@@ -15,11 +15,14 @@ pub struct Program {
     pub comments: Vec<Comment>,
 }
 
-/// A `;` comment from the source.
+/// A comment from the source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Comment {
-    /// The comment text after the `;` (leading `;` not included).
+    /// For a `;` line comment: the text after the `;`. For a `#cs ... #ce`
+    /// block: the whole block verbatim, `#cs`/`#ce` lines included.
     pub text: String,
+    /// True for a `#cs ... #ce` block comment, false for a `;` line comment.
+    pub block: bool,
     pub span: Span,
 }
 
@@ -48,6 +51,9 @@ pub struct FuncDef {
     pub name: Ident,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
+    /// True for `Volatile Func Foo()` — the optimiser may not reorder or
+    /// inline calls to it.
+    pub is_volatile: bool,
     /// The span of the whole `Func ... EndFunc`.
     pub span: Span,
 }
@@ -115,6 +121,9 @@ pub struct VarDecl {
     /// than declaring a new variable. Kept separate from `Dim Const` because
     /// an interpreter must treat the two differently.
     pub is_redim: bool,
+    /// The `Step n` of `Enum Step n $A, $B`, which controls how members
+    /// without an explicit value are numbered.
+    pub enum_step: Option<Expr>,
     pub vars: Vec<VarDeclItem>,
 }
 
@@ -225,6 +234,14 @@ pub enum ExprKind {
     /// Call of a function reference stored in an array element:
     /// `$arr[i](args...)`.
     IndexCall(VarExpr, Vec<Expr>),
+    /// Member access on a COM/object value: `$obj.Property`,
+    /// `$chart.Series(1)`, `.Value` inside `With ... EndWith`.
+    Member(Box<Expr>, Ident),
+    /// Method call on a COM/object value: `$obj.Method(args...)`.
+    MethodCall(Box<Expr>, Ident, Vec<Expr>),
+    /// The implicit subject of a `With ... EndWith` block, i.e. the receiver
+    /// of a leading `.Member`. Never appears on its own.
+    WithSubject,
 }
 
 /// A literal value.
@@ -273,7 +290,16 @@ pub enum BinaryOp {
     SlashAssign,
     CaretAssign,
     AmpAssign,
+    /// `==` — equality, case-sensitive for strings.
     Eq,
+    /// `=` — equality in *expression* context, case-insensitive for strings.
+    ///
+    /// AutoIt overloads `=`: at statement level it assigns, inside an
+    /// expression it compares. Both roles therefore need their own variant so
+    /// the interpreter can apply the right semantics (and the pretty-printer
+    /// can reproduce the original spelling).
+    EqLoose,
+    /// `<>` — inequality, case-insensitive for strings.
     NotEq,
     Lt,
     Le,
