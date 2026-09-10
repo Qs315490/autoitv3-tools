@@ -382,3 +382,25 @@ fn spans_of_inlined_literals_are_zeroed_not_invented() {
     }
     assert!(found, "expected an inlined literal in F");
 }
+#[test]
+fn parameter_defaults_are_substituted_too() {
+    // A default is evaluated at call time and reads the same tables, so it has
+    // to go through the same substitution as the body.
+    let src = r#"
+Global Const $table = Build()
+Global Const $scalar = 7
+Func Build()
+    Local $t[] = [3, "alpha", "beta", "gamma"]
+    Return $t
+EndFunc
+
+Func F($a = $table[2], $b = $scalar)
+    Return $a & $b
+EndFunc
+"#;
+    let (out, report) = run(src);
+    assert!(report.completed, "script should run: {:?}", report.stopped);
+    let header = out.lines().find(|l| l.starts_with("Func F")).expect("Func F");
+    assert!(header.contains("= \"beta\""), "table default not inlined: {header}");
+    assert!(header.contains("= 7"), "const default not inlined: {header}");
+}

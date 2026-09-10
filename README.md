@@ -405,6 +405,18 @@ $fn_table[0x33d]() ->  ResolvedFunc()      （函数名调用）
 - **裸变量读取仅在 `Global Const` 时内联**（可变全局可能被改写，内联其值会出错）
 - 带下标读取视表为"建成后不再变"，这是混淆器的实际用法
 - 含换行的字符串**不内联**（AutoIt 字面量无法表示换行，内联会导致输出无法解析）
+- **函数参数默认值同样会被代入**：默认值在调用时求值，读的是同一批表
+
+代入不是"一遍过"。`Simplify` 会把 `Execute("$FN_TABLE[1094]($name_table[175])")` 这类字符串
+**拼接成真实代码**，而那批代码读的还是同一批表。所以 `deobfuscate --evaluate` 的流水线是
+在 `Simplify` 处切开跑两段，中间再代入一次（`Deobfuscator::after_simplify` 标出切点）：
+
+```
+Fold, Simplify  →  再代入一次  →  Table, Rename
+```
+
+少了这一步，`Execute` 拼出来的代码里会残留 `$table[i]` 引用 —— 真实脚本上正是如此：
+`For $i = 1 To f084($name_table[175])` 这类 191 处引用（另有 36 处 `$name_table[...]`）会留在输出里。
 
 ### 部分求值是常态
 
@@ -425,8 +437,9 @@ script body did not finish: undefined function: GUICREATE (at 10569:31)
 | 引用 | 求值前 | 求值后 |
 | ---- | ------ | ------ |
 | `$fn_table[...]`（函数表） | several thousand | **0** |
-| `$name_table[...]`（名字表） | 817 | **0**（36 处留在 `Execute` 字符串里） |
+| `$name_table[...]`（名字表） | 817 | **0** |
 | `$string_table[...]`（字符串表） | several thousand | **0** |
+| 输出里残留的表读取 | 171 | **38**（全部是可变 `Global` 数组，本就不该内联） |
 | `AU3_WIN_MODULE` 未给出 | — | 资源调用返回 `0` + `@error = 1`（诚实边界） |
 
 跑完的规模：`evaluated: 264 globals, 9 tables, 29666 values inlined` →

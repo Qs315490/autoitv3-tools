@@ -3,7 +3,9 @@
 use autoitv3_ast::ast::ItemKind;
 use autoitv3_ast::parse;
 use autoitv3_format::PrettyPrinter;
-use autoitv3_deobf::{deobfuscate, fold, rename, simplify, Deobfuscator, RenameOptions};
+use autoitv3_deobf::{
+    deobfuscate, fold, rename, simplify, DeobfReport, Deobfuscator, RenameOptions, Tables,
+};
 
 fn pretty(prog: &autoitv3_ast::Program) -> String {
     let mut pp = PrettyPrinter::new();
@@ -531,4 +533,37 @@ fn a_subscript_on_a_call_result_keeps_its_arguments_inlined() {
     assert!(!out.contains("\n    [0]"), "subscript split off:\n{out}");
     assert!(out.contains(")[0]"), "subscript lost:\n{out}");
     assert!(parse(&out).is_ok(), "output did not re-parse: {out}");
+}
+
+#[test]
+fn tables_can_be_substituted_again_after_the_simplifier_splices_code() {
+    // `Simplify` turns an `Execute("...")` string into real code; when the
+    // caller inlined table values *before* the pipeline, the reads in that
+    // spliced code are still unresolved. `Deobfuscator::after_simplify` marks
+    // where to step in.
+    let src = "Global Const $T = Make()\nFunc F()\n    Execute(\"$T[1]\")\nEndFunc\n";
+    let mut prog = parse(src).unwrap();
+    let tables = Tables::new(vec![(
+        "T".to_string(),
+        autoitv3_runtime::Value::array(vec![
+            autoitv3_runtime::Value::Int(0),
+            autoitv3_runtime::Value::Int(42),
+        ]),
+    )]);
+
+    let deobf = Deobfuscator::without_rename();
+    let split = deobf.after_simplify();
+    assert_eq!(split, 2, "Fold and Simplify come first");
+
+    let mut report = DeobfReport::default();
+    deobf.run_passes(&mut prog, &deobf.passes[..split], &mut report);
+    assert_eq!(report.simplified.executes, 1, "the Execute should be spliced");
+
+    // The spliced read is only reachable now.
+    let count = tables.substitute(&mut prog);
+    assert_eq!(count.substitutions, 1);
+    deobf.run_passes(&mut prog, &deobf.passes[split..], &mut report);
+    let out = pretty(&prog);
+    assert!(out.contains("42"), "spliced read not inlined:\n{out}");
+    assert!(!out.contains("$T["), "read should be gone:\n{out}");
 }
