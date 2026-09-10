@@ -228,20 +228,33 @@ pub(crate) fn call(
             })
         }
         "stringsplit" => {
-            let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            let subj = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
             let delims = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
-            let parts: Vec<Value> = if delims.is_empty() {
-                vec![Value::Str(s.clone())]
+            let flag = arg_flag(args, 2);
+            // $STR_CHRSPLIT (0) is the default: every character of `delims`
+            // splits. $STR_ENTIRESPLIT (1) treats the whole string as one
+            // delimiter. $STR_NOCOUNT (2) drops the leading element count.
+            let entire = flag & 1 != 0;
+            let no_count = flag & 2 != 0;
+
+            let parts: Vec<String> = if delims.is_empty() {
+                subj.chars().map(|c| c.to_string()).collect()
+            } else if entire {
+                subj.split(&delims).map(|p| p.to_string()).collect()
             } else {
-                s.split(|c| delims.contains(c))
-                    .map(|p| Value::Str(p.to_string()))
+                subj.split(|c| delims.contains(c))
+                    .map(|p| p.to_string())
                     .collect()
             };
-            // AutoIt returns a 1-based array whose [0] is the element count.
-            let mut out = vec![Value::Int(parts.len() as i64)];
-            out.extend(parts);
+
+            let mut out: Vec<Value> = Vec::new();
+            if !no_count {
+                out.push(Value::Int(parts.len() as i64));
+            }
+            out.extend(parts.into_iter().map(Value::Str));
             Value::array(out)
         }
+
         "stringisint" | "stringisdigit" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
             Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
@@ -466,19 +479,43 @@ pub(crate) fn call(
 
         // ---------------- binary ----------------
         "binary" => {
-            let raw = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Binary(Rc::new(raw.into_bytes()))
+            // `Binary("0x00204060")` hex-decodes; a plain string contributes
+            // its own bytes; a number its 64-bit little-endian image.
+            match args.first() {
+                Some(Value::Binary(_)) => args[0].clone(),
+                Some(Value::Int(i)) => Value::Binary(Rc::new(i.to_le_bytes().to_vec())),
+                Some(Value::Float(f)) => Value::Binary(Rc::new(f.to_le_bytes().to_vec())),
+                other => {
+                    let raw = other.map(|v| v.to_autoit_string()).unwrap_or_default();
+                    match decode_hex_string(&raw) {
+                        Some(bytes) => Value::Binary(Rc::new(bytes)),
+                        None => Value::Binary(Rc::new(raw.into_bytes())),
+                    }
+                }
+            }
         }
         "binarytostring" => {
-            let b = args.first().cloned().unwrap_or(Value::Null);
-            match b {
-                Value::Binary(b) => Value::Str(String::from_utf8_lossy(&b).to_string()),
-                other => Value::Str(other.to_autoit_string()),
-            }
+            let bytes = match args.first() {
+                Some(Value::Binary(b)) => b.as_ref().clone(),
+                Some(other) => other.to_autoit_string().into_bytes(),
+                None => Vec::new(),
+            };
+            Value::Str(decode_bytes(&bytes, arg_flag(args, 1)))
         }
         "stringtobinary" => {
             let raw = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Binary(Rc::new(raw.into_bytes()))
+            Value::Binary(Rc::new(encode_bytes(&raw, arg_flag(args, 1))))
+        }
+        "binarymid" => {
+            let bytes = match args.first() {
+                Some(Value::Binary(b)) => b.as_ref().clone(),
+                _ => Vec::new(),
+            };
+            let start = args.get(1).map(|v| v.to_int()).unwrap_or(1).max(1) as usize - 1;
+            let len = args.get(2).map(|v| v.to_int()).unwrap_or(1).max(0) as usize;
+            let end = (start + len).min(bytes.len());
+            let slice = if start < bytes.len() { bytes[start..end].to_vec() } else { Vec::new() };
+            Value::Binary(Rc::new(slice))
         }
 
         // ---------------- type predicates ----------------
@@ -554,6 +591,67 @@ pub(crate) fn call(
         _ => return Ok(None),
     };
     Ok(Some(v))
+}
+
+/// Argument as a flag integer.
+fn arg_flag(args: &[Value], i: usize) -> i64 {
+    args.get(i).map(|v| v.to_int()).unwrap_or(0)
+}
+
+/// Decode AutoIt's `"0x..."` hex literal into bytes, or `None` when the string
+/// is not such a literal (an odd length or a non-hex character).
+fn decode_hex_string(s: &str) -> Option<Vec<u8>> {
+    let t = s.trim();
+    let body = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"))?;
+    if body.is_empty() || body.len() % 2 != 0 || !body.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() / 2);
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() + 1 && i + 1 <= bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16)?;
+        let lo = (bytes[i + 1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }
+    Some(out)
+}
+
+/// Bytes -> text: 1 = ANSI, 2 = UTF-16LE, 3 = UTF-16BE, 4 = UTF-8 (default).
+fn decode_bytes(bytes: &[u8], flag: i64) -> String {
+    match flag {
+        1 => bytes.iter().map(|b| *b as char).collect(),
+        2 => decode_utf16(bytes, true),
+        3 => decode_utf16(bytes, false),
+        // AutoIt's default for BinaryToString is UTF-8 in practice for the
+        // scripts we evaluate; 4 is explicit UTF-8.
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| {
+            if little_endian {
+                u16::from_le_bytes([c[0], c[1]])
+            } else {
+                u16::from_be_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// Text -> bytes, mirroring [`decode_bytes`].
+fn encode_bytes(s: &str, flag: i64) -> Vec<u8> {
+    match flag {
+        1 => s.chars().map(|c| c as u8).collect(),
+        2 => s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect(),
+        3 => s.encode_utf16().flat_map(|u| u.to_be_bytes()).collect(),
+        _ => s.as_bytes().to_vec(),
+    }
 }
 
 /// Minimal `StringFormat` supporting `%s`, `%d`, `%i`, `%u`, `%x`, `%X`,

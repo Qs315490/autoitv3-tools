@@ -83,6 +83,7 @@ version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
  "autoitv3-format",
+ "autoitv3-platform",
  "autoitv3-runtime",
 ]
 

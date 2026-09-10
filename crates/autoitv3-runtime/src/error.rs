@@ -91,8 +91,13 @@ impl RuntimeError {
 }
 
 impl fmt::Display for RuntimeError {
+    /// The message, with the source position when the error knows one — a
+    /// bare "index out of bounds" is hard to act on in a 23k-line script.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message())
+        match self.span() {
+            Some(s) => write!(f, "{} (at {}:{})", self.message(), s.start.line, s.start.col),
+            None => write!(f, "{}", self.message()),
+        }
     }
 }
 

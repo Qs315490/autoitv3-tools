@@ -10,11 +10,15 @@
 //!   and macros, so output is greppable and reproducible.
 //! - `table`   : resolve the `$fn_table` function table and rewrite indexed
 //!   calls/references to real function names.
+//! - `evaluate`: run the script body and inline the values it computed —
+//!   the only way to recover the obfuscator's *string* table.
 //! - `orchestrator`: runs a pipeline of passes over a program.
 
+pub mod evaluate;
 pub mod fold;
 pub mod rename;
 pub mod table;
 pub mod orchestrator;
 
+pub use evaluate::{evaluate, EvaluateReport};
 pub use orchestrator::{deobfuscate, Deobfuscator};

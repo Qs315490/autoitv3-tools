@@ -6,7 +6,7 @@
 //! code has been rewritten. A summary goes to stderr so stdout stays a clean
 //! AutoIt program.
 
-use autoitv3_deobf::deobfuscate;
+use autoitv3_deobf::{deobfuscate, evaluate};
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
@@ -20,6 +20,16 @@ pub struct DeobfuscateArgs {
     #[arg(value_name = "FILE")]
     pub input: String,
 
+    /// Run the script body first and inline the table values it computed,
+    /// then apply the syntactic passes
+    #[arg(long)]
+    pub evaluate: bool,
+
+    /// With --evaluate, run with AutoIt semantics instead of the
+    /// deterministic analysis profile
+    #[arg(long)]
+    pub faithful: bool,
+
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -27,6 +37,14 @@ pub struct DeobfuscateArgs {
 /// Entry point for the `deobfuscate` subcommand.
 pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     let mut prog = load_program(&args.input)?;
+
+    // Runtime evaluation first: it recovers values the syntactic passes cannot
+    // see (the obfuscator's string table), and the later passes then fold and
+    // rename the result.
+    if args.evaluate {
+        let outcome = evaluate(&mut prog, super::evaluate::profile(args.faithful));
+        super::evaluate::report(&outcome);
+    }
 
     let report = deobfuscate(&mut prog);
     eprintln!(
