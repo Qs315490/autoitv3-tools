@@ -116,7 +116,8 @@ impl RenameCtx {
                 }
             }
             StmtKind::Expr(e) => self.visit_expr(e),
-            StmtKind::Return(Some(e)) | StmtKind::Exit(Some(e)) | StmtKind::ExitLoop(Some(e)) => {
+            StmtKind::Return(Some(e)) | StmtKind::Exit(Some(e)) | StmtKind::ExitLoop(Some(e))
+            | StmtKind::ContinueLoop(Some(e)) => {
                 self.visit_expr(e);
             }
             StmtKind::If(if_) => {
@@ -167,7 +168,8 @@ impl RenameCtx {
                 self.visit_stmts(&mut w.body);
             }
             StmtKind::Directive(_) => {}
-            StmtKind::Return(None) | StmtKind::Exit(None) | StmtKind::ExitLoop(None) => {}
+            StmtKind::Return(None) | StmtKind::Exit(None) | StmtKind::ExitLoop(None)
+            | StmtKind::ContinueLoop(None) => {}
         }
     }
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/autoitv3-ast", "crates/autoitv3-format", "crates/autoitv3-deobf", "crates/au3-cli"]
+members = ["crates/autoitv3-ast", "crates/autoitv3-format", "crates/autoitv3-runtime", "crates/autoitv3-deobf", "crates/au3-cli"]
 
 [workspace.package]
 version = "0.1.0"

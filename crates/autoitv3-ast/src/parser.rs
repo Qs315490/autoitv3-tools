@@ -286,13 +286,18 @@ impl Parser {
                 StmtKind::Exit(e)
             }
             ExitLoop | ContinueLoop => {
+                let is_continue = matches!(self.peek_kind(), ContinueLoop);
                 self.bump();
                 let e = if self.at_expr_start() {
                     Some(self.parse_expr()?)
                 } else {
                     None
                 };
-                StmtKind::ExitLoop(e)
+                if is_continue {
+                    StmtKind::ContinueLoop(e)
+                } else {
+                    StmtKind::ExitLoop(e)
+                }
             }
             If => self.parse_if()?,
             While => self.parse_while()?,
@@ -311,13 +316,16 @@ impl Parser {
 
     fn parse_var_decl_stmt(&mut self) -> Result<StmtKind, ParseError> {
         let kw = self.bump();
+        // `ReDim` shares the `Dim` scope kind but resizes in place; remember it
+        // explicitly so the interpreter can tell `ReDim` from `Dim Const`.
+        let is_redim = matches!(kw.kind, ReDim);
         let (mut kind, mut is_const) = match kw.kind {
             Local => (VarKind::Local, false),
             Global => (VarKind::Global, false),
             Dim => (VarKind::Dim, false),
             Static => (VarKind::Static, false),
             Const => (VarKind::Local, true),
-            ReDim => (VarKind::Dim, true),
+            ReDim => (VarKind::Dim, false),
             Enum => (VarKind::Local, true),
             _ => unreachable!(),
         };
@@ -367,6 +375,7 @@ impl Parser {
             kind,
             is_const,
             is_enum,
+            is_redim,
             vars,
         }))
     }

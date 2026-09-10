@@ -132,8 +132,12 @@ impl PrettyPrinter {
                     VarKind::Dim => "Dim",
                     VarKind::Static => "Static",
                 };
-                let _ = write!(self.out, "{kw}");
-                if v.is_const && !v.is_enum {
+                if v.is_redim {
+                    let _ = write!(self.out, "ReDim");
+                } else {
+                    let _ = write!(self.out, "{kw}");
+                }
+                if v.is_const && !v.is_enum && !v.is_redim {
                     let _ = write!(self.out, " Const");
                 }
                 if v.is_enum {
@@ -178,6 +182,14 @@ impl PrettyPrinter {
             StmtKind::ExitLoop(e) => {
                 self.pad();
                 let _ = write!(self.out, "ExitLoop");
+                if let Some(e) = e {
+                    let _ = write!(self.out, " ");
+                    self.print_expr(e);
+                }
+            }
+            StmtKind::ContinueLoop(e) => {
+                self.pad();
+                let _ = write!(self.out, "ContinueLoop");
                 if let Some(e) = e {
                     let _ = write!(self.out, " ");
                     self.print_expr(e);
@@ -388,6 +400,13 @@ impl PrettyPrinter {
             }
             StmtKind::ExitLoop(e) => {
                 let _ = write!(tmp.out, "ExitLoop");
+                if let Some(e) = e {
+                    let _ = write!(tmp.out, " ");
+                    tmp.print_expr(e);
+                }
+            }
+            StmtKind::ContinueLoop(e) => {
+                let _ = write!(tmp.out, "ContinueLoop");
                 if let Some(e) = e {
                     let _ = write!(tmp.out, " ");
                     tmp.print_expr(e);

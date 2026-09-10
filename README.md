@@ -25,20 +25,49 @@ autoitv3-tools/
       src/lib.rs    把 AST 重新打印为 AutoIt 源码（默认保留注释，可 strip；规范缩进）
       tests/
         format.rs    格式化/注释保留/去除测试（3 项）
-    autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 标识符重命名）
+    autoitv3-runtime/        # 库 crate——AutoIt v3 运行时（值模型 + 解释器 + 扩展接口）
       src/
-        fold.rs        常量折叠：纯算术/字符串/拼接表达式原地求值内联
+        value.rs      运行时值模型（Int/Float/Str/Array/Map/Binary/FuncRef）与 AutoIt 强制转换规则
+        interp.rs     Runtime 解释器：加载程序、调用函数、求值表达式、执行语句
+        builtins.rs   已实现的内置函数子集（字符串/数值/位运算/数组/Map/Execute/Call...）
+        host.rs       Host trait——完整运行时接入原生函数（Win32/COM/GUI/DllCall）的接口
+        debug.rs      Debugger trait / Breakpoint / FrameInfo——后续 debug 模块的接口
+        error.rs      RuntimeError 与控制流信号 Flow
+        lib.rs        公共 API
+      tests/
+        runtime.rs    解释器/host/debug 接口 + 真实集成测试（28 项）
+    autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 重命名）
+      src/
+        fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
         rename.rs      确定性重命名混淆的变量/函数/宏为可读别名（可复现）
-        table.rs       函数表解析：静态求值 $fn_table 构建函数，把 $fn_table[0x..](...)
+        table.rs       函数表解析：用 runtime 执行 $fn_table 构建函数，把 $fn_table[0x..](...)
                        改写为真实函数名调用（解开函数间接层）
         orchestrator.rs 按序执行 pass 流水线，产出 Deobfuscator/Report
         lib.rs
       tests/
         deobf.rs      反混淆 pass 单元测试（13 项）
-        table_test.rs 函数表解析测试（最小 + 全量 sample.au3，2 项）
+        table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
     au3-cli/                # CLI 二进制 crate（产物名为 au3）
       src/main.rs
 ```
+
+### autoitv3-runtime 的定位
+
+反混淆需要**执行**代码：混淆器把函数表和字符串表放在数组里，靠运行生成的辅助函数
+构建。纯 AST 改写只能解开函数表（它完全由数组字面量拼成），字符串表依赖字符串运算、
+`Execute`、Map 和循环，因此需要一个真正的解释器。
+
+该 crate 提供三样东西：
+
+1. **小型解释器**（`interp.rs`）——供反混淆调用。覆盖 `ByRef`（含数组共享存储）、
+   `ReDim` 原地扩容、`For To Step` / `For In`、复合赋值、`@error`/`@extended`、
+   `Select`/`Switch`、递归与步数护栏。
+2. **完整运行时的接口**（`host.rs`）——`Host` / `HostContext` / `NativeHost`：
+   把 Win32、COM、GUI、DllCall 等原生能力注册进来，解释器核心不依赖任何平台。
+3. **后续 debug 模块的接口**（`debug.rs`）——`Debugger`（每条语句回调、可返回
+   `Continue`/`Pause`/`Abort`）、`Breakpoint`/`Breakpoints`、`FrameInfo` 调用栈快照、
+   `StopReason`。解释器每执行一条语句都会调用该接口，因此交互式调试器、DAP 服务端
+   或自动化 tracer 都能直接接上。
 
 ## 反混淆现状
 
@@ -48,13 +77,27 @@ autoitv3-tools/
 2. **函数表解析**（table）：静态执行 `BuildFunctionTable()`（纯数组构建，
    `Local $x[]=[...]` + `MergeArrays` + `Return`）得到 `$fn_table` 函数表
    （1108 个函数名），把所有 `$fn_table[0x..](args)` 改写为 `FuncName(args)`、
-   `$fn_table[0x..]` 改写为 `FuncName`。在 `sample.au3` 上改写约 several thousand 处引用。
+   `$fn_table[0x..]` 改写为 `FuncName`。在真实脚本上改写约 several thousand 处引用。
 3. **标识符重命名**（rename）：确定性重命名变量/函数/宏为可读别名。
 
-> **TODO（字符串表求值）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()`
-> 构建，其内部依赖 `Execute`、`Map`/`MapExists`、二进制运算等运行时语义，
-> 纯静态求值无法完全解开。需实现一个小型 AutoIt 解释器（覆盖 `For/In`、
-> `ReDim`、数组、字符串运算、若干内置函数）才能运行时求值，作为后续工作。
+### 运行时相关代码的迁移
+
+原先 `autoitv3-deobf` 里自带两处"求值"逻辑，现已全部迁入 `autoitv3-runtime`：
+
+- `table.rs` 曾手写一个数组字面量求值器来模拟 `MergeArrays`；现在直接把
+  builder 交给解释器执行（`Runtime::call_function`），不再重复实现 AutoIt 语义。
+- `fold.rs` 曾自带一套运算符求值（`apply_binary`/`neg`/`not`）；现在只负责
+  遍历 AST 与判断"哪里可以内联"，实际求值交给 `Runtime::eval_expr`，
+  并用 `is_constant_expr` 作为安全闸门（保证纯常量才内联）。
+
+好处是 AutoIt 的运算符语义（强制转换、字符串拼接、整数/浮点提升）只有**一份**实现，
+不会随两处代码各自演进而产生偏差。
+
+> **TODO（字符串表求值）**：`$string_table`（字符串表）由 `$fn_table[0x33d]()` 构建，
+> 其内部依赖 `Execute`、`Map`、二进制运算等。解释器骨架已就绪并跑通函数表，
+> 但要完整求值字符串表，还需继续补齐：运行整个脚本体时的数组语义细节
+> （当前在 `--init` 全量执行时遇到索引越界）、以及更多内置函数
+> （`StringRegExp*`、`DllCall` 真实语义等）。这属于下一步工作。
 
 ## 使用
 
@@ -69,8 +112,14 @@ cargo build --release
 # -o FILE 将格式化输出重定向到文件；-o - 或省略 -o 则输出到 stdout（原文件永不被修改）
 ./target/release/au3 --pretty -o out.au3 some.au3
 ./target/release/au3 --deobfuscate -o - some.au3
+# 用解释器调用函数（--arg 传参，--init 先执行脚本体以建立全局表）
+./target/release/au3 --run Add --arg 2 --arg 3 some.au3
+./target/release/au3 --run BuildFunctionTable some.au3
+# --trace 打印解释器执行的语句流（演示 debug 接口）
+./target/release/au3 --run SomeFunc --trace some.au3
 # 运行库的单元测试
 cargo test -p autoitv3-ast
+cargo test -p autoitv3-runtime
 cargo test -p autoitv3-deobf
 ```
 
@@ -115,7 +164,19 @@ let out = pp.print_program(&prog);    // 反混淆/规范化输出
 - 解析与 AST 结构：顶层条目、Global/Const、赋值/复合赋值、三元、函数与参数、
   单行/多行 If、For-In / For-To-Step、Select/Switch/With、数组字面量、Enum、
   叠用作用域关键字、`$arr[i](...)` 索引调用、错误位置报告
-- 打印：注释去除、round-trip（重解析条目数/函数数一致）、整份混淆目标文件冒烟测试
+- 打印：注释去除、round-trip（重解析条目数/函数数一致）、整份混淆脚本冒烟测试
+
+### 需要样本的集成测试（可选）
+
+少数集成测试需要一个真实混淆脚本作为输入。它们默认**跳过**，只有当环境变量
+`AU3_SAMPLE` 指向一个可读文件时才运行：
+
+```bash
+AU3_SAMPLE=/path/to/obfuscated.au3 cargo test
+```
+
+涉及：`autoitv3-ast`（整份脚本冒烟解析）、`autoitv3-deobf`（全量函数表解析，1108 项）、
+`autoitv3-runtime`（用解释器执行函数表构建函数）。
 
 ## 验证
 

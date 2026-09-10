@@ -81,8 +81,13 @@ pub enum StmtKind {
     Return(Option<Expr>),
     /// `Exit [code]`
     Exit(Option<Expr>),
-    /// `ExitLoop [n]` / `ContinueLoop [n]`
+    /// `ExitLoop [n]` — break out of `n` loops.
     ExitLoop(Option<Expr>),
+    /// `ContinueLoop [n]` — continue the `n`-th enclosing loop.
+    ///
+    /// Kept distinct from `ExitLoop` because an interpreter must know which
+    /// control transfer to perform.
+    ContinueLoop(Option<Expr>),
     /// `If cond Then stmt` (single-line).
     If(IfStmt),
     /// `While cond ... WEnd`
@@ -106,6 +111,10 @@ pub struct VarDecl {
     pub is_const: bool,
     /// True for `Enum` / `Global Enum` blocks (members are constants).
     pub is_enum: bool,
+    /// True for `ReDim $a[...]` — resizes an existing array in place rather
+    /// than declaring a new variable. Kept separate from `Dim Const` because
+    /// an interpreter must treat the two differently.
+    pub is_redim: bool,
     pub vars: Vec<VarDeclItem>,
 }
 

@@ -1,15 +1,15 @@
 [package]
-name = "autoitv3-deobf"
+name = "autoitv3-runtime"
 version.workspace = true
 edition.workspace = true
 description.workspace = true
 
 [dependencies]
 autoitv3-ast = { path = "../autoitv3-ast" }
-autoitv3-runtime = { path = "../autoitv3-runtime" }
 
-[dev-dependencies]
-autoitv3-format = { path = "../autoitv3-format" }
+[lib]
+name = "autoitv3_runtime"
+path = "src/lib.rs"
 
 [lints.rust]
 unused = "warn"

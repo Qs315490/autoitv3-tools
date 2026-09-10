@@ -9,10 +9,11 @@
 //! `$fn_table[0x33d]()` / references through `$fn_table[0x22]`.
 //!
 //! `BuildFunctionTable()` is a *pure* array-construction function: it declares
-//! `Local $x[] = [count, name, ...]` array literals locked with `MergeArrays`,
-//! and finally returns the merged array. None of that needs runtime state
-//! beyond local arrays and a ReDim/append helper, so it can be evaluated
-//! statically over the AST.
+//! `Local $x[] = [count, name, ...]` array literals merged with `MergeArrays`,
+//! and finally returns the merged array. That is exactly what
+//! [`autoitv3_runtime::Runtime`] executes, so this pass simply runs the builder
+//! on the interpreter and reads the resulting array — no hand-written
+//! evaluator to keep in sync with AutoIt's semantics.
 //!
 //! After the pass, every `$fn_table[0x..](args)` becomes `FuncName(args)` and
 //! every `$fn_table[0x..]` becomes `FuncName` (an `Ident`), so the several thousand
@@ -25,6 +26,7 @@
 
 use std::collections::HashMap;
 use autoitv3_ast::ast::*;
+use autoitv3_runtime::{Runtime, Value};
 
 /// Result of resolving the function table.
 #[derive(Debug, Default)]
@@ -59,10 +61,8 @@ pub fn resolve_function_table(
         report: TableReport::default(),
     };
 
-    // Pass 1: statically evaluate the builder function to obtain the table.
-    if let Some(func) = find_func(prog, builder_func) {
-        ctx.table = eval_pure_builder(func);
-    }
+    // Pass 1: evaluate the builder function on the runtime to obtain the table.
+    ctx.table = eval_builder(prog, builder_func);
 
     // If we got a table, build the index -> name map.
     if let Some(table) = &ctx.table {
@@ -91,112 +91,31 @@ struct ResolveCtx {
     report: TableReport,
 }
 
-fn find_func<'a>(prog: &'a Program, name: &str) -> Option<&'a FuncDef> {
-    prog.items.iter().find_map(|it| match &it.kind {
-        ItemKind::Func(f) if f.name.name == name => Some(f),
-        _ => None,
-    })
-}
+/// Evaluate the table builder by *running* it on the interpreter.
+///
+/// `BuildFunctionTable()` is pure array construction (`Local $x[] = [...]`
+/// literals merged with the `MergeArrays` helper), so the runtime can execute
+/// it directly. Delegating to the interpreter means the pass also copes with
+/// builders that use loops, `ReDim`, string work or `Execute` — the shapes the
+/// obfuscator's *string* table needs — instead of only the literal pattern this
+/// pass used to special-case.
+///
+/// Returns the resolved element list (element 0 is the count), or `None` when
+/// the builder is missing or cannot be evaluated.
+fn eval_builder(prog: &Program, builder_func: &str) -> Option<Vec<String>> {
+    let mut rt = Runtime::with_program(prog);
+    // Table builders are finite, but keep a generous guard against a builder
+    // that loops forever on an unsupported construct.
+    rt.set_max_steps(20_000_000);
 
-/// Statically evaluate a pure builder function whose body is a sequence of
-/// `Local $x[] = [count, ...]` array literals, `MergeArrays(target, src)`
-/// calls Scribble, and a final `Return $target`. Returns the built array
-/// (element 0 = total count, then names), or `None` if the pattern does not
-/// match (in which case the pass leaves things unchanged).
-fn eval_pure_builder(func: &FuncDef) -> Option<Vec<String>> {
-    // Map of local variable name -> array contents.
-    let mut locals: HashMap<String, Vec<String>> = HashMap::new();
-
-    for st in &func.body {
-        match &st.kind {
-            StmtKind::VarDecl(v) => {
-                // Only handle `Local $x[] = [count, name, ...]` (single var,
-                // array-literal init). Ignore scalar declarations and other
-                // kinds of VarDecl.
-                for vi in &v.vars {
-                    if vi.dims.is_empty() {
-                        continue;
-                    }
-                    let Some(init) = &vi.init else { continue };
-                    let ExprKind::ArrayLit(items) = &init.kind else { continue };
-                    // Parse each array element: Int literal (count / index) or
-                    // Ident (function name). Skip if any element is not a
-                    // plain Int/Ident literal.
-                    let mut vals: Vec<String> = Vec::with_capacity(items.len());
-                    let mut ok = true;
-                    for e in items {
-                        match &e.kind {
-                            ExprKind::Lit(Lit { kind: LitKind::Int(n), .. }) => {
-                                vals.push(n.to_string());
-                            }
-                            ExprKind::Ident(id) => {
-                                vals.push(id.name.clone());
-                            }
-                            ExprKind::Macro(m) => {
-                                vals.push(m.clone());
-                            }
-                            ExprKind::Lit(Lit { kind: LitKind::Str(s), .. }) => {
-                                vals.push(s.clone());
-                            }
-                            _ => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if !ok {
-                        continue; // bail out of this declaration
-                    }
-                    locals.insert(vi.name.name.clone(), vals);
-                }
-            }
-            StmtKind::Expr(e) => {
-                let ExprKind::Call(c) = &e.kind else { continue };
-                if c.callee.name != "MergeArrays" || c.args.len() != 2 {
-                    continue;
-                }
-                // Resolve target and source variable names from the arguments.
-                let tgt = match &c.args[0].kind {
-                    ExprKind::Var(v) => v.name.name.clone(),
-                    _ => continue,
-                };
-                let src = match &c.args[1].kind {
-                    ExprKind::Var(v) => v.name.name.clone(),
-                    _ => continue,
-                };
-                let (Some(t), Some(s)) = (locals.get(&tgt).cloned(), locals.get(&src).cloned())
-                else {
-                    continue;
-                };
-                // MergeArrays(target, source):
-                //   ReDim target[target[0] + source[0] + 1]
-                //   For i = 1 To source[0]: target[target[0]+i] = source[i]
-                //   target[0] += source[0]
-                let tcnt = t.first().and_then(|x| x.parse::<i64>().ok()).unwrap_or(0);
-                let scnt = s.first().and_then(|x| x.parse::<i64>().ok()).unwrap_or(0);
-                let mut newt = vec![(tcnt + scnt).to_string()];
-                // Copy target values 1..tcnt
-                for i in 1..=tcnt as usize {
-                    if let Some(v) = t.get(i) {
-                        newt.push(v.clone());
-                    }
-                }
-                // Copy source values 1..scnt
-                for i in 1..=scnt as usize {
-                    if let Some(v) = s.get(i) {
-                        newt.push(v.clone());
-                    }
-                }
-                locals.insert(tgt.clone(), newt);
-            }
-            StmtKind::Return(Some(e)) => {
-                let ExprKind::Var(v) = &e.kind else { continue };
-                return locals.get(&v.name.name).cloned();
-            }
-            _ => {}
-        }
+    let value = rt.call_function(builder_func, Vec::new()).ok()?;
+    let Value::Array(items) = value else { return None };
+    let items = items.borrow();
+    let mut out = Vec::with_capacity(items.len());
+    for v in items.iter() {
+        out.push(v.to_autoit_string());
     }
-    None
+    Some(out)
 }
 
 impl ResolveCtx {
@@ -243,7 +162,8 @@ impl ResolveCtx {
                 }
             }
             StmtKind::Expr(e) => self.rewrite_expr(e, tv),
-            StmtKind::Return(Some(e)) | StmtKind::Exit(Some(e)) | StmtKind::ExitLoop(Some(e)) => {
+            StmtKind::Return(Some(e)) | StmtKind::Exit(Some(e)) | StmtKind::ExitLoop(Some(e))
+            | StmtKind::ContinueLoop(Some(e)) => {
                 self.rewrite_expr(e, tv);
             }
             StmtKind::If(if_) => {
@@ -293,7 +213,8 @@ impl ResolveCtx {
                 self.rewrite_stmts(&mut w.body, tv);
             }
             StmtKind::Directive(_) => {}
-            StmtKind::Return(None) | StmtKind::Exit(None) | StmtKind::ExitLoop(None) => {}
+            StmtKind::Return(None) | StmtKind::Exit(None) | StmtKind::ExitLoop(None)
+            | StmtKind::ContinueLoop(None) => {}
         }
     }
 

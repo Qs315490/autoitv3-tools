@@ -9,6 +9,7 @@ dependencies = [
  "autoitv3-ast",
  "autoitv3-deobf",
  "autoitv3-format",
+ "autoitv3-runtime",
 ]
 
 [[package]]
@@ -21,10 +22,18 @@ version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
  "autoitv3-format",
+ "autoitv3-runtime",
 ]
 
 [[package]]
 name = "autoitv3-format"
+version = "0.1.0"
+dependencies = [
+ "autoitv3-ast",
+]
+
+[[package]]
+name = "autoitv3-runtime"
 version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
