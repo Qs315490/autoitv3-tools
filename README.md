@@ -414,8 +414,8 @@ $fn_table[0x33d]() ->  ResolvedFunc()      （函数名调用）
 
 ```
 $ au3 evaluate sample.au3 -o resolved.au3
-evaluated: 23 globals, 4 tables, 827 values inlined, 11557 calls resolved
-script body did not finish: undefined function: DLLSTRUCTCREATE (at 1769:21)
+evaluated: 264 globals, 9 tables, 29666 values inlined, 11557 calls resolved
+script body did not finish: undefined function: GUICREATE (at 10569:31)
   (that is the platform boundary: this function is not implemented for the current OS)
   values produced before that point were still inlined
 ```

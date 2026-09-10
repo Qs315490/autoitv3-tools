@@ -257,6 +257,12 @@ impl ResolveCtx {
                     self.rewrite_expr(idx, tv);
                 }
             }
+            ExprKind::Subscript(base, indices) => {
+                self.rewrite_expr(base, tv);
+                for idx in indices {
+                    self.rewrite_expr(idx, tv);
+                }
+            }
             ExprKind::IndexCall(v, args) => {
                 if v.name.name.eq_ignore_ascii_case(tv) && v.indices.len() == 1 {
                     let idx = match &v.indices[0].kind {

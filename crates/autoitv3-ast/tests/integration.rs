@@ -365,3 +365,45 @@ fn sample_script() -> Option<String> {
         }
     }
 }
+
+#[test]
+fn subscript_on_a_call_result_stays_part_of_the_expression() {
+    // `DllCall(...)[0]` indexes what the call returned; it is not a statement
+    // of its own, and it must not be turned into a concatenation.
+    let src = "$x = $fn_table[0x273]($a, $b)[0x0]\n";
+    let prog = parse(src).unwrap();
+    let ItemKind::Stmt(s) = &prog.items[0].kind else {
+        panic!("expected stmt");
+    };
+    let StmtKind::Expr(e) = &s.kind else {
+        panic!("expected expr stmt");
+    };
+    let ExprKind::Binary(_, _, rhs) = &e.kind else {
+        panic!("expected assignment, got {:?}", e.kind);
+    };
+    let ExprKind::Subscript(base, indices) = &rhs.kind else {
+        panic!("expected Subscript, got {:?}", rhs.kind);
+    };
+    assert!(matches!(base.kind, ExprKind::IndexCall(..)));
+    assert_eq!(indices.len(), 1);
+}
+
+#[test]
+fn chained_subscripts_on_a_call_accumulate() {
+    let src = "$a = DllCall(\"x\", \"int\", \"y\")[0][1]\n";
+    let prog = parse(src).unwrap();
+    let ItemKind::Stmt(s) = &prog.items[0].kind else {
+        panic!("expected stmt");
+    };
+    let StmtKind::Expr(e) = &s.kind else {
+        panic!("expected expr stmt");
+    };
+    let ExprKind::Binary(_, _, rhs) = &e.kind else {
+        panic!("expected assignment");
+    };
+    let ExprKind::Subscript(base, indices) = &rhs.kind else {
+        panic!("expected Subscript, got {:?}", rhs.kind);
+    };
+    assert!(matches!(base.kind, ExprKind::Call(..)));
+    assert_eq!(indices.len(), 2);
+}

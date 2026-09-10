@@ -266,6 +266,14 @@ impl SubstituteCtx<'_> {
                 }
                 self.index_call(e);
             }
+            ExprKind::Subscript(base, indices) => {
+                // The base is often itself a table call (`DllCall(...)[0]`), so
+                // it has to go through the same substitution path.
+                self.expr(base);
+                for i in indices {
+                    self.expr(i);
+                }
+            }
             ExprKind::Var(v) => {
                 for i in &mut v.indices {
                     self.expr(i);

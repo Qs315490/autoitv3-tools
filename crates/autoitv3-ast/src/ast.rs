@@ -234,6 +234,10 @@ pub enum ExprKind {
     /// Call of a function reference stored in an array element:
     /// `$arr[i](args...)`.
     IndexCall(VarExpr, Vec<Expr>),
+    /// A subscript on something that is not a plain variable, e.g.
+    /// `DllCall(...)[0]` or `$obj.Items[2]`. A subscript on a variable lives in
+    /// [`VarExpr::indices`] instead, so this holds only the other bases.
+    Subscript(Box<Expr>, Vec<Expr>),
     /// Member access on a COM/object value: `$obj.Property`,
     /// `$chart.Series(1)`, `.Value` inside `With ... EndWith`.
     Member(Box<Expr>, Ident),

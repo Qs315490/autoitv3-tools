@@ -589,6 +589,28 @@ impl PrettyPrinter {
                 }
                 let _ = write!(self.out, ")");
             }
+            ExprKind::Subscript(base, indices) => {
+                // A subscript binds tighter than every operator, so a compound
+                // base needs parentheses to keep meaning what it said.
+                let needs_parens = matches!(
+                    base.kind,
+                    ExprKind::Binary(..)
+                        | ExprKind::Unary(..)
+                        | ExprKind::Ternary(..)
+                );
+                if needs_parens {
+                    let _ = write!(self.out, "(");
+                }
+                self.print_expr(base);
+                if needs_parens {
+                    let _ = write!(self.out, ")");
+                }
+                for idx in indices {
+                    let _ = write!(self.out, "[");
+                    self.print_expr(idx);
+                    let _ = write!(self.out, "]");
+                }
+            }
             ExprKind::Member(recv, name) => {
                 // The implicit `With` subject prints as nothing, so a leading
                 // `.Value` comes out exactly as written.
