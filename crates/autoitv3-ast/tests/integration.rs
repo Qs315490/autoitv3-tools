@@ -300,18 +300,12 @@ fn parse_error_reports_span() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Full-file smoke test (the actual obfuscation target)
+// Full-file smoke test (an obfuscated script, when one is supplied)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn parse_entire_obfuscated_target() {
-    // The target file lives next to the repo; skip if unavailable.
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../sample.au3");
-    if !std::path::Path::new(path).exists() {
-        eprintln!("skipping: {} not found", path);
-        return;
-    }
-    let src = std::fs::read_to_string(path).unwrap();
+    let Some(src) = sample_script() else { return };
     let prog = parse(&src).unwrap();
     let funcs = prog
         .items
@@ -354,4 +348,20 @@ fn parse_standalone_comment_lines_between_funcs() {
     let prog = parse(src).expect("must parse");
     assert!(prog.comments.iter().any(|c| c.text.contains("between")));
     assert_eq!(prog.items.len(), 2);
+}
+
+/// Read the optional obfuscated sample script used by the integration checks.
+///
+/// Point the `AU3_SAMPLE` environment variable at a real obfuscated AutoIt
+/// script to enable them; they are skipped when it is unset or unreadable, so
+/// `cargo test` stays green without any external fixture.
+fn sample_script() -> Option<String> {
+    let path = std::env::var("AU3_SAMPLE").ok().filter(|p| !p.is_empty())?;
+    match std::fs::read_to_string(&path) {
+        Ok(src) => Some(src),
+        Err(e) => {
+            eprintln!("skipping: cannot read {path}: {e}");
+            None
+        }
+    }
 }
