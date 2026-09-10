@@ -614,3 +614,29 @@ fn a_disabled_layer_leaves_windows_calls_undefined() {
         if cfg!(windows) { "portable+windows" } else { "portable+linux" }
     );
 }
+
+#[test]
+fn a_second_struct_over_a_pointer_aliases_the_first() {
+    // `DllStructCreate($def, $ptr)` maps onto memory that already exists. This
+    // is how a script reads back a buffer a `DllCall` filled in: it hands the
+    // struct to the call, then re-reads the same bytes as `byte[]`.
+    let body = r#"Local $t = DllStructCreate("byte[8]")
+    DllStructSetData($t, 1, Binary("0x4142434445464748"))
+    Local $alias = DllStructCreate("byte[4]", DllStructGetPtr($t))
+    Local $before = BinaryToString(DllStructGetData($alias, 1))
+    DllStructSetData($alias, 1, Binary("0x31323334"))
+    Return $before & "|" & BinaryToString(DllStructGetData($t, 1))"#;
+    assert_eq!(text(win10(), body), "ABCD|1234EFGH");
+}
+
+#[test]
+fn a_decrypted_buffer_can_be_re_read_through_the_pointer() {
+    // The shape `_Crypt_DecryptData` uses: a scratch struct far larger than the
+    // ciphertext, and a second struct over its address that reads the plaintext
+    // back out at its real length.
+    let body = r#"Local $buf = DllStructCreate("byte[8]")
+    DllStructSetData($buf, 1, Binary("0x01020304"))
+    Local $view = DllStructCreate("byte[4]", DllStructGetPtr($buf))
+    Return BinaryLen(DllStructGetData($view, 1)) & ":" & BinaryToString(DllStructGetData($view, 1))"#;
+    assert_eq!(text(win10(), body), "4:\u{1}\u{2}\u{3}\u{4}");
+}

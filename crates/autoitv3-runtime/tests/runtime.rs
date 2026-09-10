@@ -538,3 +538,79 @@ fn member_access_reports_that_it_needs_a_platform_host() {
     let msg = err.message();
     assert!(msg.contains("platform host"), "got: {msg}");
 }
+
+// ---------------------------------------------------------------------------
+// AutoIt value semantics the obfuscator leans on
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_binary_renders_as_prefixed_hex() {
+    // `String($binary)` is "0x" + upper-case hex, which is why scripts strip
+    // that prefix before reading hex digits back out.
+    let src = r#"Func F()
+    Return String(Binary("0x00ff10")) & "|" & Hex(Binary("0x00ff10"))
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "0x00FF10|00FF10");
+}
+
+#[test]
+fn dec_reads_its_argument_as_hexadecimal() {
+    // AutoIt's `Dec` is the inverse of `Hex`, not a decimal parse.
+    let src = r#"Func F()
+    Return Dec("00E0") & "|" & Dec("1A09") & "|" & Dec("0xFF") & "|" & Dec("-10")
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "224|6665|255|-16");
+}
+
+#[test]
+fn binaries_compare_by_their_bytes() {
+    let src = r#"Func F()
+    Local $same = (Binary("0x4142") == Binary("0x4142"))
+    Local $other = (Binary("0x4142") == Binary("0x4143"))
+    Return $same & "|" & $other
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "True|False");
+}
+
+#[test]
+fn declarations_build_nested_dimensions() {
+    let src = r#"Func F()
+    Local $grid[2][3]
+    $grid[1][2] = 7
+    Local $auto[2][2] = [[1, 2], [3, 4]]
+    Return UBound($grid, 0) & "|" & UBound($grid, 1) & "|" & UBound($grid, 2) & "|" & $grid[1][2] & "|" & $auto[1][0]
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "2|2|3|7|3");
+}
+
+#[test]
+fn redim_resizes_rows_and_columns_in_place() {
+    let src = r#"Func F()
+    Local $grid[1][2]
+    $grid[0][0] = 5
+    ReDim $grid[2][3]
+    $grid[1][2] = 9
+    Return UBound($grid, 1) & "x" & UBound($grid, 2) & "|" & $grid[0][0] & "|" & $grid[1][2]
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "2x3|5|9");
+}
+
+#[test]
+fn var_get_type_names_the_autoit_variant() {
+    let src = r#"Func F()
+    Return VarGetType(1) & "," & VarGetType(1.5) & "," & VarGetType("s") & "," & VarGetType(Binary("0x41")) & "," & VarGetType(Null)
+EndFunc"#;
+    assert_eq!(
+        call(src, "F", vec![]).to_autoit_string(),
+        "Int32,Double,String,Binary,Keyword"
+    );
+}
+
+#[test]
+fn exit_handlers_are_recorded_rather_than_run() {
+    let src = "Func F()\n    OnAutoItExitRegister(\"Cleanup\")\n    Return OnAutoItExitRegister(\"Cleanup2\")\nEndFunc\n";
+    let prog = autoitv3_ast::parse(src).unwrap();
+    let mut r = Runtime::with_program(&prog);
+    assert!(matches!(r.call_function("F", vec![]).unwrap(), Value::Int(1)));
+    assert_eq!(r.exit_handlers(), ["Cleanup", "Cleanup2"]);
+}

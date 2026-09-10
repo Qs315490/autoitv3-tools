@@ -138,6 +138,11 @@ impl Value {
     }
 
     /// Render using AutoIt's `String()` rules.
+    ///
+    /// A binary renders as `0x` followed by upper-case hex — AutoIt's string
+    /// form of a byte string, and the shape scripts rely on: the obfuscator
+    /// writes `String($binary)` and then strips exactly that `0x` prefix before
+    /// reading the hex digits back.
     pub fn to_autoit_string(&self) -> String {
         match self {
             Value::Null => String::new(),
@@ -148,7 +153,7 @@ impl Value {
             Value::Str(s) => s.clone(),
             Value::Array(_) => String::new(),
             Value::Map(_) => String::new(),
-            Value::Binary(b) => b.iter().map(|x| format!("{x:02X}")).collect(),
+            Value::Binary(b) => binary_to_hex(b),
             Value::FuncRef(name) => name.clone(),
         }
     }
@@ -177,6 +182,9 @@ impl Value {
             (Value::Default, Value::Default) => true,
             (a, b) if a.is_number() && b.is_number() => a.to_f64() == b.to_f64(),
             (Value::Str(a), Value::Str(b)) => a == b,
+            // Two binaries are equal when their bytes are — the obfuscator
+            // checks a decrypted buffer against a stored digest this way.
+            (Value::Binary(a), Value::Binary(b)) => a == b,
             (Value::Str(a), b) => a.as_str() == b.to_autoit_string(),
             (a, Value::Str(b)) => a.to_autoit_string() == b.as_str(),
             (Value::FuncRef(a), Value::FuncRef(b)) => a == b,
@@ -274,4 +282,15 @@ pub fn parse_number(s: &str) -> Option<f64> {
         digits.parse::<f64>().ok()?
     };
     Some(if neg { -val } else { val })
+}
+/// AutoIt's string form of a binary: `0x` followed by upper-case hex.
+pub fn binary_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + bytes.len() * 2);
+    out.push_str("0x");
+    for b in bytes {
+        const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+        out.push(DIGITS[(b >> 4) as usize] as char);
+        out.push(DIGITS[(b & 0x0f) as usize] as char);
+    }
+    out
 }
