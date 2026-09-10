@@ -756,3 +756,91 @@ fn the_host_reports_frames_and_functions() {
     assert!(r.frames().is_empty());
     assert!(r.globals().is_empty());
 }
+
+#[test]
+fn an_uncaught_error_is_offered_while_the_frame_is_still_live() {
+    // The hook fires where the error is raised, *before* the frame is popped,
+    // which is the whole point: a post-mortem is only useful if the locals that
+    // led to the failure are still there.
+    struct PostMortem {
+        seen: Vec<(String, String, String)>,
+        errors: usize,
+    }
+    impl Debugger for PostMortem {
+        fn on_error(
+            &mut self,
+            error: &autoitv3_runtime::RuntimeError,
+            span: Option<autoitv3_ast::span::Span>,
+            host: &mut dyn DebugHost,
+        ) {
+            self.errors += 1;
+            let frames = host.frames();
+            let innermost = frames
+                .last()
+                .and_then(|f| f.function.clone())
+                .unwrap_or_default();
+            let depth = frames.len();
+            let n = host.evaluate_expression("$n").unwrap().to_autoit_string();
+            self.seen.push((
+                innermost,
+                n,
+                format!("{depth}/{}", span.map(|s| s.start.line).unwrap_or(0)),
+            ));
+            let _ = error;
+        }
+    }
+
+    let src = "Func Boom($n)\n    Local $a[1] = [1]\n    Return $a[$n]\nEndFunc\nFunc Top()\n    Return Boom(9)\nEndFunc\n";
+    let mut r = rt(src);
+    let seen = Rc::new(std::cell::RefCell::new(PostMortem { seen: Vec::new(), errors: 0 }));
+    struct Share(Rc<std::cell::RefCell<PostMortem>>);
+    impl Debugger for Share {
+        fn on_error(
+            &mut self,
+            error: &autoitv3_runtime::RuntimeError,
+            span: Option<autoitv3_ast::span::Span>,
+            host: &mut dyn DebugHost,
+        ) {
+            self.0.borrow_mut().on_error(error, span, host);
+        }
+    }
+    r.set_debugger(Box::new(Share(seen.clone())));
+
+    let err = r.call_function("Top", vec![]).unwrap_err();
+    assert!(err.message().contains("out of bounds"), "got: {}", err.message());
+    let seen = seen.borrow();
+    // One offer, not one per enclosing statement, and it names the failing
+    // frame — inside `Boom`, at the `Return` on line 3.
+    assert_eq!(seen.errors, 1, "the error was offered more than once");
+    // Both `Boom` and its caller `Top` are still on the stack.
+    assert_eq!(
+        seen.seen,
+        vec![("Boom".to_string(), "9".to_string(), "2/3".to_string())]
+    );
+}
+
+#[test]
+fn an_error_is_offered_once_per_run() {
+    // The flag that keeps the offer to one per error has to be reset by the
+    // *next* run, or a second call would report nothing.
+    struct Count(Rc<std::cell::RefCell<usize>>);
+    impl Debugger for Count {
+        fn on_error(
+            &mut self,
+            _error: &autoitv3_runtime::RuntimeError,
+            _span: Option<autoitv3_ast::span::Span>,
+            _host: &mut dyn DebugHost,
+        ) {
+            *self.0.borrow_mut() += 1;
+        }
+    }
+
+    let src = "Func Boom()\n    Local $a[1] = [1]\n    Return $a[4]\nEndFunc\n";
+    let mut r = rt(src);
+    let hits = Rc::new(std::cell::RefCell::new(0usize));
+    r.set_debugger(Box::new(Count(hits.clone())));
+    assert!(r.call_function("Boom", vec![]).is_err());
+    assert!(r.call_function("Boom", vec![]).is_err());
+    // One offer each time — not two for the first run and none for the second.
+    assert_eq!(*hits.borrow(), 2);
+}

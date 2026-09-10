@@ -74,6 +74,12 @@ pub struct Runtime {
     /// without this guard a `print` inside a stop would recurse into the
     /// debugger for ever.
     in_debugger: bool,
+    /// Set once a runtime error has been offered to the debugger.
+    ///
+    /// The hook fires at the innermost statement that failed; as the error
+    /// propagates outward every enclosing `exec_stmt` sees it too, and this
+    /// keeps it to one offer per error.
+    error_reported: bool,
     /// Set by `Exit [code]`.
     exit_code: Option<i32>,
     /// Functions named by `OnAutoItExitRegister`, in registration order.
@@ -156,6 +162,7 @@ impl Runtime {
             max_depth: DEFAULT_MAX_DEPTH,
             paused: None,
             in_debugger: false,
+            error_reported: false,
             exit_code: None,
             exit_handlers: Vec::new(),
             profile: ExecutionProfile::default(),
@@ -218,6 +225,7 @@ impl Runtime {
     /// `Func` definitions are *not* executed; call them explicitly with
     /// [`Runtime::call_function`].
     pub fn run_script(&mut self) -> Result<Flow, RuntimeError> {
+        self.error_reported = false;
         let stmts = std::mem::take(&mut self.script);
         let mut flow = Flow::Normal;
         for s in &stmts {
@@ -400,6 +408,7 @@ impl Runtime {
     /// This is the entry point the deobfuscator uses to evaluate the
     /// obfuscator's table-builder helpers.
     pub fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.error_reported = false;
         self.call_user(name, args, None)
     }
 
@@ -971,7 +980,18 @@ impl Runtime {
     // ------------------------------------------------------------------
 
     /// Execute a statement, returning the control-flow signal it produced.
+    ///
+    /// A failure is offered to the debugger here, at the statement that raised
+    /// it, before the error unwinds anything.
     pub fn exec_stmt(&mut self, s: &Stmt) -> Result<Flow, RuntimeError> {
+        let result = self.exec_stmt_inner(s);
+        if let Err(e) = &result {
+            self.error_hook(e, Some(s.span));
+        }
+        result
+    }
+
+    fn exec_stmt_inner(&mut self, s: &Stmt) -> Result<Flow, RuntimeError> {
         self.tick()?;
 
         // The frame's span is the statement being executed, so a debugger
@@ -1224,12 +1244,26 @@ impl Runtime {
         self.debugger = Some(dbg);
 
         match action {
-            DebugAction::Abort => Err(RuntimeError::Unsupported {
-                what: "aborted by debugger".to_string(),
-                span: Some(span),
-            }),
+            DebugAction::Abort => Err(RuntimeError::Aborted),
             _ => Ok(()),
         }
+    }
+
+    /// Offer an uncaught error to the debugger before it unwinds.
+    fn error_hook(&mut self, error: &RuntimeError, span: Option<Span>) {
+        // A debugger-requested abort is a control signal, not a failure of the
+        // program, and must not come back as a post-mortem stop.
+        if self.in_debugger || self.error_reported || matches!(error, RuntimeError::Aborted) {
+            return;
+        }
+        self.error_reported = true;
+        let Some(mut dbg) = self.debugger.take() else {
+            return;
+        };
+        self.in_debugger = true;
+        dbg.on_error(error, span, self);
+        self.in_debugger = false;
+        self.debugger = Some(dbg);
     }
 
     /// Run the debugger's end-of-run callback, if one is installed.

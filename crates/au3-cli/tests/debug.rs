@@ -256,3 +256,139 @@ fn an_unknown_command_is_reported_not_fatal() {
     assert!(out.contains("unknown command"), "got:\n{out}");
     assert!(out.contains("\n1\n"), "got:\n{out}");
 }
+
+// ---------------------------------------------------------------------------
+// Command sources and post-mortem stops
+// ---------------------------------------------------------------------------
+
+/// A script that fails when indexed past the end of its array.
+const FAILING: &str = "\
+Global $seen = 0
+
+Func Boom($n)
+    Local $x = $n * 2
+    Local $list[2] = [1, 2]
+    Return $list[$n]
+EndFunc
+
+Func Outer()
+    $seen += 1
+    Return Boom(5)
+EndFunc
+
+Outer()
+";
+
+#[test]
+fn one_dash_c_can_carry_several_commands() {
+    let path = script("semi", SCRIPT);
+    let out = shell(
+        &path,
+        &["break 11; run; print $i; next; print $counter; quit"],
+    );
+    assert!(out.contains("Breakpoint 1, line 11"), "got:\n{out}");
+    assert!(has_line(&out, "Stopped at line 12"), "got:\n{out}");
+    assert!(has_line(&out, "1"), "got:\n{out}");
+}
+
+#[test]
+fn a_semicolon_inside_a_string_is_not_a_separator() {
+    let path = script("semiquote", SCRIPT);
+    let out = shell(&path, &[r#"print "a;b"; print 1; quit"#]);
+    assert!(out.contains(r#""a;b""#), "the string was split:\n{out}");
+    assert!(has_line(&out, "1"), "the second command was lost:\n{out}");
+}
+
+#[test]
+fn a_command_file_runs_first_and_the_session_carries_on() {
+    let path = script("cmdfile", SCRIPT);
+    let dir = path.parent().expect("scratch dir");
+    let commands = dir.join("session.au3dbg");
+    std::fs::write(
+        &commands,
+        "# my usual breakpoints\nbreak 11\n\nrun\nprint $i\n",
+    )
+    .expect("write command file");
+
+    // The file's commands run first; stdin is then still read.
+    let out = run_full(
+        &path,
+        &["-x", commands.to_str().expect("utf-8 path")],
+        &[],
+        "next\nprint $counter\nquit\n",
+    );
+    assert!(out.contains("Breakpoint 1, line 11"), "got:\n{out}");
+    assert!(has_line(&out, "1"), "the file's `print $i` ran:\n{out}");
+    assert!(out.contains("Stopped at line 12"), "stdin still worked:\n{out}");
+}
+
+#[test]
+fn a_missing_command_file_is_an_error() {
+    let path = script("nofile", SCRIPT);
+    let out = run_full(&path, &["-x", "/nonexistent/session.au3dbg"], &[], "");
+    assert!(out.contains("cannot read command file"), "got:\n{out}");
+}
+
+#[test]
+fn the_source_command_queues_a_file_mid_session() {
+    let path = script("source", SCRIPT);
+    let dir = path.parent().expect("scratch dir");
+    let commands = dir.join("more.au3dbg");
+    std::fs::write(&commands, "print $i\nnext\n").expect("write command file");
+
+    let out = shell(
+        &path,
+        &[
+            "break 11",
+            "run",
+            &format!("source {}", commands.display()),
+            "print $counter",
+            "quit",
+        ],
+    );
+    assert!(out.contains("sourced"), "got:\n{out}");
+    // The sourced commands run before the one that follows them.
+    let i_at = out.find("\n1\n").expect("sourced print ran");
+    let step_at = out.find("Stopped at line 12").expect("sourced next ran");
+    assert!(i_at < step_at, "the file ran out of order:\n{out}");
+}
+
+#[test]
+fn an_uncaught_error_stops_where_it_was_raised() {
+    let path = script("catch", FAILING);
+    let out = shell(
+        &path,
+        &["run", "backtrace", "info locals", "print $x", "quit"],
+    );
+    assert!(out.contains("[uncaught error]"), "got:\n{out}");
+    assert!(out.contains("out of bounds"), "got:\n{out}");
+    // Stopped on the failing statement, with the source line shown.
+    assert!(has_line(&out, "     6      Return $list[$n]"), "got:\n{out}");
+    // The frames that led there are still live.
+    assert!(out.contains("#0  Boom at 6:5"), "got:\n{out}");
+    assert!(out.contains("#1  Outer at 11:5"), "got:\n{out}");
+    assert!(out.contains("n = 5"), "the failing frame's locals:\n{out}");
+    assert!(has_line(&out, "10"), "print $x should be 10:\n{out}");
+}
+
+#[test]
+fn catching_can_be_turned_off() {
+    let path = script("nocatch", FAILING);
+    // On the command line...
+    let out = shell_with(&path, &["--no-catch"], &["run", "print 1", "quit"]);
+    assert!(out.contains("[script stopped:"), "got:\n{out}");
+    assert!(!out.contains("[uncaught error]"), "should not have stopped:\n{out}");
+
+    // ...and mid-session.
+    let out = shell(&path, &["catch off", "run", "print 1", "quit"]);
+    assert!(out.contains("will end the run without stopping"), "got:\n{out}");
+    assert!(!out.contains("[uncaught error]"), "got:\n{out}");
+}
+
+#[test]
+fn catch_reports_its_state() {
+    let path = script("catchstate", SCRIPT);
+    let out = shell(&path, &["catch", "catch off", "catch", "quit"]);
+    assert!(out.contains("is on"), "got:\n{out}");
+    assert!(out.contains("is off"), "got:\n{out}");
+}
