@@ -40,13 +40,16 @@ autoitv3-tools/
       tests/
         runtime.rs    解释器/host/debug 接口 + 真实集成测试（32 项）
         regexp.rs     StringRegExp / StringRegExpReplace（27 项）
-    autoitv3-platform/       # 库 crate——各操作系统集成（平台单独成 crate）
+    autoitv3-platform/       # 库 crate——平台层（分层：通用 + 系统）
       src/
-        lib.rs        host_platform() 工厂、runtime_with_platform() 便捷构造
-        generic.rs    Linux（及其他非 Windows）：如实返回「未提供」
-        windows.rs    Windows：注册表/COM/DllCall/GUI 的扩展点（当前为骨架）
+        lib.rs        Platform 分层组合（CompositePlatform）、host_platform() 工厂、
+                      runtime_with_platform() 便捷构造
+        portable.rs   通用层：文件/目录 I/O、环境变量、数学、计时器、控制台
+                      —— Linux 与 Windows 都安装
+        linux.rs      系统层（Linux）：/proc 进程查询、OS 标识宏
+        windows.rs    系统层（Windows）：注册表/COM/DllCall/GUI 扩展点（骨架）
       tests/
-        platform.rs   平台选择、注入、OS 函数供给（4 项）
+        platform.rs   分层、选择、注入、通用函数与宏（31 项）
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
@@ -236,25 +239,49 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 
 ## 平台层
 
-解释器核心、值模型与可移植内置函数子集都与平台无关；AutoIt 自身的函数库大多是
-Win32 的封装，因此**平台单独成一个 crate** `autoitv3-platform`：
+解释器核心、值模型与语言级内置函数都与平台无关。AutoIt 的函数库分成**通用**与
+**系统相关**两部分，因此平台层是**分层**的（crate `autoitv3-platform`）：
 
-| 模块 | 适用 | 内容 |
-| ---- | ---- | ---- |
-| `generic.rs` | Linux（及任何非 Windows 目标） | 不提供 OS 特有功能——AutoIt 是 Windows 工具，这里如实返回"未提供" |
-| `windows.rs` | Windows | **扩展点骨架**：注册表、COM、`DllCall`、GUI、进程/窗口等后续在此填充 |
+| 层 | 模块 | 安装于 | 内容 |
+| -- | ---- | ------ | ---- |
+| 通用 | `portable.rs` | **所有**平台 | 文件与目录 I/O、环境变量、数学、计时器、控制台——AutoIt 在各系统上行为一致的部分 |
+| 系统 | `linux.rs` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
+| 系统 | `windows.rs` | 仅 Windows | 注册表、COM、`DllCall`、GUI（**骨架**，后续填充） |
 
-`Platform` **trait** 留在 `autoitv3-runtime`（它是解释器调用的接缝），**实现**放在
-`autoitv3-platform`。依赖方向单向：平台 crate 依赖运行时，运行时不知道任何具体操作
-系统，因此 `Runtime::new()` 默认**没有**平台层；需要时用
-`autoitv3_platform::runtime_with_platform(&prog)` 或 `rt.set_platform(...)` 安装。
+`host_platform()` 按目标平台组装成 `CompositePlatform`（Linux 为 `portable+linux`），
+逐层查找；通用层在 Windows 上同样生效，系统层只补真正系统相关的部分。
 
-查找顺序为 **内置函数 → Host → Platform**，因此嵌入方可以用 `Host` 覆盖任何平台默认实现。
+`Platform` **trait** 留在 `autoitv3-runtime`（解释器调用的接缝），**实现**在此 crate。
+依赖方向单向——运行时不知道任何具体操作系统——因此 `Runtime::new()` 默认**没有**平台层，
+需要时用 `autoitv3_platform::runtime_with_platform(&prog)` 或 `rt.set_platform(...)` 安装。
 
-> **不再静默编造值**：内置函数层只保留**可移植**的中性调用（`Sleep`、`ConsoleWrite`、
-> `Opt` 等）。注册表、COM、`DllCall`、GUI、剪贴板、进程控制等 OS 特有函数一律**不再**
-> 返回假值——在平台层提供实现之前，它们如实报「undefined function」，避免悄悄污染
-> 反混淆结果。
+查找顺序为 **内置函数 → Host → Platform**，嵌入方可用 `Host` 覆盖任何平台实现。
+
+### 通用层已实现
+
+| 类别 | 函数 |
+| ---- | ---- |
+| 文件 | `FileOpen`/`FileClose`/`FileFlush`/`FileRead`/`FileReadLine`/`FileWrite`/`FileWriteLine`（句柄表、模式标志 `$FO_READ`/`APPEND`/`OVERWRITE`/`CREATEPATH`）、`FileExists`、`FileGetSize`、`FileGetTime`、`FileGetAttrib`、`FileGetLongName`/`FileGetShortName`、`FileDelete`、`FileCopy`、`FileMove`、`FileSetAttrib` |
+| 目录 | `DirCreate`、`DirRemove`、`DirGetSize`、`DirCopy`、`DirMove` |
+| 环境 | `EnvGet`、`EnvSet`、`EnvUpdate` |
+| 数学 | `Round`（半数远离零）、`Sqrt`、`Sin`/`Cos`/`Tan`/`ASin`/`ACos`/`ATan`（**弧度**）、`Log`、`Exp`、`Floor`、`Ceiling`、`Random`、`RandomSeed` |
+| 计时 | `TimerInit`、`TimerDiff` |
+| 控制台 | `ConsoleWrite`、`ConsoleWriteError`、`ConsoleRead` |
+| 宏 | `@TempDir`、`@AutoItPID`、`@AutoItEXE`、`@WorkingDir`/`@ScriptDir`、`@UserName`、`@HomePath`/`@UserProfileDir`、`@AppDataDir`/`@LocalAppDataDir`（XDG）、`@DesktopDir`、`@MyDocumentsDir` |
+
+宏由**平台**提供（解释器只负责 `@error`/`@extended`/`@ScriptLineNumber`/`@NumParams`/
+`@CRLF` 等纯状态与常量），因此 `@TempDir` 之类不再是空串。
+
+### 有意为之的近似（已在模块文档标注）
+
+- `FileGetTime` 返回 **UTC**（本地时区需要时区数据库），格式与 AutoIt 一致
+- `FileGetAttrib` 返回 `D`（目录）/`A`（普通文件），只读时加 `R`；Windows 专有的 `S`/`H` 无对应概念，不设置
+- `Random` 默认**确定性**（便于反混淆结果可复现），需 AutoIt 原生行为时调用 `RandomSeed`
+- 文本按 UTF-8 读写；`FileOpen` 的 `$FO_UNICODE` 系列标志被接受但按 UTF-8 处理
+- `Sleep` **不真的休眠**（否则评估样本启动代码会耗上数分钟），这是内置函数层的唯一中性化调用
+
+> **不静默编造值**：注册表、COM、`DllCall`、GUI、剪贴板等 Windows 专有函数在非 Windows
+> 上**没有桩**，会如实报 `undefined function`；平台层未提供前同样如此。
 
 ### 正则表达式（平台无关）
 

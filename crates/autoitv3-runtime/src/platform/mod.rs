@@ -45,6 +45,18 @@ pub trait Platform {
         false
     }
 
+    /// Value of an AutoIt macro this platform can answer, e.g. `@TempDir`,
+    /// `@OSVersion`, `@ComputerName`.
+    ///
+    /// The interpreter resolves the universal macros itself (`@error`,
+    /// `@CRLF`, `@ScriptLineNumber`, ...) and only asks the platform for the
+    /// ones that depend on the environment. `None` means "not provided"; the
+    /// macro then evaluates to `Null` rather than a fabricated value.
+    fn macro_value(&self, name: &str) -> Option<Value> {
+        let _ = name;
+        None
+    }
+
     /// Service a call.
     ///
     /// `Ok(None)` means "this platform does not provide `name`", which lets the

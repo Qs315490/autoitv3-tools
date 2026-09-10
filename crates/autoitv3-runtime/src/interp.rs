@@ -35,6 +35,8 @@ struct Frame {
     vars: HashMap<String, Value>,
     function: Option<String>,
     span: Option<Span>,
+    /// How many arguments the caller passed, for `@NumParams`.
+    arg_count: usize,
 }
 
 /// The AutoIt interpreter.
@@ -392,6 +394,7 @@ impl Runtime {
             vars,
             function: Some(display.clone()),
             span,
+            arg_count: args.len(),
         });
 
         let mut result = Ok(Value::Null);
@@ -811,32 +814,37 @@ impl Runtime {
         }
     }
 
-    /// Resolve an AutoIt macro (`@error`, `@CRLF`, ...).
+    /// Resolve an AutoIt macro.
+    ///
+    /// The interpreter answers the macros that are pure interpreter state and
+    /// defers everything environment-dependent to the installed platform, so
+    /// `@TempDir` and friends are real values rather than empty strings.
     fn eval_macro(&self, name: &str) -> Value {
-        match name.trim_start_matches('@').to_ascii_lowercase().as_str() {
+        let key = name.trim_start_matches('@').to_ascii_lowercase();
+        match key.as_str() {
+            // Interpreter state.
             "error" => Value::Int(self.error),
             "extended" => Value::Int(self.extended),
+            "scriptlinenumber" => Value::Int(
+                self.frames
+                    .last()
+                    .and_then(|f| f.span)
+                    .map(|s| s.start.line as i64)
+                    .unwrap_or(0),
+            ),
+            "numparams" => Value::Int(
+                self.frames.last().map(|f| f.arg_count as i64).unwrap_or(0),
+            ),
+            // Universal character constants.
             "crlf" => Value::Str("\r\n".into()),
             "cr" => Value::Str("\r".into()),
             "lf" => Value::Str("\n".into()),
             "tab" => Value::Str("\t".into()),
-            "scriptlinenumber" => Value::Int(0),
-            "numparams" => Value::Int(0),
-            // Environment-ish macros: stable placeholders so string building
-            // stays deterministic during deobfuscation.
-            "scriptdir" | "workingdir" | "tempdir" | "windowsdir" | "systemdir"
-            | "programfilesdir" | "homedrive" | "homepath" | "startmenudir"
-            | "desktopdir" | "startupdir" | "userprofiledir" | "appdatadir"
-            | "localappdatadir" | "commondir" | "mydocumentsdir" => Value::Str(String::new()),
-            "scriptname" | "scriptfullpath" => Value::Str(String::new()),
-            "computername" | "username" => Value::Str(String::new()),
-            "osversion" => Value::Str("WIN_10".into()),
-            "osarch" | "processorarch" => Value::Str("X64".into()),
-            "autoitversion" => Value::Str("3.3.16.1".into()),
-            "autoitx64" => Value::Int(1),
-            "desktopwidth" => Value::Int(1920),
-            "desktopheight" => Value::Int(1080),
-            _ => Value::Null,
+            // Everything else is environment-dependent.
+            _ => match self.platform.as_ref().and_then(|p| p.macro_value(&key)) {
+                Some(v) => v,
+                None => Value::Null,
+            },
         }
     }
 
