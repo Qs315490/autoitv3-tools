@@ -470,10 +470,11 @@ fn sample_script() -> Option<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn default_platform_matches_the_target_os() {
+fn no_platform_is_installed_by_default() {
+    // The core names no operating system; a platform has to be installed
+    // (see the `autoitv3-platform` crate).
     let r = rt("Func F()\nEndFunc\n");
-    let expected = if cfg!(windows) { "windows" } else { "linux-generic" };
-    assert_eq!(r.platform_name(), expected);
+    assert_eq!(r.platform_name(), "none");
 }
 
 #[test]

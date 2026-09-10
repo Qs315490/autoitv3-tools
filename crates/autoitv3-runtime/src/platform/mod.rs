@@ -6,15 +6,10 @@
 //! `DllCall`, GUICtrl*, process/window management, and so on.
 //!
 //! Rather than let those leak into the core, each operating system gets an
-//! implementation of [`Platform`]:
+//! implementation of [`Platform`]. The concrete implementations (`generic` for Linux, `windows` for Windows)
+//! and the [`host_platform`] factory live in `autoitv3-platform`.
 //!
-//! | module | selected for | contents |
-//! |---|---|---|
-//! | [`generic`] | Linux (and any non-Windows target) | nothing OS-specific — AutoIt is a Windows tool, so the honest answer is "not provided" |
-//! | [`windows`] | Windows | the extension point for registry/COM/DllCall/GUI |
-//!
-//! [`host_platform`] picks the right one at compile time; a build only ever
-//! compiles its own platform module.
+//! [`host_platform`]: https://docs.rs/autoitv3-platform
 //!
 //! Lookup order for a call the interpreter cannot resolve itself is
 //! **builtins → host → platform**, so an embedding application's [`Host`] can
@@ -22,34 +17,17 @@
 //!
 //! [`Host`]: crate::host::Host
 
-pub mod generic;
-
-#[cfg(windows)]
-pub mod windows;
-
-pub use generic::GenericPlatform;
-
-#[cfg(windows)]
-pub use windows::WindowsPlatform;
-
 use crate::error::RuntimeError;
 use crate::host::HostContext;
 use crate::value::Value;
 
-/// The platform that backs the interpreter on this build target.
-pub fn host_platform() -> Box<dyn Platform> {
-    #[cfg(windows)]
-    {
-        Box::new(WindowsPlatform::new())
-    }
-    #[cfg(not(windows))]
-    {
-        Box::new(GenericPlatform::new())
-    }
-}
-
 /// An operating-system integration providing AutoIt builtins that cannot be
 /// implemented portably.
+///
+/// The trait lives here because it is the seam [`crate::Runtime`] calls into;
+/// the implementations live in the sibling crate `autoitv3-platform`, which
+/// depends on this one. That keeps the dependency direction one-way: the
+/// interpreter core never names a concrete operating system.
 ///
 /// Every method has a usable default, so a platform only declares what it
 /// actually supports.
