@@ -8,14 +8,22 @@
 //!
 //! A real script reaches the operating system (`DllCall`, registry, GUI)
 //! long before it finishes, and that boundary is reported rather than hidden —
-//! but the tables are built early, so a partial run is still useful.
+//! but the tables are built early, so a partial run is still useful. Off
+//! Windows the Windows emulation layer (`--win-version`, default `win10`) moves
+//! that boundary back: version queries and registry reads are answered from the
+//! emulated machine instead of stopping the run.
+//!
+//! ```text
+//! au3 evaluate sample.au3 --win-version win11 -o resolved.au3
+//! au3 evaluate sample.au3 --no-win-emu     # stop at the first Windows call
+//! ```
 
-use autoitv3_deobf::evaluate;
+use autoitv3_deobf::evaluate_with_platform;
 use autoitv3_format::PrettyPrinter;
 use autoitv3_runtime::ExecutionProfile;
 use clap::Args;
 
-use crate::args::{load_program, CliResult, OutputArgs};
+use crate::args::{load_program, CliResult, OutputArgs, WinEmuArgs};
 use crate::output::write_output;
 
 /// Arguments for `au3 evaluate`.
@@ -29,6 +37,9 @@ pub struct EvaluateArgs {
     /// of the deterministic analysis profile
     #[arg(long)]
     pub faithful: bool,
+
+    #[command(flatten)]
+    pub win: WinEmuArgs,
 
     #[command(flatten)]
     pub output: OutputArgs,
@@ -70,7 +81,7 @@ pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
 pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let mut prog = load_program(&args.input)?;
 
-    let outcome = evaluate(&mut prog, profile(args.faithful));
+    let outcome = evaluate_with_platform(&mut prog, profile(args.faithful), args.win.platform()?);
     report(&outcome);
 
     let mut printer = PrettyPrinter::new().strip_comments(true);

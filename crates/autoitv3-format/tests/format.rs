@@ -43,6 +43,29 @@ fn pretty_preserves_comments_by_default() {
 }
 
 #[test]
+fn functions_without_parameters_keep_their_parentheses() {
+    // AutoIt requires `Func Foo()`; `Func Foo` is not valid AutoIt, so the
+    // empty parameter list must be printed even when there is nothing in it.
+    let src = concat!(
+        "Func NoArgs()\n",
+        "    Return 1\n",
+        "EndFunc\n",
+        "Volatile Func AlsoNone()\n",
+        "    Return 2\n",
+        "EndFunc\n",
+    );
+    let prog = parse(src).unwrap();
+    let mut pp = PrettyPrinter::new();
+    let out = pp.print_program(&prog);
+
+    assert!(out.contains("Func NoArgs()"), "out: {out}");
+    assert!(out.contains("Volatile Func AlsoNone()"), "out: {out}");
+    // The bare form must not survive anywhere.
+    assert!(!out.contains("Func NoArgs\n"), "out: {out}");
+    assert!(!out.contains("Func AlsoNone\n"), "out: {out}");
+}
+
+#[test]
 fn empty_array_brackets_are_not_printed_as_null() {
     // `Local $a[] = [...]` uses "empty brackets, size from the initializer".
     // The parser records that as a `Null` placeholder dimension, which must

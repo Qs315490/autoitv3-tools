@@ -100,23 +100,25 @@ impl PrettyPrinter {
             let _ = write!(self.out, "Volatile ");
         }
         let _ = write!(self.out, "Func {}", f.name.name);
-        if !f.params.is_empty() {
-            let _ = write!(self.out, "(");
-            for (i, p) in f.params.iter().enumerate() {
-                if i > 0 {
-                    let _ = write!(self.out, ", ");
-                }
-                if p.by_ref {
-                    let _ = write!(self.out, "ByRef ");
-                }
-                let _ = write!(self.out, "{}", p.name.name);
-                if let Some(d) = &p.default {
-                    let _ = write!(self.out, " = ");
-                    self.print_expr(d);
-                }
+        // The parameter list is always printed, even when it is empty: AutoIt
+        // requires `Func Foo()`, so dropping the `()` would produce source a
+        // real interpreter rejects. (The *parser* is lenient and accepts a
+        // missing list; the printer is not.)
+        let _ = write!(self.out, "(");
+        for (i, p) in f.params.iter().enumerate() {
+            if i > 0 {
+                let _ = write!(self.out, ", ");
             }
-            let _ = write!(self.out, ")");
+            if p.by_ref {
+                let _ = write!(self.out, "ByRef ");
+            }
+            let _ = write!(self.out, "{}", p.name.name);
+            if let Some(d) = &p.default {
+                let _ = write!(self.out, " = ");
+                self.print_expr(d);
+            }
         }
+        let _ = write!(self.out, ")");
         self.nl();
         self.indent += 1;
         for s in &f.body {

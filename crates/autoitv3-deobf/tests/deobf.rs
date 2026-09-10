@@ -1,9 +1,9 @@
 //! Unit tests for the autoitv3-deobf passes.
 
-use autoitv3_ast::ast::{ExprKind, ItemKind, LitKind, StmtKind};
+use autoitv3_ast::ast::ItemKind;
 use autoitv3_ast::parse;
 use autoitv3_format::PrettyPrinter;
-use autoitv3_deobf::{deobfuscate, rename, fold};
+use autoitv3_deobf::{deobfuscate, fold, rename, simplify, Deobfuscator, RenameOptions};
 
 fn pretty(prog: &autoitv3_ast::Program) -> String {
     let mut pp = PrettyPrinter::new();
@@ -88,7 +88,91 @@ fn rename_is_deterministic_and_stable() {
     // The obfuscated name should be gone, replaced by a stable alias.
     assert!(!a.contains("$zzz"), "original name leaked: {a}");
     assert!(!a.contains("$yyy"), "original name leaked: {a}");
-    assert!(a.contains("$v000"), "expected stable alias: {a}");
+    // Script-level, and the type comes from the `1` it is first given.
+    assert!(a.contains("$g_int_000"), "expected stable alias: {a}");
+}
+
+#[test]
+fn rename_encodes_scope_and_type() {
+    let src = concat!(
+        "Global $count = 1\n",
+        "Global $name = \"root\"\n",
+        "Global $items[] = [1, 2]\n",
+        "Func F($raw, $ratio = 1.5)\n",
+        "    Local $n = 2\n",
+        "    Local $s = \"x\"\n",
+        "    Local $arr[3]\n",
+        "    Local $map = Map()\n",
+        "    Local $flag = True\n",
+        "    Local $f = 0.5\n",
+        "    Return $n\n",
+        "EndFunc\n",
+    );
+    let out = run(src);
+    // Scope first (`g`/`l`/`arg`), then the type.
+    for alias in [
+        "$g_int_000",
+        "$g_str_001",
+        "$g_arr_002",
+        "$arg_var_000",
+        "$arg_float_001",
+        "$l_int_000",
+        "$l_str_001",
+        "$l_arr_002",
+        "$l_map_003",
+        "$l_bool_004",
+        "$l_float_005",
+    ] {
+        assert!(out.contains(alias), "missing {alias} in:\n{out}");
+    }
+}
+
+#[test]
+fn rename_is_case_insensitive_like_autoit() {
+    // `$Foo`, `$foo` and `$FOO` are one variable, so they share one alias;
+    // giving them different names would change what the script does.
+    let out = run("$Foo = 1\n$foo = $FOO + $Foo\n");
+    // One declaration plus an assignment target and two reads.
+    assert_eq!(out.matches("$g_int_000").count(), 4, "{out}");
+}
+
+#[test]
+fn rename_keeps_a_local_distinct_from_a_global_of_the_same_name() {
+    let src = "Global $x = 1\nFunc F()\n    Local $x = 2\n    Return $x\nEndFunc\n";
+    let out = run(src);
+    // Two different variables, two different aliases.
+    assert!(out.contains("$g_int_000 = 1"), "{out}");
+    assert!(out.contains("Local $l_int_000 = 2"), "{out}");
+    assert!(out.contains("Return $l_int_000"), "{out}");
+}
+
+#[test]
+fn rename_shares_the_global_alias_with_an_undeclared_use_in_a_function() {
+    // A function reading a script-level variable must keep that variable's
+    // alias, or it would stop seeing it.
+    let src = "Global $cfg = \"v\"\nFunc F()\n    $cfg = \"w\"\n    Return $cfg\nEndFunc\n";
+    let out = run(src);
+    assert_eq!(out.matches("$g_str_000").count(), 3, "{out}");
+    assert!(!out.contains("$l_"), "{out}");
+}
+
+#[test]
+fn rename_types_for_loop_variables_from_the_range() {
+    let src = concat!(
+        "Func F()\n",
+        "    Local $t = 0\n",
+        "    For $i = 1 To 10\n",
+        "        $t = $t + $i\n",
+        "    Next\n",
+        "    For $k In $t\n",
+        "        $t = $t + 1\n",
+        "    Next\n",
+        "EndFunc\n",
+    );
+    let out = run(src);
+    // `For $i = 1 To 10` is an integer loop; `For In` has no element type.
+    assert!(out.contains("For $l_int_"), "{out}");
+    assert!(out.contains("For $l_var_"), "{out}");
 }
 
 #[test]
@@ -96,9 +180,19 @@ fn rename_functions_and_calls_consistently() {
     let src = "Func Xobfu()\n    Return 1\nEndFunc\nXobfu()\n";
     let out = run(src);
     // Function definition and its call site must share the same alias.
-    assert!(out.contains("Func f000"), "got: {out}");
+    assert!(out.contains("Func f000()"), "got: {out}");
     assert!(out.contains("f000()"), "got: {out}");
     assert!(!out.contains("Xobfu"), "got: {out}");
+}
+
+#[test]
+fn a_function_without_parameters_keeps_its_parentheses() {
+    // `Func Foo` is not valid AutoIt; the rewritten definition must stay
+    // `Func f000()` so the output can actually be run.
+    let out = run("Func NoArgs()\n    Return 1\nEndFunc\nNoArgs()\n");
+    assert!(out.contains("Func f000()"), "got: {out}");
+    assert!(out.contains("f000()"), "got: {out}");
+    assert!(!out.contains("Func f000\n"), "got: {out}");
 }
 
 #[test]
@@ -120,6 +214,169 @@ fn rename_preserves_behavior_through_pretty() {
         )
     };
     assert_eq!(cnt(&parse(&before).unwrap()), cnt(&parse(&after).unwrap()));
+}
+
+#[test]
+fn rename_touches_only_functions_the_script_defines() {
+    let src = concat!(
+        "Func Helper($v)\n",
+        "    Return StringLen($v)\n",
+        "EndFunc\n",
+        "Func Main()\n",
+        "    Local $n = Helper(\"x\")\n",
+        "    Return UBound(Mystery($n))\n",
+        "EndFunc\n",
+        "Main()\n",
+    );
+    let out = run(src);
+    // Script-defined functions are renamed at the definition and the call site.
+    assert!(out.contains("Func f000"), "{out}");
+    assert!(out.contains("f000(\"x\")"), "{out}");
+    assert!(out.contains("Func f001"), "{out}");
+    assert!(out.contains("f001()"), "{out}");
+    // Built-ins and unknown names are runtime lookups — left exactly alone.
+    assert!(out.contains("StringLen("), "{out}");
+    assert!(out.contains("UBound("), "{out}");
+    assert!(out.contains("Mystery("), "{out}");
+}
+
+#[test]
+fn rename_leaves_macros_alone() {
+    // Macros are built-ins the runtime resolves by name, so they are never
+    // renamed (there is nothing script-defined about them).
+    let out = run("Global $e = @error\nGlobal $nl = @CRLF\nGlobal $line = @ScriptLineNumber\n");
+    assert!(out.contains("@error"), "{out}");
+    assert!(out.contains("@CRLF"), "{out}");
+    assert!(out.contains("@ScriptLineNumber"), "{out}");
+    assert!(!out.contains("@m0"), "{out}");
+}
+
+#[test]
+fn renaming_can_be_disabled() {
+    let src = "Global $count = 1\nFunc Helper($v)\n    Return $v\nEndFunc\nHelper($count)\n";
+    let mut prog = parse(src).unwrap();
+    let report = Deobfuscator::without_rename().run(&mut prog);
+    assert_eq!(report.renamed.vars, 0);
+    assert_eq!(report.renamed.funcs, 0);
+    // The other passes still run; only the names survive unchanged.
+    let out = pretty(&prog);
+    assert!(out.contains("$count"), "{out}");
+    assert!(out.contains("Func Helper"), "{out}");
+    assert!(out.contains("Helper($count)"), "{out}");
+}
+
+#[test]
+fn rename_options_can_select_one_category() {
+    let src = "Global $count = 1\nFunc Helper($v)\n    Return $v\nEndFunc\nHelper($count)\n";
+    let mut prog = parse(src).unwrap();
+    let report = Deobfuscator::new()
+        .with_rename_options(RenameOptions {
+            vars: true,
+            funcs: false,
+        })
+        .run(&mut prog);
+    assert!(report.renamed.vars >= 1);
+    assert_eq!(report.renamed.funcs, 0);
+    let out = pretty(&prog);
+    assert!(out.contains("$g_int_000"), "{out}");
+    assert!(out.contains("Func Helper"), "{out}");
+    assert!(out.contains("Helper($g_int_000)"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// Indirect-call simplification
+// ---------------------------------------------------------------------------
+
+#[test]
+fn simplify_turns_call_and_execute_into_direct_calls() {
+    let src = concat!(
+        "Func Foo($a, $b = 2)\n",
+        "    Return $a + $b\n",
+        "EndFunc\n",
+        "Func Bar()\n",
+        "    Return 42\n",
+        "EndFunc\n",
+        "Func Main()\n",
+        "    Local $x = Call(\"Foo\", 1, 5)\n",
+        "    Local $y = Call(\"Bar\")\n",
+        "    Execute(\"Foo(7, 8)\")\n",
+        "    Execute(\"Bar\")\n",
+        "    Return Execute(\"Foo(1)\")\n",
+        "EndFunc\n",
+        "Main()\n",
+    );
+    let mut prog = parse(src).unwrap();
+    let report = deobfuscate(&mut prog);
+    assert_eq!(report.simplified.calls, 2);
+    assert_eq!(report.simplified.executes, 3);
+    let out = pretty(&prog);
+    // The calls are direct, and the target carries the renamed definition.
+    assert!(!out.contains("Call("), "{out}");
+    assert!(!out.contains("Execute("), "{out}");
+    assert!(out.contains("Func f000"), "{out}");
+    assert!(out.contains("f000(1, 5)"), "{out}");
+    assert!(out.contains("f001()"), "{out}");
+    assert!(out.contains("f000(7, 8)"), "{out}");
+    assert!(out.contains("f000(1)"), "{out}");
+}
+
+#[test]
+fn simplify_can_run_without_renaming() {
+    // Simplify is its own pass: keeping the original names does not stop the
+    // indirect calls from being written out.
+    let src = "Func Foo()\n    Return 1\nEndFunc\nCall(\"Foo\")\nExecute(\"Foo()\")\n";
+    let mut prog = parse(src).unwrap();
+    let report = Deobfuscator::without_rename().run(&mut prog);
+    assert_eq!(report.simplified.total(), 2);
+    assert_eq!(report.renamed.funcs, 0);
+    let out = pretty(&prog);
+    assert!(out.contains("Func Foo"), "{out}");
+    assert!(out.contains("Foo()"), "{out}");
+    assert!(!out.contains("Call("), "{out}");
+    assert!(!out.contains("Execute("), "{out}");
+}
+
+#[test]
+fn simplify_leaves_computed_and_unknown_targets_alone() {
+    let src = concat!(
+        "Func Foo()\n",
+        "    Return 1\n",
+        "EndFunc\n",
+        "Func Main()\n",
+        "    Local $name = \"Foo\"\n",
+        "    Local $a = Call($name)\n",
+        "    Local $b = Call(\"MsgBox\", 0, \"built-in\")\n",
+        "    Local $c = Execute(\"Nope()\")\n",
+        "    Local $d = Execute(\"$x = 1\")\n",
+        "    Local $e = Execute(\"Foo() & Bar()\")\n",
+        "    Return $a + $b + $c + $d + $e\n",
+        "EndFunc\n",
+        "Main()\n",
+    );
+    let mut prog = parse(src).unwrap();
+    let report = deobfuscate(&mut prog);
+    assert_eq!(report.simplified.total(), 0);
+    let out = pretty(&prog);
+    // Only the definition is renamed; every call stays as written (the
+    // computed name is renamed as a variable, but not turned into a call).
+    assert!(out.contains("Func f000"), "{out}");
+    assert!(out.contains("Call($l_str_000)"), "{out}");
+    assert!(out.contains("Call(\"MsgBox\", 0, \"built-in\")"), "{out}");
+    assert!(out.contains("Execute(\"Nope()\")"), "{out}");
+    assert!(out.contains("Execute(\"$x = 1\")"), "{out}");
+    assert!(out.contains("Execute(\"Foo() & Bar()\")"), "{out}");
+}
+
+#[test]
+fn simplify_uses_the_declared_spelling() {
+    // AutoIt resolves function names case-insensitively, so the literal may not
+    // match the definition's spelling; the rewritten call uses the definition's.
+    let src = "Func FooBar()\n    Return 1\nEndFunc\nCall(\"foobar\")\n";
+    let mut prog = parse(src).unwrap();
+    simplify::simplify_program(&mut prog);
+    let out = pretty(&prog);
+    assert!(out.contains("FooBar()"), "{out}");
+    assert!(!out.contains("Call("), "{out}");
 }
 
 // ---------------------------------------------------------------------------

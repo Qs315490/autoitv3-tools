@@ -1,8 +1,12 @@
 //! Tests for the platform stack: layering, selection, and the portable
 //! function set.
+//!
+//! The emulation layer has its own suite in `tests/winemu.rs`; here it only
+//! matters as the first layer of the stack.
 
 use autoitv3_platform::{
-    host_platform, runtime_with_platform, CompositePlatform, LinuxPlatform, PortablePlatform,
+    host_platform, host_platform_with, CompositePlatform, LinuxPlatform, PortablePlatform,
+    WindowsEmulation,
 };
 use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::{Runtime, Value};
@@ -11,11 +15,19 @@ fn parse(src: &str) -> autoitv3_ast::Program {
     autoitv3_ast::parse(src).expect("parses")
 }
 
+/// A runtime with an explicit, environment-independent platform stack: the
+/// emulation layer (Windows 10 default) over portable over linux.
+fn runtime(prog: &autoitv3_ast::Program) -> Runtime {
+    let mut rt = Runtime::with_program(prog);
+    rt.set_platform(host_platform_with(WindowsEmulation::new()));
+    rt
+}
+
 /// Run `Func F()` from `body` on a runtime with the full platform stack.
 fn call(body: &str) -> Value {
     let src = format!("Func F()\n{body}\nEndFunc\n");
     let prog = parse(&src);
-    let mut rt = runtime_with_platform(&prog);
+    let mut rt = runtime(&prog);
     rt.call_function("F", vec![]).expect("no runtime error")
 }
 
@@ -36,8 +48,25 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn host_platform_stacks_portable_under_the_system_layer() {
+fn host_platform_stacks_emulation_portable_and_system() {
+    // `host_platform()` reads the environment, so assert on shape rather than
+    // the exact name; the explicit-stack test below pins the default.
     let p = host_platform();
+    assert!(p.name().contains("portable"), "got {}", p.name());
+    assert!(p.macro_value("osversion").is_some());
+
+    let p = host_platform_with(WindowsEmulation::new());
+    let expected = if cfg!(windows) {
+        "portable+windows"
+    } else {
+        "winemu+portable+linux"
+    };
+    assert_eq!(p.name(), expected);
+}
+
+#[test]
+fn the_emulation_layer_can_be_left_out_of_the_stack() {
+    let p = host_platform_with(WindowsEmulation::new().disabled());
     let expected = if cfg!(windows) {
         "portable+windows"
     } else {
@@ -68,7 +97,7 @@ fn linux_layer_only_answers_linux_questions() {
 
 #[test]
 fn composite_tries_layers_in_order() {
-    let mut composite = CompositePlatform::new(
+    let composite = CompositePlatform::new(
         "test",
         vec![
             Box::new(PortablePlatform::new()),
@@ -85,8 +114,8 @@ fn composite_tries_layers_in_order() {
 #[test]
 fn runtime_helper_installs_the_stack() {
     let prog = parse("Func F()\n    Return 1\nEndFunc\n");
-    let mut rt = runtime_with_platform(&prog);
-    assert!(rt.platform_name().starts_with("portable+"));
+    let mut rt = autoitv3_platform::runtime_with_platform(&prog);
+    assert!(rt.platform_name().contains("portable"));
     assert!(matches!(rt.call_function("F", vec![]).unwrap(), Value::Int(1)));
 }
 
@@ -311,12 +340,15 @@ fn process_exists_accepts_pid_or_name() {
 }
 
 #[test]
-fn nothing_windows_only_is_silently_answered() {
-    // Registry/COM/DllCall are Windows concerns; off Windows the interpreter
-    // must report an undefined function rather than invent a value.
+fn nothing_windows_only_is_silently_answered_without_the_emulation_layer() {
+    // With the emulation layer switched off, Registry/COM/DllCall are Windows
+    // concerns again: the interpreter must report an undefined function rather
+    // than invent a value. (With the layer on, `RegRead` is answered — that is
+    // `tests/winemu.rs`.)
     let body = r#"Return RegRead("HKEY_LOCAL_MACHINE\SOFTWARE\X", "Y")"#;
     let prog = parse(&format!("Func F()\n{body}\nEndFunc\n"));
-    let mut rt = runtime_with_platform(&prog);
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(WindowsEmulation::new().disabled()));
     let err = rt.call_function("F", vec![]).unwrap_err();
     assert!(err.message().contains("undefined function"), "got: {}", err.message());
 }
@@ -326,7 +358,7 @@ fn an_explicit_host_still_overrides_the_platform() {
     use autoitv3_runtime::host::{HostContext, NativeHost};
 
     let prog = parse("Func F()\n    Return FileExists(\"/x\")\nEndFunc\n");
-    let mut rt = runtime_with_platform(&prog);
+    let mut rt = runtime(&prog);
     let mut host = NativeHost::new();
     host.register("FileExists", |_c: &mut dyn HostContext, _a: Vec<Value>| {
         Ok(Value::str("from-host"))
@@ -356,18 +388,41 @@ fn environment_macros_come_from_the_platform() {
     // These used to evaluate to empty strings; they are real values now.
     assert_eq!(text("Return @AutoItPID > 0"), "True");
     assert_eq!(text("Return StringLen(@TempDir) > 0"), "True");
-    assert_eq!(text("Return StringRight(@TempDir, 1)"), std::path::MAIN_SEPARATOR.to_string());
+    // The emulation layer answers with the Windows layout; with it disabled the
+    // portable layer's host paths are used instead (`with_host_paths` / the
+    // `--no-win-emu` switch).
+    assert!(text("Return @TempDir").ends_with("Temp"));
     assert_eq!(text("Return StringLen(@WorkingDir) > 0"), "True");
     assert_eq!(text("Return StringLen(@AutoItEXE) > 0"), "True");
 }
 
 #[test]
-fn os_identity_macros_come_from_the_system_layer() {
-    let expected = if cfg!(windows) { "" } else { "LINUX" };
-    if !expected.is_empty() {
-        assert_eq!(text("Return @OSVersion"), expected);
-        assert_eq!(text("Return @OSArch"), "X64");
-    }
+fn host_paths_are_available_when_the_emulation_leaves_them_alone() {
+    let src = "Func F()\n    Return StringRight(@TempDir, 1)\nEndFunc\n";
+    let prog = parse(src);
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(
+        WindowsEmulation::new().with_host_paths(),
+    ));
+    assert_eq!(
+        rt.call_function("F", vec![]).unwrap().to_autoit_string(),
+        std::path::MAIN_SEPARATOR.to_string()
+    );
+}
+
+#[test]
+fn os_identity_macros_come_from_the_stack() {
+    // The bare Linux layer still answers honestly ...
+    assert_eq!(
+        LinuxPlatform::new()
+            .macro_value("osversion")
+            .map(|v| v.to_autoit_string()),
+        Some("LINUX".to_string())
+    );
+    // ... and the default stack presents the emulated Windows 10 machine.
+    assert_eq!(text("Return @OSVersion"), "WIN_10");
+    assert_eq!(text("Return @OSArch"), "X64");
+    assert_eq!(text("Return @OSType"), "WIN32_NT");
 }
 
 #[test]
@@ -384,7 +439,7 @@ fn interpreter_macros_are_answered_by_the_core() {
 fn numparams_reflects_the_call() {
     let src = "Func F($a, $b = 1)\n    Return @NumParams\nEndFunc\n";
     let prog = parse(src);
-    let mut rt = runtime_with_platform(&prog);
+    let mut rt = runtime(&prog);
     assert!(matches!(
         rt.call_function("F", vec![Value::Int(1)]).unwrap(),
         Value::Int(1)
@@ -397,11 +452,11 @@ fn numparams_reflects_the_call() {
 
 #[test]
 fn composite_forwards_macro_lookups_to_its_layers() {
-    let p = host_platform();
+    let p = host_platform_with(WindowsEmulation::new());
+    // Emulation layer.
+    assert!(p.macro_value("osversion").is_some());
     // Portable layer.
     assert!(p.macro_value("tempdir").is_some());
-    // System layer.
-    assert!(p.macro_value("osversion").is_some());
     // Unknown macro stays unknown rather than becoming a made-up value.
     assert!(p.macro_value("nothinglikethis").is_none());
 }
