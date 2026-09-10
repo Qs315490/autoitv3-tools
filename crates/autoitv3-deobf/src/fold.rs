@@ -14,11 +14,14 @@
 //! concatenation, integer/float promotion) instead of two that could drift.
 
 use autoitv3_ast::ast::*;
-use autoitv3_runtime::{is_constant_expr, Runtime};
+use autoitv3_runtime::{is_constant_expr, ExecutionProfile, Runtime};
 
 /// Fold constant expressions throughout a whole program, in place.
 pub fn fold_program(prog: &mut Program) -> usize {
     let mut rt = Runtime::new();
+    // Constant folding only evaluates pure expressions, but state the profile
+    // anyway so the pass is explicit about wanting reproducibility.
+    rt.set_profile(ExecutionProfile::deterministic());
     let mut ctx = FoldCtx { folds: 0, rt: &mut rt };
     for item in &mut prog.items {
         ctx.fold_item(item);

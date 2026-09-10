@@ -8,6 +8,9 @@ description.workspace = true
 autoitv3-ast = { path = "../autoitv3-ast" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
 
+[dev-dependencies]
+autoitv3-deobf = { path = "../autoitv3-deobf" }
+
 [lib]
 name = "autoitv3_platform"
 path = "src/lib.rs"

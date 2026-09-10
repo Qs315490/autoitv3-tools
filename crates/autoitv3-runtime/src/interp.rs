@@ -23,6 +23,7 @@ use crate::debug::{Breakpoints, DebugAction, Debugger, FrameInfo, StopReason};
 use crate::error::{Flow, RuntimeError};
 use crate::host::{Host, HostContext};
 use crate::platform::Platform;
+use crate::profile::ExecutionProfile;
 use crate::value::Value;
 
 /// Default runaway-loop guard.
@@ -67,6 +68,8 @@ pub struct Runtime {
     paused: Option<StopReason>,
     /// Set by `Exit [code]`.
     exit_code: Option<i32>,
+    /// How faithfully AutoIt's observable behaviour is reproduced.
+    profile: ExecutionProfile,
     /// Top-level (script) statements, executed by [`Runtime::run_script`].
     script: Vec<Stmt>,
 }
@@ -96,6 +99,7 @@ impl Runtime {
             max_depth: DEFAULT_MAX_DEPTH,
             paused: None,
             exit_code: None,
+            profile: ExecutionProfile::default(),
             script: Vec::new(),
         }
     }
@@ -223,6 +227,20 @@ impl Runtime {
         self.max_depth = depth;
     }
 
+    /// The execution profile in force.
+    pub fn profile(&self) -> &ExecutionProfile {
+        &self.profile
+    }
+
+    /// Replace the execution profile.
+    ///
+    /// The default is [`ExecutionProfile::faithful`]; pass
+    /// [`ExecutionProfile::deterministic`] when the goal is to *analyse* a
+    /// script rather than run it (see [`crate::profile`]).
+    pub fn set_profile(&mut self, profile: ExecutionProfile) {
+        self.profile = profile;
+    }
+
     /// The code passed to `Exit`, if the script exited.
     pub fn exit_code(&self) -> Option<i32> {
         self.exit_code
@@ -325,8 +343,8 @@ impl Runtime {
         }
         // An explicit host wins over the platform default.
         if self.host.is_some() {
-            let Runtime { globals, error, extended, host, .. } = self;
-            let mut ctx = HostBridge { globals, error, extended };
+            let Runtime { globals, error, extended, profile, host, .. } = self;
+            let mut ctx = HostBridge { globals, error, extended, profile };
             if let Some(host) = host.as_mut() {
                 if let Some(v) = host.call(name, args.clone(), &mut ctx)? {
                     return Ok(v);
@@ -336,8 +354,8 @@ impl Runtime {
 
         // Then the OS layer, when one is installed.
         if self.platform.is_some() {
-            let Runtime { globals, error, extended, platform, .. } = self;
-            let mut ctx = HostBridge { globals, error, extended };
+            let Runtime { globals, error, extended, profile, platform, .. } = self;
+            let mut ctx = HostBridge { globals, error, extended, profile };
             if let Some(p) = platform.as_mut() {
                 if let Some(v) = p.call(name, args, &mut ctx)? {
                     return Ok(v);
@@ -1321,6 +1339,7 @@ struct HostBridge<'a> {
     globals: &'a mut HashMap<String, Value>,
     error: &'a mut i64,
     extended: &'a mut i64,
+    profile: &'a ExecutionProfile,
 }
 
 impl HostContext for HostBridge<'_> {
@@ -1339,5 +1358,9 @@ impl HostContext for HostBridge<'_> {
     fn set_error(&mut self, error: i64, extended: i64) {
         *self.error = error;
         *self.extended = extended;
+    }
+
+    fn profile(&self) -> &ExecutionProfile {
+        self.profile
     }
 }

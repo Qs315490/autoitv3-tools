@@ -33,6 +33,7 @@ autoitv3-tools/
         builtins.rs   已实现的内置函数子集（字符串/数值/位运算/数组/Map/Execute/Call...）
         host.rs       Host trait——嵌入方接入原生函数的接口（优先级高于平台层）
         platform/     Platform trait（仅接口；实现见 autoitv3-platform）
+        profile.rs    执行配置：忠实语义 vs 确定性分析语义（见下文「执行配置」）
         regexp.rs     StringRegExp* ——基于纯 Rust regex 引擎，平台无关
         debug.rs      Debugger trait / Breakpoint / FrameInfo——后续 debug 模块的接口
         error.rs      RuntimeError 与控制流信号 Flow
@@ -272,13 +273,43 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 宏由**平台**提供（解释器只负责 `@error`/`@extended`/`@ScriptLineNumber`/`@NumParams`/
 `@CRLF` 等纯状态与常量），因此 `@TempDir` 之类不再是空串。
 
-### 有意为之的近似（已在模块文档标注）
+### 执行配置（ExecutionProfile）——近似行为按用途区分
 
-- `FileGetTime` 返回 **UTC**（本地时区需要时区数据库），格式与 AutoIt 一致
+解释器有两类调用者，诉求相反：**反混淆**要快、可复现、无害（`Sleep(60000)` 不能真等
+一分钟，`Random` 不能每次不同，评估样本不该动磁盘）；**正常运行**要按 AutoIt v3 语义
+（真的延时、真的随机、真的产生副作用）。写死任一种都会对另一类造成错误行为，因此这些
+行为是一个**值**，由调用方选择：
+
+```rust
+rt.set_profile(ExecutionProfile::deterministic());  // 分析：快、可复现、拒绝写入
+rt.set_profile(ExecutionProfile::faithful());       // 运行：AutoIt 语义
+```
+
+| 维度 | `deterministic()`（反混淆/分析） | `faithful()`（正常运行） |
+| ---- | -------------------------------- | ------------------------ |
+| `Sleep` | **直接返回**（`SleepPolicy::Skip`） | 真实延时（`Real`），另有 `Capped(时长)` 上限模式 |
+| `Random` | **固定种子**，多次运行结果一致 | **OS 熵**，每次不同（`RandomSeed` 显式覆盖两者） |
+| 副作用（文件写入/删除/建目录/改环境） | **拒绝**：调用失败并置 `@error = 1`（`EffectPolicy::ReadOnly`） | 真实执行（`Allow`） |
+| 读取（`FileRead`/`FileExists`/`EnvGet`…） | 照常工作 | 照常工作 |
+
+**默认是 `faithful()`**——库不应悄悄改变脚本的行为；反混淆相关代码（`deobfuscate`
+的常量折叠与函数表解析）**显式**切到 `deterministic()`，保证输出可复现、不触碰机器。
+
+CLI 的 `au3 run` 面向"探查混淆样本"，因此默认用确定性配置；需要按 AutoIt 语义真跑时加
+`--faithful`：
+
+```bash
+au3 run F sample.au3              # 快速、可复现、不改磁盘
+au3 run F --faithful sample.au3   # 真的 Sleep、真的随机、真的写文件
+```
+
+其余仍属**有意为之的近似**（与执行配置无关，已在模块文档逐条标注）：
+
+- `FileGetTime` 返回 **UTC**（本地时区需要时区数据库），`YYYY/MM/DD HH:MM:SS` 格式与 AutoIt 一致
 - `FileGetAttrib` 返回 `D`（目录）/`A`（普通文件），只读时加 `R`；Windows 专有的 `S`/`H` 无对应概念，不设置
-- `Random` 默认**确定性**（便于反混淆结果可复现），需 AutoIt 原生行为时调用 `RandomSeed`
+- `FileGetShortName` 无 8.3 短名概念，原样返回长名
 - 文本按 UTF-8 读写；`FileOpen` 的 `$FO_UNICODE` 系列标志被接受但按 UTF-8 处理
-- `Sleep` **不真的休眠**（否则评估样本启动代码会耗上数分钟），这是内置函数层的唯一中性化调用
+- 控制台输出不算"修改状态"的副作用，两种配置下都会写出（可重定向）
 
 > **不静默编造值**：注册表、COM、`DllCall`、GUI、剪贴板等 Windows 专有函数在非 Windows
 > 上**没有桩**，会如实报 `undefined function`；平台层未提供前同样如此。

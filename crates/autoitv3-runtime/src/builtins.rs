@@ -14,7 +14,11 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use std::time::Duration;
+
 use autoitv3_ast::span::Span;
+
+use crate::profile::SleepPolicy;
 
 use crate::error::RuntimeError;
 use crate::interp::Runtime;
@@ -531,9 +535,21 @@ pub(crate) fn call(
         // implementation: a silent stub in this table would both invent a
         // value and shadow the platform that could answer properly.
         "opt" | "autoitsetoption" => Value::Int(1),
-        // Deliberately does not sleep: honouring it would make evaluating a
-        // script's start-up code take minutes for no benefit.
-        "sleep" => Value::Int(0),
+        // `Sleep` follows the execution profile: a *faithful* run really waits
+        // (AutoIt semantics), while the deterministic deobfuscation profile
+        // returns immediately, because nothing in a script's *result* depends
+        // on how long it waited.
+        "sleep" => {
+            let millis = args.first().map(|v| v.to_int()).unwrap_or(0).max(0) as u64;
+            match rt.profile().sleep {
+                SleepPolicy::Skip => {}
+                SleepPolicy::Real => std::thread::sleep(Duration::from_millis(millis)),
+                SleepPolicy::Capped(max) => {
+                    std::thread::sleep(Duration::from_millis(millis).min(max));
+                }
+            }
+            Value::Int(0)
+        }
 
         _ => return Ok(None),
     };
