@@ -1,21 +1,32 @@
-//! `au3 deobfuscate <file.au3> [-o FILE]` — run the deobfuscation pipeline.
+//! `au3 deobfuscate <FILE> [-o FILE]` — run the deobfuscation pipeline.
 //!
 //! Pipeline (see `autoitv3-deobf`): constant folding, function-table
-//! resolution (`$fn_table[0x..](...)` -> `FuncName(...)`) and deterministic
+//! resolution (`$fn_table[0x..](...)` → `FuncName(...)`) and deterministic
 //! identifier renaming. Comments are stripped, since they are noise once the
-//! code has been rewritten. A summary goes to stderr so that stdout stays a
-//! clean AutoIt program.
+//! code has been rewritten. A summary goes to stderr so stdout stays a clean
+//! AutoIt program.
 
 use autoitv3_deobf::deobfuscate;
 use autoitv3_format::PrettyPrinter;
+use clap::Args;
 
-use crate::args::{load_program, parse_in_out, CliResult};
+use crate::args::{load_program, CliResult, OutputArgs};
 use crate::output::write_output;
 
+/// Arguments for `au3 deobfuscate`.
+#[derive(Args, Debug)]
+pub struct DeobfuscateArgs {
+    /// Input AutoIt v3 script
+    #[arg(value_name = "FILE")]
+    pub input: String,
+
+    #[command(flatten)]
+    pub output: OutputArgs,
+}
+
 /// Entry point for the `deobfuscate` subcommand.
-pub fn run(args: &[String]) -> CliResult<()> {
-    let io = parse_in_out("deobfuscate", args)?;
-    let mut prog = load_program(&io.input)?;
+pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
+    let mut prog = load_program(&args.input)?;
 
     let report = deobfuscate(&mut prog);
     eprintln!(
@@ -33,5 +44,5 @@ pub fn run(args: &[String]) -> CliResult<()> {
     let mut printer = PrettyPrinter::new().strip_comments(true);
     let rendered = printer.print_program(&prog);
 
-    write_output(io.output.as_deref(), &rendered)
+    write_output(args.output.output.as_deref(), &rendered)
 }

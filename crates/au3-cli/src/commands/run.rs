@@ -1,4 +1,4 @@
-//! `au3 run <Func> <file.au3> [--arg V]... [--init] [--trace]` — interpret.
+//! `au3 run <FUNC> <FILE> [--arg V]... [--init] [--trace]` — interpret.
 //!
 //! Calls one function on [`Runtime`](autoitv3_runtime::Runtime). This is how the
 //! obfuscator's table builders can be probed directly, and `--trace` wires in a
@@ -7,74 +7,68 @@
 
 use autoitv3_runtime::debug::{DebugAction, Debugger, StopReason};
 use autoitv3_runtime::{Runtime, Value};
+use clap::Args;
 
 use crate::args::{load_program, parse_arg_value, CliError, CliResult};
 
+/// Arguments for `au3 run`.
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// Function to call
+    #[arg(value_name = "FUNC")]
+    pub function: String,
+
+    /// Input AutoIt v3 script
+    #[arg(value_name = "FILE")]
+    pub input: String,
+
+    /// Argument to pass to the function; repeat for more.
+    /// Integers (decimal, or `0x` hex) are passed as numbers, anything else
+    /// as a string.
+    #[arg(long = "arg", value_name = "VALUE")]
+    pub args: Vec<String>,
+
+    /// Run the top-level script first, so global tables (`$fn_table`, ...) exist
+    #[arg(long)]
+    pub init: bool,
+
+    /// Print the executed statement stream to stderr
+    #[arg(long)]
+    pub trace: bool,
+}
+
 /// Entry point for the `run` subcommand.
-pub fn run(args: &[String]) -> CliResult<()> {
-    let mut func: Option<String> = None;
-    let mut input: Option<String> = None;
-    let mut call_args: Vec<Value> = Vec::new();
-    let mut init = false;
-    let mut trace = false;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--arg" => {
-                i += 1;
-                let raw = args.get(i).ok_or_else(|| {
-                    CliError::usage("run: --arg requires a value")
-                })?;
-                call_args.push(parse_arg_value(raw));
-            }
-            "--init" => init = true,
-            "--trace" => trace = true,
-            s if s.starts_with('-') && s != "-" => {
-                return Err(CliError::usage(format!("run: unknown option `{s}`")));
-            }
-            s => {
-                // First positional is the function, second the input file.
-                if func.is_none() {
-                    func = Some(s.to_string());
-                } else if input.is_none() {
-                    input = Some(s.to_string());
-                } else {
-                    return Err(CliError::usage("run: unexpected extra argument"));
-                }
-            }
-        }
-        i += 1;
-    }
-
-    let func = func
-        .ok_or_else(|| CliError::usage("run: missing function name (usage: au3 run <Func> <file.au3>)"))?;
-    let input =
-        input.ok_or_else(|| CliError::usage("run: missing input file (usage: au3 run <Func> <file.au3>)"))?;
-
-    let prog = load_program(&input)?;
+pub fn run(args: &RunArgs) -> CliResult<()> {
+    let prog = load_program(&args.input)?;
     let mut rt = Runtime::with_program(&prog);
 
-    if trace {
+    if args.trace {
         rt.set_debugger(Box::new(TracePrinter::new()));
     }
-    if init {
-        // Execute the top-level script so global tables the function may rely
-        // on (`$fn_table`, ...) exist before it runs.
+    if args.init {
+        // Execute the top-level script so the tables the function may rely on
+        // exist before it runs.
         if let Err(e) = rt.run_script() {
-            return Err(CliError::failure(format!("error while running script body: {e}")));
+            return Err(CliError::failure(format!(
+                "error while running script body: {e}"
+            )));
         }
     }
 
-    match rt.call_function(&func, call_args) {
+    let call_args: Vec<Value> = args.args.iter().map(|a| parse_arg_value(a)).collect();
+
+    match rt.call_function(&args.function, call_args) {
         Ok(value) => {
-            println!("{func}() = {}", format_value(&value));
+            println!("{}() = {}", args.function, format_value(&value));
             if let Some(reason) = rt.take_pause() {
                 eprintln!("(stopped: {reason:?})");
             }
             Ok(())
         }
-        Err(e) => Err(CliError::failure(format!("runtime error in {func}(): {e}"))),
+        Err(e) => Err(CliError::failure(format!(
+            "runtime error in {}(): {e}",
+            args.function
+        ))),
     }
 }
 

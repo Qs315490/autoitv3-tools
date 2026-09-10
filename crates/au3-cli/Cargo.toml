@@ -10,6 +10,9 @@ autoitv3-format = { path = "../autoitv3-format" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
 autoitv3-deobf = { path = "../autoitv3-deobf" }
 
+# CLI parsing: subcommand aliases + unambiguous abbreviations (`au3 deob`).
+clap = { version = "4.5", features = ["derive"] }
+
 [[bin]]
 name = "au3"
 path = "src/main.rs"

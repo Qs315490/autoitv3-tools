@@ -47,17 +47,18 @@ autoitv3-tools/
       tests/
         deobf.rs      反混淆 pass 单元测试（13 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
-    au3-cli/                # CLI 二进制 crate（产物名为 au3）
+    au3-cli/                # CLI 二进制 crate（产物名为 au3，使用 clap 解析参数）
       src/
-        main.rs     入口：收集 argv、分发、把 CliError 转成退出码
-        args.rs     共用参数解析（输入文件、-o、--arg）与 CliError
+        main.rs     入口：Cli::parse() → dispatch → 把 CliError 转成退出码
+        cli.rs      顶层 Cli / Command 定义（子命令、别名、缩写开关）
+        args.rs     共用参数类型（-o 输出）、CliError、输入加载
         output.rs   输出目标：文件或 stdout（`-` 表示 stdout）
         commands/
-          mod.rs        子命令注册表、dispatch 与帮助文本
-          parse.rs      au3 parse
-          pretty.rs     au3 pretty
-          deobfuscate.rs au3 deobfuscate
-          run.rs        au3 run（含 --trace 用的 Debugger 示例实现）
+          mod.rs        子命令模块与 dispatch 表
+          parse.rs      au3 parse（ParseArgs + run）
+          pretty.rs     au3 pretty（PrettyArgs + run）
+          deobfuscate.rs au3 deobfuscate（DeobfuscateArgs + run）
+          run.rs        au3 run（RunArgs + run，含 --trace 用的 Debugger 示例实现）
 ```
 
 ### autoitv3-runtime 的定位
@@ -110,11 +111,12 @@ autoitv3-tools/
 
 ## 使用
 
-CLI 采用**子命令**形式（一级参数不带 `--` 前缀），每个命令一个模块：
+CLI 采用**子命令**形式（一级参数不带 `--` 前缀），解析由 [clap](https://crates.io/crates/clap) 完成，
+因此自带 `--help` / `--version`、**子命令缩写**与**别名**：
 
 ```bash
 cargo build --release
-au3 help                                   # 查看全部命令
+au3 --help                                 # 查看全部命令
 
 # parse：只做解析与统计（顶层条目数、函数数）
 au3 parse some.au3
@@ -137,15 +139,24 @@ au3 run BuildFunctionTable --init some.au3
 au3 run SomeFunc --trace some.au3
 ```
 
-| 子命令 | 说明 |
-| ------ | ---- |
-| `parse <file>` | 解析并报告顶层条目/函数数量 |
-| `pretty <file> [-o FILE]` | 规范化重打印，保留注释 |
-| `deobfuscate <file> [-o FILE]` | 反混淆流水线，去除注释 |
-| `run <Func> <file> [--arg V]… [--init] [--trace]` | 解释执行一个函数 |
-| `help` | 帮助 |
+| 子命令 | 别名 | 说明 |
+| ------ | ---- | ---- |
+| `parse <FILE>` | `p`, `check` | 解析并报告顶层条目/函数数量 |
+| `pretty <FILE> [-o FILE]` | `fmt`, `format` | 规范化重打印，保留注释 |
+| `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释 |
+| `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数 |
+| `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
-退出码：`0` 成功，`1` 输入处理失败（解析/运行时错误），`2` 用法或 IO 错误。
+**缩写**：只要前缀无歧义即可使用，例如 `au3 deob`、`au3 pars`、`au3 pret`。
+`-o` 同时支持短名 `-o` 与长名 `--output`。
+
+退出码：`0` 成功，`1` 输入处理失败（解析/运行时错误），`2` 用法或 IO 错误（用法错误由 clap 报出）。
+
+> **受限环境**：若 `~/.cargo` 只读（部分沙箱如此），首次构建需要把 `CARGO_HOME`
+> 指向可写目录并离线构建：
+> ```bash
+> CARGO_HOME=/path/to/writable/cargo-home cargo build --offline
+> ```
 
 ```bash
 # 运行库的单元测试
