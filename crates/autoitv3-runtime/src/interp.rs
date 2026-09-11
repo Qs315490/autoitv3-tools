@@ -89,10 +89,29 @@ pub struct Runtime {
     /// values it produced — so the names are recorded and left for the caller
     /// rather than invoked behind its back.
     exit_handlers: Vec<String>,
+    /// Functions registered with `AdlibRegister`, with their intervals.
+    ///
+    /// AutoIt calls these whenever the script goes idle (inside `Sleep`, a
+    /// message wait, ...). This interpreter has no idle clock and does not
+    /// really wait, so they are recorded for the caller instead of being fired
+    /// on a timer — the same reasoning as [`Runtime::exit_handlers`].
+    adlib_handlers: Vec<AdlibHandler>,
     /// How faithfully AutoIt's observable behaviour is reproduced.
     profile: ExecutionProfile,
     /// Top-level (script) statements, executed by [`Runtime::run_script`].
     script: Vec<Stmt>,
+}
+
+/// How many `AdlibRegister` callbacks AutoIt accepts at once.
+const ADLIB_LIMIT: usize = 10;
+
+/// A function registered with `AdlibRegister`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdlibHandler {
+    /// The name the script registered.
+    pub name: String,
+    /// How often AutoIt would call it, in milliseconds.
+    pub interval_ms: i64,
 }
 
 impl Default for Runtime {
@@ -165,6 +184,7 @@ impl Runtime {
             error_reported: false,
             exit_code: None,
             exit_handlers: Vec::new(),
+            adlib_handlers: Vec::new(),
             profile: ExecutionProfile::default(),
             script: Vec::new(),
         }
@@ -190,6 +210,52 @@ impl Runtime {
             .any(|n| n.eq_ignore_ascii_case(&name))
         {
             self.exit_handlers.push(name);
+        }
+    }
+
+    /// The functions registered with `AdlibRegister`.
+    pub fn adlib_handlers(&self) -> &[AdlibHandler] {
+        &self.adlib_handlers
+    }
+
+    /// Record an `AdlibRegister` callback, replacing an earlier registration of
+    /// the same function. Returns false when the limit is reached.
+    ///
+    /// AutoIt allows at most ten at once.
+    pub(crate) fn register_adlib(&mut self, name: String, interval_ms: i64) -> bool {
+        if let Some(existing) = self
+            .adlib_handlers
+            .iter_mut()
+            .find(|h| h.name.eq_ignore_ascii_case(&name))
+        {
+            existing.name = name;
+            existing.interval_ms = interval_ms;
+            return true;
+        }
+        if self.adlib_handlers.len() >= ADLIB_LIMIT {
+            return false;
+        }
+        self.adlib_handlers.push(AdlibHandler { name, interval_ms });
+        true
+    }
+
+    /// Forget an `AdlibRegister` callback. `None` forgets all of them.
+    pub(crate) fn unregister_adlib(&mut self, name: Option<&str>) -> bool {
+        let Some(name) = name else {
+            let had = !self.adlib_handlers.is_empty();
+            self.adlib_handlers.clear();
+            return had;
+        };
+        match self
+            .adlib_handlers
+            .iter()
+            .position(|h| h.name.eq_ignore_ascii_case(name))
+        {
+            Some(i) => {
+                self.adlib_handlers.remove(i);
+                true
+            }
+            None => false,
         }
     }
 
