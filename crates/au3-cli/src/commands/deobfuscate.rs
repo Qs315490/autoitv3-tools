@@ -1,15 +1,16 @@
-//! `au3 deobfuscate <FILE> [-o FILE] [--no-rename]` — run the deobfuscation
+//! `au3 deobfuscate <FILE> [-o FILE] [--rename]` — run the deobfuscation
 //! pipeline.
 //!
 //! Pipeline (see `autoitv3-deobf`): constant folding, function-table
-//! resolution (`$fn_table[0x..](...)` → `FuncName(...)`), indirect-call
-//! simplification (`Call("Foo", ...)` → `Foo(...)`) and deterministic
-//! identifier renaming. Comments are stripped, since they are noise once the
-//! code has been rewritten. A summary goes to stderr so stdout stays a clean
-//! AutoIt program.
+//! resolution (`$fn_table[0x..](...)` → `FuncName(...)`) and indirect-call
+//! simplification (`Call("Foo", ...)` → `Foo(...)`). Comments are stripped,
+//! since they are noise once the code has been rewritten. A summary goes to
+//! stderr so stdout stays a clean AutoIt program.
 //!
-//! Renaming is optional (`--no-rename`): with it off, only the structure is
-//! rewritten and every original variable/function name is preserved.
+//! Renaming is opt-in (`--rename`). By default every original variable and
+//! function name is preserved, so the output still lines up with the input —
+//! and with anything else that refers to it. `--rename` adds the deterministic
+//! `$l_str_003` / `f042` aliases on top.
 
 use autoitv3_deobf::{
     evaluate_with_options, DeobfReport, Deobfuscator, SubstituteOptions,
@@ -37,9 +38,14 @@ pub struct DeobfuscateArgs {
     #[arg(long)]
     pub faithful: bool,
 
-    /// Keep the original variable and function names: skip the rename pass,
-    /// leaving only constant folding and function-table resolution
+    /// Rename identifiers: give every script-defined variable and function a
+    /// deterministic `$l_str_003` / `f042` alias. Off by default, so the output
+    /// keeps the names the script was written with
     #[arg(long)]
+    pub rename: bool,
+
+    /// Deprecated: renaming is off by default now, so this does nothing
+    #[arg(long, hide = true)]
     pub no_rename: bool,
 
     /// With --evaluate, also rewrite `Global Const $t = Build()` into the
@@ -76,10 +82,10 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         tables = Some(outcome.values);
     }
 
-    let deobf = if args.no_rename {
-        Deobfuscator::without_rename()
-    } else {
+    let deobf = if args.rename {
         Deobfuscator::new()
+    } else {
+        Deobfuscator::without_rename()
     };
     let mut report = DeobfReport::default();
     match &tables {
@@ -107,7 +113,7 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         report.folds,
         report.renamed.vars,
         report.renamed.funcs,
-        if args.no_rename { " (renaming disabled)" } else { "" },
+        if args.rename { "" } else { " (renaming off; pass --rename)" },
         report.table.entries,
         report.table.calls,
         report.table.refs,
