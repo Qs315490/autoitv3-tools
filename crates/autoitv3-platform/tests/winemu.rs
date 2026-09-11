@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use autoitv3_platform::host_platform_with;
 use autoitv3_platform::winemu::{
-    FileRegistry, MemoryRegistry, RegistryData, RegistryStore, WindowsArch, WindowsEmulation,
-    WindowsPaths, WindowsVersion,
+    Control, FileRegistry, GuiBackend, GuiEvent, MemoryRegistry, RegistryData, RegistryStore,
+    Window, WindowsArch, WindowsEmulation, WindowsPaths, WindowsVersion,
 };
 use autoitv3_runtime::profile::ExecutionProfile;
 use autoitv3_runtime::{Runtime, Value};
@@ -873,4 +873,163 @@ fn the_read_only_profile_refuses_side_effecting_calls() {
     );
     let value = run_profiled(win10(), ExecutionProfile::deterministic(), &body);
     assert_eq!(value.to_autoit_string(), "0:0:0:0");
+}
+
+// ---------------------------------------------------------------------------
+// Headless GUI: model, events, dialogs, backend seam
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gui_creates_controls_and_reads_them() {
+    let body = r#"
+GUICreate("T", 200, 100)
+Local $label = GUICtrlCreateLabel("hello", 0, 0)
+Local $input = GUICtrlCreateInput("start", 0, 20)
+Local $check = GUICtrlCreateCheckbox("Enable", 0, 40)
+Local $r0 = GUICtrlRead($check)
+GUICtrlSetState($check, 1)
+GUICtrlSetData($input, "typed")
+Return GUICtrlRead($label) & "|" & GUICtrlRead($input) & "|" & $r0 & "|" & GUICtrlRead($check)
+"#;
+    assert_eq!(text(win10(), body), "hello|typed|4|1");
+}
+
+#[test]
+fn gui_message_loop_drains_scripted_events() {
+    let body = r#"
+GUICreate("T", 100, 50)
+Local $btn = GUICtrlCreateButton("Go", 0, 0)
+Local $seen = ""
+For $i = 1 To 5
+    Local $msg = GUIGetMsg()
+    If $msg = -3 Then
+        $seen = $seen & "close"
+        ExitLoop
+    ElseIf $msg <> 0 Then
+        $seen = $seen & $msg
+    EndIf
+Next
+Return $seen & ":" & ($btn = 1)
+"#;
+    let emu = win10().with_gui_events(vec![GuiEvent::Control(1), GuiEvent::Close(0)]);
+    assert_eq!(text(emu, body), "1close:True");
+}
+
+#[test]
+fn gui_auto_close_terminates_an_ignoring_loop() {
+    let body = r#"
+GUICreate("T", 10, 10)
+Local $n = 0
+While 1
+    $n = $n + 1
+    If GUIGetMsg() = -3 Then ExitLoop
+    If $n > 10 Then ExitLoop
+WEnd
+Return $n
+"#;
+    assert_eq!(text(win10().with_gui_auto_close(3), body), "3");
+}
+
+#[test]
+fn gui_window_state_and_geometry() {
+    let body = r#"
+Local $win = GUICreate("My Window", 200, 100, 10, 20)
+Local $before = WinGetState($win)
+GUISetState(5, $win)
+Local $after = WinGetState($win)
+Local $pos = WinGetPos($win)
+WinMove($win, 5, 6, 300, 150)
+Local $pos2 = WinGetPos($win)
+Local $title = WinGetTitle($win)
+Local $exists = WinExists("My Window")
+Local $closed = WinClose($win)
+Return $before & ":" & $after & ":" & $pos[0] & "," & $pos[2] & ":" & $pos2[2] & "," & $pos2[3] & ":" & $title & ":" & $exists & ":" & $closed & ":" & WinExists($win)
+"#;
+    assert_eq!(
+        text(win10(), body),
+        "13:15:10,200:300,150:My Window:1:1:0"
+    );
+}
+
+#[test]
+fn gui_control_messages_answer_edit_and_listview() {
+    let body = r#"
+GUICreate("T", 100, 100)
+Local $edit = GUICtrlCreateEdit("", 0, 0, 100, 50)
+GUICtrlSetData($edit, "a" & @CRLF & "b" & @CRLF & "c")
+Local $lines = GUICtrlSendMsg($edit, 0x00BA, 0, 0)
+Local $list = GUICtrlCreateListView("", 0, 60, 100, 40)
+GUICtrlSetData($list, "row1")
+GUICtrlSetData($list, "row2")
+Local $count = GUICtrlSendMsg($list, 0x1004, 0, 0)
+Local $unknown = GUICtrlSendMsg($list, 0x1234, 0, 0)
+Local $err = @error
+Return $lines & ":" & $count & ":" & $unknown & ":" & $err
+"#;
+    assert_eq!(text(win10(), body), "3:2:0:1");
+}
+
+#[test]
+fn gui_dialogs_use_scripted_answers_and_fail_otherwise() {
+    let body = r#"
+Local $m = MsgBox(0, "t", "x")
+Local $i = InputBox("t", "prompt", "default")
+Local $f = FileOpenDialog("open", "", "All (*.*)")
+Local $c = FileOpenDialog("open", "", "All (*.*)")
+Local $cerr = @error
+Return $m & ":" & $i & ":" & $f & ":" & $c & ":" & $cerr
+"#;
+    let emu = win10()
+        .with_gui_events(vec![GuiEvent::Dialog(2)])
+        .with_gui_answers(vec!["typed".to_string(), "C:\\file.txt".to_string()]);
+    assert_eq!(text(emu, body), "2:typed:C:\\file.txt::1");
+}
+
+#[test]
+fn control_functions_and_control_click_events() {
+    let body = r#"
+GUICreate("T", 100, 100)
+GUICtrlCreateLabel("hello", 0, 0)
+Local $txt = ControlGetText("T", "hello")
+ControlSetText("T", "hello", "world")
+Local $txt2 = ControlGetText("T", "world")
+ControlClick("T", "world")
+Local $msg = GUIGetMsg()
+Return $txt & ":" & $txt2 & ":" & $msg
+"#;
+    assert_eq!(text(win10(), body), "hello:world:1");
+}
+
+#[derive(Clone, Default)]
+struct Recorder {
+    log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl GuiBackend for Recorder {
+    fn on_window(&mut self, window: &Window) {
+        self.log.borrow_mut().push(format!("win:{}", window.title));
+    }
+    fn on_control(&mut self, control: &Control) {
+        self.log
+            .borrow_mut()
+            .push(format!("ctrl:{}:{}", control.id, control.text));
+    }
+}
+
+#[test]
+fn a_custom_backend_sees_model_updates() {
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(Recorder { log: log.clone() }));
+    let body = r#"
+GUICreate("Main", 100, 100)
+GUICtrlCreateLabel("hello", 0, 0)
+Return 1
+"#;
+    assert_eq!(text(emu, body), "1");
+    let entries = log.borrow().clone();
+    assert!(entries.iter().any(|e| e == "win:Main"), "{entries:?}");
+    assert!(
+        entries.iter().any(|e| e.ends_with(":hello")),
+        "{entries:?}"
+    );
 }

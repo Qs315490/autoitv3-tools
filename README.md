@@ -65,10 +65,24 @@ autoitv3-tools/
           dllstruct.rs  DllStruct* 定义解析与按字段读写（OSVERSIONINFO 等）
           registry.rs   RegistryStore 接口 + FileRegistry（默认，落盘 .au3_registry）
                         + MemoryRegistry（可选，不落盘）
+          pe.rs / compress.rs / crypto.rs  PE 资源、LZNT1、CryptoAPI 仿真
+          verinfo.rs    PE RT_VERSION 解析（FileGetVersion）
+          shortcut.rs   .lnk Shell Link 读写（FileCreateShortcut/FileGetShortcut）
+          shell.rs      ShellExecute*/RunAs*
+          gui/          GUI 无头语义：messages.rs（$EM_*/$LVM_* 默认）、
+                        mod.rs（165 个 GUI 函数的 AutoIt 语义；控件模型与
+                        GuiBackend 接缝在 autoitv3-gui crate）
       tests/
         platform.rs   分层、选择、注入、通用函数与宏（33 项）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
         winemu/       Windows 仿真层（DllStruct / CryptoAPI / LZNT1 / PE 资源 / 注册表 …）
+    autoitv3-gui/            # 库 crate（零依赖）——GUI 控件模型 + 后端接缝
+      src/model.rs           Window/Control/GuiModel、绘制指令、$GUI_* 状态位
+      src/backend.rs         GuiBackend trait + HeadlessBackend + GuiEvent/GuiImage
+    autoitv3-gui-egui/       # 库 crate——离屏 egui 渲染后端（feature "egui"，默认关）
+      src/render.rs          EguiBackend：把模型布局成帧
+      src/raster.rs          egui 三角形 → RGBA 的 CPU 光栅器（无 GPU、确定性）
+      src/png.rs             极简 PNG 写出（stored deflate，无依赖）
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 可选重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
@@ -707,6 +721,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
 | COM | 无 COM 运行时：`ObjCreate`/`ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 返回 `0`/`""` 并置 `@error = 1`，`IsObj` 恒为 `0`（不编造对象） |
+| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui`），默认 `HeadlessBackend` 不画任何东西；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
 
 **选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
 `Win10`/`Win11`，**默认 Win10**：
@@ -773,12 +788,44 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
 不调用真实 DLL。因此
 - 未列举的 `DllCall` 置 `@error = 1`、返回 `0`，把决定权交回脚本；`DllCallAddress` 同理；
 - COM 内建函数存在但**可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
-- `GUICreate`/`Win*` 等 GUI/窗口/输入函数仍报 `undefined function`（列 C 的待办）；
+- GUI 已由 `winemu/gui/` 的**无头语义**回答（不再是 `undefined function`）；默认后端
+  **不渲染**。可选 crate `autoitv3-gui-egui`（feature `gui-egui`）提供**离屏渲染 + PNG
+  截图**，但它不开真窗口、也不注入交互——实时窗口仍是后续工作；
 - 写文件、回收站、驱动器映射、启动进程同样遵循 `ExecutionProfile`：确定性分析配置下被拒绝
   （`@error = 1`），也就不会生成 `.au3_registry` / `.au3_clipboard` / `.au3_recycle`；
 - 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，
   回到"停在第一个 Windows 调用"的诚实行为；`with_host_paths()` 则只让**目录**宏回落到
   主机路径（`@TempDir` 等仍可用于真实文件 I/O），Windows 专有宏照旧仿真。
+
+### GUI 渲染后端（可选 `egui`）——离屏 + 截图
+
+控件模型与 `GuiBackend` 接缝在零依赖的 `autoitv3-gui`；`autoitv3-gui-egui` 用 egui 把模型
+布局成帧，再用自带的 **CPU 光栅器**渲染成 RGBA。**不依赖 GPU、不依赖显示服务器**，
+因此可复现、可在 CI 里断言像素。
+
+```rust
+use autoitv3_platform::winemu::WindowsEmulation;
+use autoitv3_gui_egui::EguiBackend;
+
+// feature "gui-egui" 时也可用 WindowsEmulation::with_egui_backend()
+let backend = EguiBackend::new()
+    .with_size(800, 600)
+    .with_screenshot("/tmp/frame.png");   // GUISetState 时落一张 PNG
+let _emu = WindowsEmulation::new().with_gui_backend(Box::new(backend));
+// … 跑脚本（GUICreate/GUICtrlCreate*/GUISetState…）后即可得到截图
+```
+
+也可直接拿 `EguiBackend::snapshot()`（RGBA）或 `screenshot(path)`；`with_screenshot` 只是把
+这一步挂到 `present()` 上，省去把仿真层再取回来。
+
+egui 是**可选依赖**，默认 `cargo test` 不编译它：
+
+```bash
+cargo test -p autoitv3-gui-egui --features egui     # 离屏渲染 + PNG 的测试
+cargo test -p autoitv3-platform --features gui-egui # 平台接线（脚本建窗→截图）
+```
+
+> `~/.cargo` 只读的环境需要把 `CARGO_HOME` 指到可写目录才能拉取 egui（见上文「受限环境」）。
 
 ## 解包资源（`au3 unpack`）
 

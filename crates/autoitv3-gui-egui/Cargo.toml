@@ -1,0 +1,22 @@
+[package]
+name = "autoitv3-gui-egui"
+version.workspace = true
+edition.workspace = true
+description = "Offscreen egui renderer for the autoitv3 GUI backend"
+
+[dependencies]
+autoitv3-gui = { path = "../autoitv3-gui" }
+egui = { version = "0.36", optional = true }
+
+[features]
+default = []
+# The actual renderer. Off by default so the workspace's normal build/test
+# never pulls a font/GPU stack.
+egui = ["dep:egui"]
+
+[lib]
+name = "autoitv3_gui_egui"
+path = "src/lib.rs"
+
+[lints.rust]
+unused = "warn"

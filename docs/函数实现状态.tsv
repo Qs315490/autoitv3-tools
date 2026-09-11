@@ -9,9 +9,9 @@ ASin	已实现				见对应源码层
 Assign	已实现				见对应源码层
 ATan	已实现				见对应源码层
 AutoItSetOption	已实现				见对应源码层
-AutoItWinGetTitle	待实现	仿真	winemu·GUI	P2	AutoIt 主窗口标题
-AutoItWinSetTitle	待实现	仿真	winemu·GUI	P2	AutoIt 主窗口标题
-Beep	待实现	仿真	winemu	P2	声音 / 光驱
+AutoItWinGetTitle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+AutoItWinSetTitle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+Beep	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Binary	已实现				见对应源码层
 BinaryLen	已实现				见对应源码层
 BinaryMid	已实现				见对应源码层
@@ -22,10 +22,10 @@ BitOR	已实现				见对应源码层
 BitRotate	已实现				见对应源码层
 BitShift	已实现				见对应源码层
 BitXOR	已实现				见对应源码层
-BlockInput	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-Break	待实现	仿真	winemu·GUI	P2	托盘退出开关
+BlockInput	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+Break	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Call	已实现				见对应源码层
-CDTray	待实现	仿真	winemu	P2	声音 / 光驱
+CDTray	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Ceiling	已实现				见对应源码层
 Chr	已实现				见对应源码层
 ChrW	已实现				见对应源码层
@@ -34,22 +34,22 @@ ClipPut	已实现				见对应源码层
 ConsoleRead	已实现				见对应源码层
 ConsoleWrite	已实现				见对应源码层
 ConsoleWriteError	已实现				见对应源码层
-ControlClick	待实现	仿真	winemu·GUI	P0	控件操作
-ControlCommand	待实现	仿真	winemu·GUI	P2	控件操作
-ControlDisable	待实现	仿真	winemu·GUI	P2	控件操作
-ControlEnable	待实现	仿真	winemu·GUI	P2	控件操作
-ControlFocus	待实现	仿真	winemu·GUI	P2	控件操作
-ControlGetFocus	待实现	仿真	winemu·GUI	P2	控件操作
-ControlGetHandle	待实现	仿真	winemu·GUI	P2	控件操作
-ControlGetPos	待实现	仿真	winemu·GUI	P0	控件操作
-ControlGetText	待实现	仿真	winemu·GUI	P2	控件操作
-ControlHide	待实现	仿真	winemu·GUI	P2	控件操作
-ControlListView	待实现	仿真	winemu·GUI	P2	控件操作
-ControlMove	待实现	仿真	winemu·GUI	P2	控件操作
-ControlSend	待实现	仿真	winemu·GUI	P2	控件操作
-ControlSetText	待实现	仿真	winemu·GUI	P2	控件操作
-ControlShow	待实现	仿真	winemu·GUI	P2	控件操作
-ControlTreeView	待实现	仿真	winemu·GUI	P2	控件操作
+ControlClick	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlCommand	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlDisable	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlEnable	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlFocus	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlGetFocus	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlGetHandle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlGetPos	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlGetText	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlHide	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlListView	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlMove	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlSend	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlSetText	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlShow	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ControlTreeView	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Cos	已实现				见对应源码层
 Dec	已实现				见对应源码层
 DirCopy	已实现				见对应源码层
@@ -109,14 +109,14 @@ FileGetVersion	已实现				见对应源码层
 FileInstall	已实现				见对应源码层
 FileMove	已实现				见对应源码层
 FileOpen	已实现				见对应源码层
-FileOpenDialog	待实现	仿真	winemu·GUI	P0	文件选择对话框
+FileOpenDialog	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 FileRead	已实现				见对应源码层
 FileReadLine	已实现				见对应源码层
 FileReadToArray	已实现				见对应源码层
 FileRecycle	已实现				见对应源码层
 FileRecycleEmpty	已实现				见对应源码层
-FileSaveDialog	待实现	仿真	winemu·GUI	P0	文件选择对话框
-FileSelectFolder	待实现	仿真	winemu·GUI	P0	文件选择对话框
+FileSaveDialog	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+FileSelectFolder	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 FileSetAttrib	已实现				见对应源码层
 FileSetEnd	已实现				见对应源码层
 FileSetPos	已实现				见对应源码层
@@ -126,79 +126,79 @@ FileWriteLine	已实现				见对应源码层
 Floor	已实现				见对应源码层
 FtpSetProxy	已实现				见对应源码层
 FuncName	已实现				见对应源码层
-GUICreate	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateAvi	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateButton	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateCheckbox	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateCombo	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateContextMenu	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateDate	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateDummy	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateEdit	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateGraphic	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateGroup	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateIcon	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateInput	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateLabel	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateList	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateListView	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateListViewItem	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateMenu	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateMenuItem	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateMonthCal	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateObj	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreatePic	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateProgress	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateRadio	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateSlider	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateTab	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateTabItem	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateTreeView	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateTreeViewItem	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlCreateUpdown	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlDelete	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlGetHandle	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlGetState	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlRead	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlRecvMsg	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlRegisterListViewSort	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSendMsg	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSendToDummy	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetBkColor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetColor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetCursor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetData	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetDefBkColor	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetDefColor	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetFont	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetGraphic	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetImage	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetLimit	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetOnEvent	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetPos	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetResizing	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetState	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetStyle	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUICtrlSetTip	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUIDelete	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUIGetCursorInfo	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUIGetMsg	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUIGetStyle	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUIRegisterMsg	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUISetAccelerators	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUISetBkColor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUISetCoord	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUISetCursor	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUISetFont	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUISetHelp	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUISetIcon	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUISetOnEvent	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUISetState	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
-GUISetStyle	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUIStartGroup	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
-GUISwitch	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICreate	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateAvi	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateButton	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateCheckbox	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateCombo	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateContextMenu	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateDate	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateDummy	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateEdit	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateGraphic	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateGroup	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateIcon	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateInput	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateLabel	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateList	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateListView	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateListViewItem	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateMenu	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateMenuItem	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateMonthCal	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateObj	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreatePic	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateProgress	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateRadio	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateSlider	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateTab	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateTabItem	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateTreeView	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateTreeViewItem	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlCreateUpdown	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlDelete	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlGetHandle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlGetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlRead	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlRecvMsg	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlRegisterListViewSort	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSendMsg	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSendToDummy	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetBkColor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetColor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetCursor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetData	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetDefBkColor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetDefColor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetFont	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetGraphic	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetImage	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetLimit	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetOnEvent	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetPos	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetResizing	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetStyle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUICtrlSetTip	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUIDelete	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUIGetCursorInfo	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUIGetMsg	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUIGetStyle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUIRegisterMsg	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetAccelerators	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetBkColor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetCoord	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetCursor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetFont	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetHelp	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetIcon	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetOnEvent	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISetStyle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUIStartGroup	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+GUISwitch	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Hex	已实现				见对应源码层
-HotKeySet	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+HotKeySet	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 HttpSetProxy	已实现				见对应源码层
 HttpSetUserAgent	已实现				见对应源码层
 HWnd	已实现				见对应源码层
@@ -214,7 +214,7 @@ IniReadSectionNames	已实现				见对应源码层
 IniRenameSection	已实现				见对应源码层
 IniWrite	已实现				见对应源码层
 IniWriteSection	已实现				见对应源码层
-InputBox	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+InputBox	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Int	已实现				见对应源码层
 IsAdmin	已实现				见对应源码层
 IsArray	已实现				见对应源码层
@@ -239,15 +239,15 @@ MapKeys	已实现				见对应源码层
 MapRemove	已实现				见对应源码层
 MemGetStats	已实现				见对应源码层
 Mod	已实现				见对应源码层
-MouseClick	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-MouseClickDrag	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-MouseDown	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-MouseGetCursor	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-MouseGetPos	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
-MouseMove	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-MouseUp	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-MouseWheel	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
-MsgBox	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
+MouseClick	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MouseClickDrag	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MouseDown	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MouseGetCursor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MouseGetPos	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MouseMove	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MouseUp	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MouseWheel	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+MsgBox	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Number	已实现				见对应源码层
 ObjCreate	已实现				见对应源码层
 ObjCreateInterface	已实现				见对应源码层
@@ -258,9 +258,9 @@ OnAutoItExitRegister	已实现				见对应源码层
 OnAutoItExitUnRegister	已实现				见对应源码层
 Opt	已实现				见对应源码层
 Ping	已实现				见对应源码层
-PixelChecksum	待实现	仿真	winemu·GUI	P2	像素
-PixelGetColor	待实现	仿真	winemu·GUI	P2	像素
-PixelSearch	待实现	仿真	winemu·GUI	P2	像素
+PixelChecksum	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+PixelGetColor	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+PixelSearch	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 ProcessClose	已实现				见对应源码层
 ProcessExists	已实现				见对应源码层
 ProcessGetStats	已实现				见对应源码层
@@ -268,9 +268,9 @@ ProcessList	已实现				见对应源码层
 ProcessSetPriority	已实现				见对应源码层
 ProcessWait	已实现				见对应源码层
 ProcessWaitClose	已实现				见对应源码层
-ProgressOff	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-ProgressOn	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-ProgressSet	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+ProgressOff	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ProgressOn	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+ProgressSet	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Ptr	已实现				见对应源码层
 Random	已实现				见对应源码层
 RegDelete	已实现				见对应源码层
@@ -283,8 +283,8 @@ Run	已实现				见对应源码层
 RunAs	已实现				见对应源码层
 RunAsWait	已实现				见对应源码层
 RunWait	已实现				见对应源码层
-Send	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
-SendKeepActive	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+Send	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+SendKeepActive	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 SetError	已实现				见对应源码层
 SetExtended	已实现				见对应源码层
 ShellExecute	已实现				见对应源码层
@@ -292,14 +292,14 @@ ShellExecuteWait	已实现				见对应源码层
 Shutdown	已实现				见对应源码层
 Sin	已实现				见对应源码层
 Sleep	已实现				见对应源码层
-SoundPlay	待实现	仿真	winemu	P2	声音 / 光驱
-SoundSetWaveVolume	待实现	仿真	winemu	P2	声音 / 光驱
-SplashImageOn	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-SplashOff	待实现	仿真	winemu·GUI	P0	界面反馈 / 托盘
-SplashTextOn	待实现	仿真	winemu·GUI	P0	界面反馈 / 托盘
+SoundPlay	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+SoundSetWaveVolume	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+SplashImageOn	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+SplashOff	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+SplashTextOn	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 Sqrt	已实现				见对应源码层
 SRandom	已实现				见对应源码层
-StatusbarGetText	待实现	仿真	winemu·GUI	P2	窗口管理
+StatusbarGetText	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 StderrRead	已实现				见对应源码层
 StdinWrite	已实现				见对应源码层
 StdioClose	已实现				见对应源码层
@@ -349,24 +349,24 @@ TCPShutdown	已实现				见对应源码层
 TCPStartup	已实现				见对应源码层
 TimerDiff	已实现				见对应源码层
 TimerInit	已实现				见对应源码层
-ToolTip	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayCreateItem	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayCreateMenu	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayGetMsg	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayItemDelete	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayItemGetHandle	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayItemGetState	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayItemGetText	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayItemSetOnEvent	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayItemSetState	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayItemSetText	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TraySetClick	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TraySetIcon	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TraySetOnEvent	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TraySetPauseIcon	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TraySetState	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TraySetToolTip	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
-TrayTip	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+ToolTip	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayCreateItem	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayCreateMenu	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayGetMsg	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayItemDelete	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayItemGetHandle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayItemGetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayItemGetText	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayItemSetOnEvent	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayItemSetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayItemSetText	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TraySetClick	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TraySetIcon	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TraySetOnEvent	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TraySetPauseIcon	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TraySetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TraySetToolTip	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+TrayTip	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
 UBound	已实现				见对应源码层
 UDPBind	已实现				见对应源码层
 UDPCloseSocket	已实现				见对应源码层
@@ -376,29 +376,29 @@ UDPSend	已实现				见对应源码层
 UDPShutdown	已实现				见对应源码层
 UDPStartup	已实现				见对应源码层
 VarGetType	已实现				见对应源码层
-WinActivate	待实现	仿真	winemu·GUI	P2	窗口管理
-WinActive	待实现	仿真	winemu·GUI	P2	窗口管理
-WinClose	待实现	仿真	winemu·GUI	P2	窗口管理
-WinExists	待实现	仿真	winemu·GUI	P2	窗口管理
-WinGetCaretPos	待实现	仿真	winemu·GUI	P2	窗口管理
-WinGetClassList	待实现	仿真	winemu·GUI	P2	窗口管理
-WinGetClientSize	待实现	仿真	winemu·GUI	P0	窗口管理
-WinGetHandle	待实现	仿真	winemu·GUI	P2	窗口管理
-WinGetPos	待实现	仿真	winemu·GUI	P0	窗口管理
-WinGetProcess	待实现	仿真	winemu·GUI	P2	窗口管理
-WinGetState	待实现	仿真	winemu·GUI	P0	窗口管理
-WinGetText	待实现	仿真	winemu·GUI	P2	窗口管理
-WinGetTitle	待实现	仿真	winemu·GUI	P2	窗口管理
-WinKill	待实现	仿真	winemu·GUI	P2	窗口管理
-WinList	待实现	仿真	winemu·GUI	P2	窗口管理
-WinMenuSelectItem	待实现	仿真	winemu·GUI	P2	窗口管理
-WinMinimizeAll	待实现	仿真	winemu·GUI	P2	窗口管理
-WinMinimizeAllUndo	待实现	仿真	winemu·GUI	P2	窗口管理
-WinMove	待实现	仿真	winemu·GUI	P0	窗口管理
-WinSetOnTop	待实现	仿真	winemu·GUI	P2	窗口管理
-WinSetState	待实现	仿真	winemu·GUI	P2	窗口管理
-WinSetTitle	待实现	仿真	winemu·GUI	P2	窗口管理
-WinWait	待实现	仿真	winemu·GUI	P2	窗口管理
-WinWaitActive	待实现	仿真	winemu·GUI	P2	窗口管理
-WinWaitClose	待实现	仿真	winemu·GUI	P2	窗口管理
-WinWaitNotActive	待实现	仿真	winemu·GUI	P2	窗口管理
+WinActivate	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinActive	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinClose	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinExists	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetCaretPos	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetClassList	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetClientSize	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetHandle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetPos	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetProcess	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetText	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinGetTitle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinKill	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinList	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinMenuSelectItem	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinMinimizeAll	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinMinimizeAllUndo	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinMove	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinSetOnTop	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinSetState	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinSetTitle	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinWait	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinWaitActive	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinWaitClose	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
+WinWaitNotActive	已实现				winemu/gui（无头）+ autoitv3-gui-egui（可选离屏）
