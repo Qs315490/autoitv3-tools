@@ -172,7 +172,17 @@ impl CipherAlg {
 
 /// `(sbox, inv_sbox)` computed from the field arithmetic rather than
 /// transcribed, so a typo cannot silently corrupt every decryption.
-fn aes_tables() -> ([u8; 256], [u8; 256]) {
+/// The S-box pair, computed once.
+///
+/// Building them costs a full field inversion per entry, and `aes_decrypt_block`
+/// is called once per 16-byte block, so recomputing them per block dominated
+/// every decryption of a real payload.
+fn aes_tables() -> &'static ([u8; 256], [u8; 256]) {
+    static TABLES: std::sync::OnceLock<([u8; 256], [u8; 256])> = std::sync::OnceLock::new();
+    TABLES.get_or_init(compute_aes_tables)
+}
+
+fn compute_aes_tables() -> ([u8; 256], [u8; 256]) {
     fn mul(mut a: u8, mut b: u8) -> u8 {
         let mut p = 0u8;
         for _ in 0..8 {
@@ -280,9 +290,10 @@ fn inv_mix_columns(s: &mut [u8; 16]) {
 }
 
 /// Decrypt one 16-byte block with the inverse cipher.
-fn aes_decrypt_block(key: &[u8], block: &[u8; 16]) -> [u8; 16] {
-    let (_, inv_sbox) = aes_tables();
-    let w = aes_expand_key(key);
+///
+/// The caller passes the expanded key and the S-box, so a multi-block
+/// decryption does not rebuild them for every block.
+fn aes_decrypt_block_with(w: &[[u8; 4]], inv_sbox: &[u8; 256], block: &[u8; 16]) -> [u8; 16] {
     let nr = w.len() / 4 - 1;
     let mut s = *block;
     add_round_key(&mut s, &w, nr);
@@ -298,12 +309,15 @@ fn aes_decrypt_block(key: &[u8], block: &[u8; 16]) -> [u8; 16] {
     for b in s.iter_mut() {
         *b = inv_sbox[*b as usize];
     }
-    add_round_key(&mut s, &w, 0);
+    add_round_key(&mut s, w, 0);
     s
 }
 
+
 /// CBC-decrypt `data`; a trailing partial block is left as it is.
 pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
+    let (_, inv_sbox) = aes_tables();
+    let w = aes_expand_key(key);
     let mut out = Vec::with_capacity(data.len());
     let mut prev: [u8; 16] = [0; 16];
     for (i, b) in iv.iter().take(16).enumerate() {
@@ -316,7 +330,7 @@ pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
         }
         let mut input = [0u8; 16];
         input.copy_from_slice(block);
-        let plain = aes_decrypt_block(key, &input);
+        let plain = aes_decrypt_block_with(&w, inv_sbox, &input);
         for i in 0..16 {
             out.push(plain[i] ^ prev[i]);
         }

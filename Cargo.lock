@@ -70,6 +70,7 @@ dependencies = [
  "autoitv3-format",
  "autoitv3-platform",
  "autoitv3-runtime",
+ "autoitv3-unpack",
  "clap",
 ]
 
@@ -109,6 +110,13 @@ version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
  "regex",
+]
+
+[[package]]
+name = "autoitv3-unpack"
+version = "0.1.0"
+dependencies = [
+ "autoitv3-platform",
 ]
 
 [[package]]

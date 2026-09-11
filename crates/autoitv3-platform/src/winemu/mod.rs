@@ -67,6 +67,7 @@ mod version;
 
 pub use dllstruct::{DllStruct, FieldSelector};
 pub use paths::WindowsPaths;
+pub use crypto::{CipherAlg, HashAlg};
 pub use pe::{PeImage, Resource, Selector};
 pub use registry::{FileRegistry, MemoryRegistry, RegistryData, RegistryStore};
 pub use version::{WindowsArch, WindowsVersion};
