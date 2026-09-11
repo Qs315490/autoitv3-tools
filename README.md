@@ -5,6 +5,10 @@ AutoIt v3 词法/语法分析工具集：产出**带源码位置（Span）的 AS
 
 采用 **Cargo workspace**：AST 作为可复用的库 crate，CLI 作为独立二进制 crate 调用库。
 
+> 内置函数的实现进度与待办看板见 [`docs/任务看板.md`](docs/任务看板.md)，
+> 逐函数状态表见 [`docs/函数实现状态.tsv`](docs/函数实现状态.tsv)
+> （按「通用」与「需要仿真」分类，并按目标样本的调用频次排优先级）。
+
 ## 结构
 
 ```
@@ -39,16 +43,21 @@ autoitv3-tools/
         error.rs      RuntimeError 与控制流信号 Flow
         lib.rs        公共 API
       tests/
-        runtime.rs    解释器/host/debug 接口 + 真实集成测试（32 项）
+        runtime.rs    解释器/host/debug 接口 + 可选样本集成测试（32 项）
         regexp.rs     StringRegExp / StringRegExpReplace（27 项）
     autoitv3-platform/       # 库 crate——平台层（分层：仿真 + 通用 + 系统）
       src/
         lib.rs        Platform 分层组合（CompositePlatform）、host_platform() /
                       host_platform_with() 工厂、runtime_with_platform() 便捷构造
-        portable.rs   通用层：文件/目录 I/O、环境变量、数学、计时器、控制台
-                      —— Linux 与 Windows 都安装
-        linux.rs      系统层（Linux）：/proc 进程查询、OS 标识宏
-        windows.rs    系统层（Windows）：注册表/COM/DllCall/GUI 扩展点（骨架）
+        common/       通用层：文件/目录 I/O、INI、环境变量、数学、计时器、控制台
+                      + 进程执行与网络 —— Linux 与 Windows 都安装
+          mod.rs        CommonPlatform：直接分发 + 委托给下面两个服务
+          proc.rs       Run/RunWait/ProcessWait*/StdoutRead…（std::process）
+          net.rs        Inet*/TCP*/UDP*/Ping/代理设置（std::net）
+        linux/        系统层（Linux）：/proc 进程查询、OS 标识宏
+          mod.rs
+        windows/      系统层（Windows）：注册表/COM/DllCall/GUI 扩展点（骨架）
+          mod.rs
         winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
           mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
           version.rs    WindowsVersion / WindowsArch：选定仿真系统版本（默认 win10）
@@ -126,8 +135,8 @@ autoitv3-tools/
    `Execute("<表达式>")` 的字符串代码**内联进 AST**（见下文「间接调用简化」）。
 3. **函数表解析**（table）：静态执行 `BuildFunctionTable()`（纯数组构建，
    `Local $x[]=[...]` + `MergeArrays` + `Return`）得到 `$fn_table` 函数表
-   （1108 个函数名），把所有 `$fn_table[0x..](args)` 改写为 `FuncName(args)`、
-   `$fn_table[0x..]` 改写为 `FuncName`。在真实脚本上改写约 several thousand 处引用。
+   （上千个函数名），把所有 `$fn_table[0x..](args)` 改写为 `FuncName(args)`、
+   `$fn_table[0x..]` 改写为 `FuncName`。在一次完整运行中改写上万处引用。
    表名按 AutoIt 语义**大小写不敏感**匹配——样本代码里写 `$fn_table`，而
    `Execute` 字符串里写 `$FN_TABLE`。
 4. **标识符重命名**（rename，**默认关闭**）：加 `--rename` 才做，别名自带**作用域**与
@@ -438,10 +447,10 @@ Fold, Simplify  →  再代入一次  →  Table, Rename
 （`--inline-tables` 只影响这一步是否顺带改写表声明本身。）
 
 少了这一步，`Execute` 拼出来的代码里会残留 `$table[i]` 引用 —— 真实脚本上正是如此：
-`For $i = 1 To f084($name_table[175])` 这类 191 处引用（另有 36 处 `$name_table[...]`）会留在输出里。
+`For $i = 1 To f084($name_table[175])` 这类 上百处引用（另有数十处 `$name_table[...]`）会留在输出里。
 
 **表声明内联默认关闭**。所有读取代入之后，`Global Const $t = Build()` 就是这张表最后的
-痕迹；把它换成值能让数据直接可见，但那张表可能很大（真实脚本的字符串表 数千项、约 数十万
+痕迹；把它换成值能让数据直接可见，但那张表可能很大（真实脚本的字符串表数千项、数十万
 字符），而且声明本身记录了"表是怎么建出来的"。所以这是 `--inline-tables`（`evaluate` 与
 `deobfuscate` 都有）显式开启的行为；不开时声明保持 `= Build()`，读取代入照常进行。
 
@@ -449,19 +458,18 @@ Fold, Simplify  →  再代入一次  →  Table, Rename
 Map 没有字面量语法，保持原样）：
 
 ```autoit
-Global Const $g_arr_026 = [4144, "dll", "SQLITE_MISUSE", "XHotSpot", _
-    "none,fast,maximum,recovery,XPRESS,LZX,LZMS", "long", "F6F3D", _
-    "scan_error.png", "apply", ...]
+Global Const $g_arr_026 = [3, "alpha", "beta", "gamma", _
+    "delta", "epsilon", "zeta", ...]
 ```
 
 超过 24 项的数组字面量会按每行 8 项用 AutoIt 的 `_` 续行折行（`WRAP_ARRAY_AFTER`）
-—— 否则开启 `--inline-tables` 后输出里会出现一行 数十万字符。
+—— 否则开启 `--inline-tables` 后输出里会出现一行数十万字符。
 
 **不带 `--evaluate` 时**，`deobfuscate` 无法知道这些表的值（得跑脚本才知道），因此会在
 摘要后提示还有多少个"由函数调用构建的全局"：
 
 ```
-deobfuscated: 17280 folds, ... ; table: 1108 entries, 11557 calls, 127 refs; 0 indirect calls simplified
+deobfuscated: 17280 folds, ... ; table: <T> entries, <C> calls, <R> refs; 0 indirect calls simplified
 note: 7 global(s) are built by a function call at load time; re-run with --evaluate to run the script body and inline their values
 ```
 
@@ -473,7 +481,7 @@ note: 7 global(s) are built by a function call at load time; re-run with --evalu
 
 ```
 $ au3 evaluate sample.au3 -o resolved.au3
-evaluated: 264 globals, 9 tables, 29666 values inlined, 11557 calls resolved
+evaluated: <G> globals, <T> tables, <V> values inlined, <C> calls resolved
 script body did not finish: undefined function: GUICREATE (at 10569:31)
   (that is the platform boundary: this function is not implemented for the current OS)
   values produced before that point were still inlined
@@ -483,16 +491,16 @@ script body did not finish: undefined function: GUICREATE (at 10569:31)
 
 | 引用 | 求值前 | 求值后 |
 | ---- | ------ | ------ |
-| `$fn_table[...]`（函数表） | several thousand | **0** |
-| `$name_table[...]`（名字表） | 817 | **0** |
-| `$string_table[...]`（字符串表） | several thousand | **0** |
-| 输出里残留的表读取 | 171 | **38**（全部是可变 `Global` 数组，本就不该内联） |
+| `$fn_table[...]`（函数表） | 上万 | **0** |
+| `$name_table[...]`（名字表） | 数百 | **0** |
+| `$string_table[...]`（字符串表） | 数万 | **0** |
+| 输出里残留的表读取 | 上百 | **38**（全部是可变 `Global` 数组，本就不该内联） |
 | 表声明 | `Global Const $t = Build()` | 默认保持原样；`--inline-tables` 时 **`= [ ... ]`** |
 | 目录里没有资源镜像 | — | 资源调用返回 `0` + `@error = 1`（诚实边界） |
 
-跑完的规模：`evaluated: 264 globals, 9 tables, 29666 values inlined` →
-`deobfuscated: 17515 folds, 6813 vars, 963 funcs renamed; table: 1108 entries, 73 calls,
-127 refs; 55 indirect calls simplified`。脚本体停在 `GUICreate`：GUI 不在仿真范围内，
+跑完的规模：`evaluated: <G> globals, <T> tables, <V> values inlined` →
+`deobfuscated: <F> folds, <V> vars, <N> funcs renamed; table: <T> entries, <C> calls,
+<R> refs; <S> indirect calls simplified`。脚本体停在 `GUICreate`：GUI 不在仿真范围内，
 但**在那之前求出的表都已经内联**（--evaluate 的设计即如此）。
 
 ## 交互式调试（`au3 debug`）
@@ -632,14 +640,15 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 | 层 | 模块 | 安装于 | 内容 |
 | -- | ---- | ------ | ---- |
 | 仿真 | `winemu/` | **仅非 Windows** | Windows 身份、路径、`DllStruct*`/`DllCall`、注册表、剪贴板、驱动器——让 Windows 目标脚本能在 Linux 上继续跑（见下文「Windows 仿真」） |
-| 通用 | `portable.rs` | **所有**平台 | 文件与目录 I/O、环境变量、数学、计时器、控制台——AutoIt 在各系统上行为一致的部分 |
-| 系统 | `linux.rs` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
-| 系统 | `windows.rs` | 仅 Windows | 注册表、COM、`DllCall`、GUI（**骨架**，后续填充） |
+| 通用 | `common/`（`mod.rs` + `proc.rs` + `net.rs`） | **所有**平台 | 文件与目录 I/O（含 `FileFind*`、`FileGetPos`/`FileSetPos`/`FileSetEnd`、`FileGetEncoding`、`FileReadToArray`、`FileSetTime`）、INI（`Ini*` 7 个）、环境变量、数学、计时器、控制台，以及进程（`Run`/`ProcessWait*`/`StdoutRead`…）与网络（`Inet*`/`TCP*`/`UDP*`/`Ping`）——AutoIt 在各系统上行为一致的部分 |
+| 系统 | `linux/` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
+| 系统 | `windows/` | 仅 Windows | 注册表、COM、`DllCall`、GUI（**骨架**，后续填充） |
 
-`host_platform()` 按目标平台组装成 `CompositePlatform`：Windows 为 `portable+windows`，
-其余平台为 `winemu+portable+linux`（仿真层在最前，因此它的宏会**有意覆盖**通用层的
-同名宏）。逐层查找；通用层在 Windows 上同样生效，系统层只补真正系统相关的部分。
-需要显式指定仿真配置时用 `host_platform_with(WindowsEmulation::new()...)`。
+`host_platform()` 按目标平台组装成 `CompositePlatform`：Windows 为
+`common+windows`，其余平台为 `winemu+common+linux`（仿真层在最前，
+因此它的宏会**有意覆盖**通用层的同名宏）。逐层查找；通用层在 Windows 上同样生效，
+系统层只补真正系统相关的部分。需要显式指定仿真配置时用
+`host_platform_with(WindowsEmulation::new()...)`。
 
 `Platform` **trait** 留在 `autoitv3-runtime`（解释器调用的接缝），**实现**在此 crate。
 依赖方向单向——运行时不知道任何具体操作系统——因此 `Runtime::new()` 默认**没有**平台层，
@@ -651,20 +660,37 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 
 | 类别 | 函数 |
 | ---- | ---- |
-| 文件 | `FileOpen`/`FileClose`/`FileFlush`/`FileRead`/`FileReadLine`/`FileWrite`/`FileWriteLine`（句柄表、模式标志 `$FO_READ`/`APPEND`/`OVERWRITE`/`CREATEPATH`）、`FileExists`、`FileGetSize`、`FileGetTime`、`FileGetAttrib`、`FileGetLongName`/`FileGetShortName`、`FileDelete`、`FileCopy`、`FileMove`、`FileSetAttrib` |
+| 文件 | `FileOpen`/`FileClose`/`FileFlush`/`FileRead`/`FileReadLine`/`FileWrite`/`FileWriteLine`（句柄表、模式标志 `$FO_READ`/`APPEND`/`OVERWRITE`/`CREATEPATH`）、`FileExists`、`FileGetSize`、`FileGetTime`、`FileGetAttrib`、`FileGetLongName`/`FileGetShortName`、`FileGetPos`/`FileSetPos`/`FileSetEnd`、`FileGetEncoding`、`FileReadToArray`、`FileFindFirstFile`/`FileFindNextFile`（搜索句柄与 `FileClose` 共用句柄表）、`FileSetTime`、`FileChangeDir`、`FileDelete`、`FileCopy`、`FileMove`、`FileSetAttrib` |
 | 目录 | `DirCreate`、`DirRemove`、`DirGetSize`、`DirCopy`、`DirMove` |
+| INI | `IniRead`、`IniWrite`、`IniDelete`、`IniReadSection`、`IniReadSectionNames`、`IniRenameSection`、`IniWriteSection`（行式解析，保留注释；写入走 `ExecutionProfile` 门控） |
 | 环境 | `EnvGet`、`EnvSet`、`EnvUpdate` |
 | 数学 | `Round`（半数远离零）、`Sqrt`、`Sin`/`Cos`/`Tan`/`ASin`/`ACos`/`ATan`（**弧度**）、`Log`、`Exp`、`Floor`、`Ceiling`、`Random`、`RandomSeed` |
 | 计时 | `TimerInit`、`TimerDiff` |
 | 控制台 | `ConsoleWrite`、`ConsoleWriteError`、`ConsoleRead` |
 | 宏 | `@TempDir`、`@AutoItPID`、`@AutoItEXE`、`@WorkingDir`/`@ScriptDir`、`@UserName`、`@HomePath`/`@UserProfileDir`、`@AppDataDir`/`@LocalAppDataDir`（XDG）、`@DesktopDir`、`@MyDocumentsDir` |
 
+### 通用层的进程与网络（`common/proc.rs` + `common/net.rs`）
+
+`CommonPlatform` 除了直接分发上面的文件/环境/数学函数，还把进程与网络委托给
+`common/proc.rs`、`common/net.rs` 两个子服务，因此它们是**同一个通用层**的一部分：
+
+| 类别 | 函数 | 说明 |
+| ---- | ---- | ---- |
+| 执行 | `Run`、`RunWait` | `std::process`；`$STDIO_*` 标志决定是否接管标准流 |
+| 标准 IO | `StdoutRead`、`StderrRead`、`StdinWrite`、`StdioClose` | 每条流一个后台读取线程，读操作永不阻塞；进程结束后 join，缓冲完整 |
+| 进程 | `ProcessWait`、`ProcessWaitClose`、`ProcessGetStats`、`ProcessSetPriority` | `ProcessWait*` 超时为**秒**、0 表示无限（与 AutoIt 一致）；`ProcessGetStats` 读 `/proc/<pid>/status` |
+| 网络 | `InetGet`、`InetGetInfo`、`InetGetSize`、`InetRead`、`InetClose`、`Ping`、`FtpSetProxy`、`HttpSetProxy`、`HttpSetUserAgent`、`TCP*`（9）、`UDP*`（7） | `Inet*` 仅明文 `http://`（无 TLS）；`TCP*`/`UDP*` 用 `std::net`，句柄放进各自的套接字表 |
+
+> **执行配置门控**：启动进程、打开套接字、联网下载都属于外部副作用，在
+> `ExecutionProfile::deterministic()` 下一律失败并置 `@error = 1`，也不会阻塞
+> （`ProcessWait*` 立即返回）。只有 `faithful()` 才真正执行。
+
 宏由**平台**提供（解释器只负责 `@error`/`@extended`/`@ScriptLineNumber`/`@NumParams`/
 `@CRLF` 等纯状态与常量），因此 `@TempDir` 之类不再是空串。
 
 ### Windows 仿真（`winemu`）——非 Windows 主机上的 Windows 机器
 
-AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows.rs` 才是正解。但在 Linux/macOS
+AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解。但在 Linux/macOS
 上分析 Windows 样本时，"如实报 `undefined function`"会让求值卡在第一个 Win32 调用上。
 `winemu` 用一台**仿真机器**回答这些调用，让脚本继续跑：
 
@@ -890,7 +916,7 @@ au3 run F --faithful sample.au3   # 真的 Sleep、真的随机、真的写文�
 AU3_SAMPLE=/path/to/obfuscated.au3 cargo test --release
 ```
 
-涉及：`autoitv3-ast`（整份脚本冒烟解析）、`autoitv3-deobf`（全量函数表解析 1108 项；
+涉及：`autoitv3-ast`（整份脚本冒烟解析）、`autoitv3-deobf`（全量函数表解析（上千项）；
 用 `--evaluate` 跑完整脚本体、断言加密表被解出）、`autoitv3-runtime`（用解释器执行
 函数表构建函数）。整份样本的解释执行在 debug 构建下要几分钟，所以配上 `--release`
 （8 秒左右）。脚本旁边的 `.exe` 会被自动发现，不需要额外设环境变量。

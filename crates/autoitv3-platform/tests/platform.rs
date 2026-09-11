@@ -1,22 +1,22 @@
-//! Tests for the platform stack: layering, selection, and the portable
+//! Tests for the platform stack: layering, selection, and the common
 //! function set.
 //!
 //! The emulation layer has its own suite in `tests/winemu.rs`; here it only
 //! matters as the first layer of the stack.
 
 use autoitv3_platform::{
-    host_platform, host_platform_with, CompositePlatform, LinuxPlatform, PortablePlatform,
+    host_platform, host_platform_with, CompositePlatform, LinuxPlatform, CommonPlatform,
     WindowsEmulation,
 };
 use autoitv3_runtime::platform::Platform;
-use autoitv3_runtime::{Runtime, Value};
+use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 
 fn parse(src: &str) -> autoitv3_ast::Program {
     autoitv3_ast::parse(src).expect("parses")
 }
 
 /// A runtime with an explicit, environment-independent platform stack: the
-/// emulation layer (Windows 10 default) over portable over linux.
+/// emulation layer (Windows 10 default) over common over linux.
 fn runtime(prog: &autoitv3_ast::Program) -> Runtime {
     let mut rt = Runtime::with_program(prog);
     rt.set_platform(host_platform_with(WindowsEmulation::new()));
@@ -48,18 +48,18 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn host_platform_stacks_emulation_portable_and_system() {
+fn host_platform_stacks_emulation_common_and_system() {
     // `host_platform()` reads the environment, so assert on shape rather than
     // the exact name; the explicit-stack test below pins the default.
     let p = host_platform();
-    assert!(p.name().contains("portable"), "got {}", p.name());
+    assert!(p.name().contains("common"), "got {}", p.name());
     assert!(p.macro_value("osversion").is_some());
 
     let p = host_platform_with(WindowsEmulation::new());
     let expected = if cfg!(windows) {
-        "portable+windows"
+        "common+windows"
     } else {
-        "winemu+portable+linux"
+        "winemu+common+linux"
     };
     assert_eq!(p.name(), expected);
 }
@@ -68,17 +68,17 @@ fn host_platform_stacks_emulation_portable_and_system() {
 fn the_emulation_layer_can_be_left_out_of_the_stack() {
     let p = host_platform_with(WindowsEmulation::new().disabled());
     let expected = if cfg!(windows) {
-        "portable+windows"
+        "common+windows"
     } else {
-        "portable+linux"
+        "common+linux"
     };
     assert_eq!(p.name(), expected);
 }
 
 #[test]
-fn portable_layer_is_present_on_every_platform() {
-    let p = PortablePlatform::new();
-    assert_eq!(p.name(), "portable");
+fn common_layer_is_present_on_every_platform() {
+    let p = CommonPlatform::new();
+    assert_eq!(p.name(), "common");
     // Pure AutoIt behaviour, not OS behaviour — available everywhere.
     assert!(p.provides("FileOpen"));
     assert!(p.provides("EnvGet"));
@@ -92,7 +92,7 @@ fn linux_layer_only_answers_linux_questions() {
     assert!(p.provides("ProcessExists"));
     // Registry/COM are Windows-only; off Windows they must not be invented.
     assert!(!p.provides("RegRead"));
-    assert!(!p.provides("FileOpen"), "file I/O belongs to the portable layer");
+    assert!(!p.provides("FileOpen"), "file I/O belongs to the common layer");
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn composite_tries_layers_in_order() {
     let composite = CompositePlatform::new(
         "test",
         vec![
-            Box::new(PortablePlatform::new()),
+            Box::new(CommonPlatform::new()),
             Box::new(LinuxPlatform::new()),
         ],
     );
@@ -115,12 +115,12 @@ fn composite_tries_layers_in_order() {
 fn runtime_helper_installs_the_stack() {
     let prog = parse("Func F()\n    Return 1\nEndFunc\n");
     let mut rt = autoitv3_platform::runtime_with_platform(&prog);
-    assert!(rt.platform_name().contains("portable"));
+    assert!(rt.platform_name().contains("common"));
     assert!(matches!(rt.call_function("F", vec![]).unwrap(), Value::Int(1)));
 }
 
 // ---------------------------------------------------------------------------
-// Portable: files
+// Common: files
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -248,7 +248,7 @@ fn file_get_attrib_flags_directories() {
 }
 
 // ---------------------------------------------------------------------------
-// Portable: environment, math, timers, console
+// Common: environment, math, timers, console
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -389,7 +389,7 @@ fn environment_macros_come_from_the_platform() {
     assert_eq!(text("Return @AutoItPID > 0"), "True");
     assert_eq!(text("Return StringLen(@TempDir) > 0"), "True");
     // The emulation layer answers with the Windows layout; with it disabled the
-    // portable layer's host paths are used instead (`with_host_paths` / the
+    // common layer's host paths are used instead (`with_host_paths` / the
     // `--no-win-emu` switch).
     assert!(text("Return @TempDir").ends_with("Temp"));
     assert_eq!(text("Return StringLen(@WorkingDir) > 0"), "True");
@@ -455,7 +455,7 @@ fn composite_forwards_macro_lookups_to_its_layers() {
     let p = host_platform_with(WindowsEmulation::new());
     // Emulation layer.
     assert!(p.macro_value("osversion").is_some());
-    // Portable layer.
+    // Common layer.
     assert!(p.macro_value("tempdir").is_some());
     // Unknown macro stays unknown rather than becoming a made-up value.
     assert!(p.macro_value("nothinglikethis").is_none());
@@ -467,4 +467,308 @@ fn without_a_platform_environment_macros_are_null() {
     let mut rt = Runtime::with_program(&prog);
     // `Null` concatenates as an empty string — no fabricated path.
     assert_eq!(rt.call_function("F", vec![]).unwrap().to_autoit_string(), "x");
+}
+
+// ---------------------------------------------------------------------------
+// File position / encoding / search (common additions)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_get_and_set_pos() {
+    let dir = scratch("pos");
+    let path = dir.join("a.txt");
+    std::fs::write(&path, "abcdef").unwrap();
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 0)
+    Local $p0 = FileGetPos($h)
+    Local $r = FileRead($h, 3)
+    Local $p1 = FileGetPos($h)
+    FileSetPos($h, 0)
+    Local $p2 = FileGetPos($h)
+    FileClose($h)
+    Return $p0 & ":" & $r & ":" & $p1 & ":" & $p2"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "0:abc:3:0");
+}
+
+#[test]
+fn file_set_end_truncates_at_the_cursor() {
+    let dir = scratch("setend");
+    let path = dir.join("b.txt");
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 2)
+    FileWrite($h, "abcdef")
+    FileSetPos($h, 3)
+    FileSetEnd($h)
+    FileClose($h)
+    Local $h2 = FileOpen("{p}", 0)
+    Local $all = FileRead($h2)
+    FileClose($h2)
+    Return $all"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "abc");
+}
+
+#[test]
+fn file_get_encoding_reports_boms_and_utf8() {
+    let dir = scratch("enc");
+    let bom = dir.join("bom.txt");
+    let utf16 = dir.join("u16.txt");
+    let utf8 = dir.join("u8.txt");
+    let ascii = dir.join("ascii.txt");
+    std::fs::write(&bom, [0xEF, 0xBB, 0xBF]).unwrap();
+    std::fs::write(&utf16, [0xFF, 0xFE, b'h', 0]).unwrap();
+    std::fs::write(&utf8, "héllo".as_bytes()).unwrap();
+    std::fs::write(&ascii, b"hello").unwrap();
+    let body = format!(
+        r#"Return FileGetEncoding("{a}") & ":" & FileGetEncoding("{b}") & ":" & FileGetEncoding("{c}") & ":" & FileGetEncoding("{d}")"#,
+        a = bom.display(),
+        b = utf16.display(),
+        c = utf8.display(),
+        d = ascii.display()
+    );
+    assert_eq!(text(&body), "128:32:256:0");
+}
+
+#[test]
+fn file_read_to_array_counts_lines() {
+    let dir = scratch("toarray");
+    let path = dir.join("c.txt");
+    std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+    let body = format!(
+        r#"Local $a = FileReadToArray("{p}")
+    Return $a[0] & ":" & $a[1] & ":" & $a[2] & ":" & $a[3]"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "3:one:two:three");
+}
+
+#[test]
+fn file_find_first_and_next_walk_matches() {
+    let dir = scratch("find");
+    std::fs::write(dir.join("a.txt"), "").unwrap();
+    std::fs::write(dir.join("b.txt"), "").unwrap();
+    std::fs::write(dir.join("c.log"), "").unwrap();
+    let body = format!(
+        r#"Local $h = FileFindFirstFile("{d}/*.txt")
+    If $h = -1 Then Return "none"
+    Local $names = ""
+    While 1
+        Local $f = FileFindNextFile($h)
+        If @error Then ExitLoop
+        $names = $names & $f & ","
+    WEnd
+    FileClose($h)
+    Return $names"#,
+        d = dir.display()
+    );
+    assert_eq!(text(&body), "a.txt,b.txt,");
+}
+
+// ---------------------------------------------------------------------------
+// INI files
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ini_write_read_section_and_delete() {
+    let dir = scratch("ini");
+    let path = dir.join("a.ini");
+    let body = format!(
+        r#"IniWrite("{p}", "Sec", "k1", "v1")
+    IniWrite("{p}", "Sec", "k2", "v2")
+    IniWrite("{p}", "Other", "x", "y")
+    Local $v = IniRead("{p}", "Sec", "k1", "def")
+    Local $missing = IniRead("{p}", "Sec", "nope", "def")
+    Local $s = IniReadSection("{p}", "Sec")
+    Local $names = IniReadSectionNames("{p}")
+    Local $del = IniDelete("{p}", "Sec", "k2")
+    Local $again = IniDelete("{p}", "Sec", "k2")
+    Return $v & "|" & $missing & "|" & $s[0] & "|" & $s[1] & "|" & $names[0] & "|" & $names[1] & "|" & $del & "|" & $again"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "v1|def|2|k1=v1|2|Sec|1|0");
+}
+
+#[test]
+fn ini_write_section_and_rename() {
+    let dir = scratch("inirename");
+    let path = dir.join("b.ini");
+    let body = format!(
+        r#"IniWriteSection("{p}", "A", "k1=v1" & @LF & "k2=v2")
+    IniRenameSection("{p}", "A", "B")
+    Local $n = IniReadSectionNames("{p}")
+    Return $n[0] & ":" & $n[1] & ":" & IniRead("{p}", "B", "k2")"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "1:B:v2");
+}
+
+#[test]
+fn file_set_time_round_trips() {
+    let dir = scratch("settime");
+    let path = dir.join("t.txt");
+    std::fs::write(&path, "x").unwrap();
+    let body = format!(
+        r#"Local $ok = FileSetTime("{p}", "2020/01/02 03:04:05")
+    Return $ok & ":" & FileGetTime("{p}")"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "1:2020/01/02 03:04:05");
+}
+
+// ---------------------------------------------------------------------------
+// Process execution / standard IO (host OS layer)
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn run_captures_stdout() {
+    let body = r#"
+Local $pid = Run("/bin/sh -c ""printf hello""", "", 0, 2)
+If $pid = 0 Then Return "spawn-failed"
+ProcessWaitClose($pid, 5)
+Local $out = ""
+While 1
+    Local $chunk = StdoutRead($pid)
+    If @error Then ExitLoop
+    $out = $out & $chunk
+WEnd
+StdioClose($pid)
+Return $out
+"#;
+    assert_eq!(text(body), "hello");
+}
+
+#[cfg(unix)]
+#[test]
+fn runwait_returns_the_exit_code() {
+    assert_eq!(text(r#"Return RunWait("/bin/sh -c ""exit 3""")"#), "3");
+}
+
+#[cfg(unix)]
+#[test]
+fn process_waits_and_stats() {
+    let body = r#"
+Local $pid = Run("/bin/sh -c ""sleep 1""", "", 0, 0)
+If $pid = 0 Then Return "spawn-failed"
+Local $found = ProcessWait("sh", 5)
+Local $s = ProcessGetStats($pid)
+Local $ok = ($s[0] > 0)
+Local $priority = ProcessSetPriority($pid, 0)
+Local $closed = ProcessWaitClose($pid, 5)
+Return ($found > 0) & ":" & $ok & ":" & $priority & ":" & $closed
+"#;
+    assert_eq!(text(body), "True:True:1:1");
+}
+
+#[test]
+fn deterministic_profile_refuses_to_spawn() {
+    let body = r#"Local $pid = Run("/bin/sh -c ""echo hi""")
+    Return $pid & ":" & @error"#;
+    let prog = parse(&format!("Func F()\n{body}\nEndFunc\n"));
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(WindowsEmulation::new()));
+    rt.set_profile(ExecutionProfile::deterministic());
+    assert_eq!(
+        rt.call_function("F", vec![]).unwrap().to_autoit_string(),
+        "0:1"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Networking (host OS layer)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deterministic_profile_refuses_network() {
+    let body = r#"Local $s = TCPConnect("127.0.0.1", 1)
+    Return $s & ":" & @error"#;
+    let prog = parse(&format!("Func F()\n{body}\nEndFunc\n"));
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(WindowsEmulation::new()));
+    rt.set_profile(ExecutionProfile::deterministic());
+    assert_eq!(
+        rt.call_function("F", vec![]).unwrap().to_autoit_string(),
+        "-1:1"
+    );
+}
+
+#[test]
+fn tcp_name_to_ip_resolves_localhost() {
+    assert_eq!(text(r#"Return TCPNameToIP("localhost")"#), "127.0.0.1");
+}
+
+#[cfg(unix)]
+#[test]
+fn tcp_loopback_round_trip() {
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let body = format!(
+        r#"
+Local $listen = TCPListen("127.0.0.1", {port})
+If $listen = -1 Then Return "no-listen"
+Local $client = TCPConnect("127.0.0.1", {port})
+If $client = -1 Then Return "no-connect"
+Local $server = TCPAccept($listen)
+If $server = -1 Then Return "no-accept"
+TCPSend($client, "ping")
+Local $got = ""
+For $i = 1 To 20
+    Sleep(50)
+    $got = TCPRecv($server, 64)
+    If $got <> "" Then ExitLoop
+Next
+TCPCloseSocket($client)
+TCPCloseSocket($server)
+TCPCloseSocket($listen)
+Return $got
+"#
+    );
+    assert_eq!(text(&body), "ping");
+}
+
+#[cfg(unix)]
+#[test]
+fn udp_loopback_round_trip() {
+    let port = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    let body = format!(
+        r#"
+Local $server = UDPOpen("", 0)
+UDPBind($server, "127.0.0.1", {port})
+Local $client = UDPOpen("127.0.0.1", {port})
+UDPSend($client, "ping")
+Local $got = ""
+For $i = 1 To 20
+    Sleep(50)
+    $got = UDPRecv($server, 64)
+    If $got <> "" Then ExitLoop
+Next
+UDPCloseSocket($client)
+UDPCloseSocket($server)
+Return $got
+"#
+    );
+    assert_eq!(text(&body), "ping");
+}
+
+#[test]
+fn inet_read_rejects_https_without_tls() {
+    // `https://` needs TLS, which this layer intentionally does not provide;
+    // the failure is immediate and touches no network.
+    let body = r#"Local $d = InetRead("https://example.com")
+    Return BinaryLen($d) & ":" & @error"#;
+    assert_eq!(text(body), "0:1");
+}
+
+#[test]
+fn proxy_and_user_agent_settings_are_accepted() {
+    let body = r#"Return HttpSetUserAgent("test") & HttpSetProxy(2, "http://127.0.0.1:1") & FtpSetProxy(2, "http://127.0.0.1:1")"#;
+    assert_eq!(text(body), "111");
 }

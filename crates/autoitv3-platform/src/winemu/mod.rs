@@ -332,7 +332,7 @@ pub struct WindowsEmulation {
     arch: WindowsArch,
     /// The emulated directory layout.
     paths: WindowsPaths,
-    /// Whether the directory macros shadow the portable (host) ones.
+    /// Whether the directory macros shadow the common (host) ones.
     emulate_paths: bool,
     registry: Box<dyn RegistryStore>,
     /// Which store `registry` is, so the seed can be rebuilt on a version
@@ -517,7 +517,7 @@ impl WindowsEmulation {
         self
     }
 
-    /// Let the portable layer answer the directory macros, so `@TempDir` and
+    /// Let the common layer answer the directory macros, so `@TempDir` and
     /// friends stay usable host paths. The Windows-only ones (`@WindowsDir`,
     /// `@SystemDir`, ...) are still emulated.
     pub fn with_host_paths(mut self) -> Self {

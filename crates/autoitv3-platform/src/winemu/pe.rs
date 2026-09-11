@@ -1,6 +1,6 @@
 //! Reading a PE file's resource directory.
 //!
-//! AutoIt scripts ship their payload as an embedded resource — the reference
+//! Obfuscated AutoIt scripts ship their payload as an embedded resource — a
 //! sample's build script has lines like
 //!
 //! ```text

@@ -3,7 +3,7 @@
 //!
 //! # Why this crate exists
 //!
-//! Deobfuscating the script payload needs *execution*: the obfuscator stores
+//! Deobfuscating a script's payload needs *execution*: the obfuscator stores
 //! its function table and its string table in arrays that are built by running
 //! generated helper functions. Pure AST rewriting can resolve the function
 //! table (it is built entirely from array literals), but the string table

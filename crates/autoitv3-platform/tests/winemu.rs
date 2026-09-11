@@ -157,7 +157,7 @@ fn per_user_macros_share_one_profile() {
 }
 
 #[test]
-fn with_host_paths_lets_the_portable_layer_answer() {
+fn with_host_paths_lets_the_common_layer_answer() {
     let body = "Return StringRight(@TempDir, 1)";
     let emu = win10().with_host_paths();
     assert_eq!(
@@ -611,7 +611,11 @@ fn a_disabled_layer_leaves_windows_calls_undefined() {
     // The macros fall through to the host, which reports Linux.
     assert_eq!(
         rt.platform_name(),
-        if cfg!(windows) { "portable+windows" } else { "portable+linux" }
+        if cfg!(windows) {
+            "common+windows"
+        } else {
+            "common+linux"
+        }
     );
 }
 

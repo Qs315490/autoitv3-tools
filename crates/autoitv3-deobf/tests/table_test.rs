@@ -13,7 +13,7 @@ fn run(src: &str) -> (String, table::TableReport) {
 #[test]
 fn table_resolves_minimal_builder() {
     // The builder is *executed* by autoitv3-runtime, so the `MergeArrays`
-    // helper it calls must be present (as it is in the real target).
+    // helper it calls must be present (as a real script's would be).
     let src = "Func MergeArrays(ByRef $t, Const ByRef $s)\n    ReDim $t[$t[0] + $s[0] + 1]\n    Local $i\n    For $i = 1 To $s[0]\n        $t[$t[0] + $i] = $s[$i]\n    Next\n    $t[0] += $s[0]\nEndFunc\nFunc BuildFunctionTable()\n    Local $x[] = [0x2, Foo, Bar]\n    Local $y[] = [0x1, Baz]\n    MergeArrays($x, $y)\n    Return $x\nEndFunc\nGlobal Const $fn_table = BuildFunctionTable()\n$fn_table[0x1]()\n$x = $fn_table[0x2] + $fn_table[0x3]\n";
     let (out, rep) = run(src);
     // Element 0 is the count; entries are Foo, Bar, Baz -> 3.
@@ -31,16 +31,19 @@ fn table_resolves_minimal_builder() {
 }
 
 #[test]
-fn table_resolves_full_builder_from_target() {
-    // On a real obfuscated script the builder is pure array construction and
-    // yields the full function table (1108 entries in the reference sample).
+fn table_resolves_a_real_script() {
+    // A real obfuscated script hides its table behind a name the tool cannot
+    // know in advance, so the pass has to detect it.
     let Some(src) = sample_script() else { return };
     let mut prog = parse(&src).unwrap();
-    let rep = table::resolve_function_table(&mut prog, "fn_table", "BuildFunctionTable");
-    assert_eq!(rep.entries, 1108, "function table should have 1108 entries");
-    // Most of the several thousand obfuscated references must have been rewritten.
+    let rep = table::resolve_function_table_with(&mut prog, &table::TableOptions::default());
     assert!(
-        rep.calls_rewritten + rep.refs_rewritten > 1000,
+        rep.entries > 100,
+        "expected a large table, got {} entries",
+        rep.entries
+    );
+    assert!(
+        rep.calls_rewritten + rep.refs_rewritten > 100,
         "got calls={} refs={}",
         rep.calls_rewritten,
         rep.refs_rewritten

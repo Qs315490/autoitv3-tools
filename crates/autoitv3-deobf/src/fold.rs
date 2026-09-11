@@ -2,7 +2,7 @@
 //!
 //! Walks the AST and replaces expressions that can be fully evaluated at
 //! analysis time with their constant value. This is the core of undoing the
-//! arithmetic/string obfuscation seen in real AutoIt scripts (e.g. building
+//! arithmetic/string obfuscation seen in obfuscated AutoIt scripts (e.g. building
 //! strings by concatenating many indexed constants).
 //!
 //! Only *pure* constant subexpressions are folded; anything involving a

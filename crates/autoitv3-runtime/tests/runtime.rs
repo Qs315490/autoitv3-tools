@@ -237,6 +237,143 @@ EndFunc
 }
 
 #[test]
+fn string_predicate_builtins() {
+    let src = r#"
+Func A($s)
+    Return StringIsASCII($s)
+EndFunc
+Func L($s)
+    Return StringIsLower($s)
+EndFunc
+Func U($s)
+    Return StringIsUpper($s)
+EndFunc
+Func X($s)
+    Return StringIsXDigit($s)
+EndFunc
+Func C($s)
+    Return StringStripCR($s)
+EndFunc
+"#;
+    let yes = |f: &str, s: &str| matches!(call(src, f, vec![Value::str(s)]), Value::Bool(true));
+    assert!(yes("A", "abc"));
+    assert!(!yes("A", "aé"));
+    assert!(yes("L", "abc"));
+    assert!(!yes("L", "aBc"));
+    assert!(!yes("L", "123"));
+    assert!(yes("U", "ABC"));
+    assert!(!yes("U", "123"));
+    assert!(yes("X", "1aF"));
+    assert!(!yes("X", "1g"));
+    assert_eq!(
+        call(src, "C", vec![Value::str("a\r\nb\r")]).to_autoit_string(),
+        "a\nb"
+    );
+}
+
+#[test]
+fn chrw_and_ascii_array_roundtrip() {
+    let src = r#"
+Func C($n)
+    Return ChrW($n)
+EndFunc
+Func T($s)
+    Return StringToASCIIArray($s)
+EndFunc
+Func B($a)
+    Return StringFromASCIIArray($a)
+EndFunc
+"#;
+    assert_eq!(
+        call(src, "C", vec![Value::Int(0x4E2D)]).to_autoit_string(),
+        "中"
+    );
+    let arr = call(src, "T", vec![Value::str("Hi")]);
+    match &arr {
+        Value::Array(a) => {
+            let a = a.borrow();
+            assert!(matches!(a[0], Value::Int(72)));
+            assert!(matches!(a[1], Value::Int(105)));
+        }
+        other => panic!("expected array, got {other:?}"),
+    }
+    let back = call(
+        src,
+        "B",
+        vec![Value::array(vec![Value::Int(72), Value::Int(105)])],
+    );
+    assert_eq!(back.to_autoit_string(), "Hi");
+}
+
+#[test]
+fn bitrotate_wraps_and_sign_extends() {
+    let src = "Func F()\n    Return BitRotate(1, 1)\nEndFunc\nFunc G()\n    Return BitRotate(1, -1)\nEndFunc\nFunc H()\n    Return BitRotate(0x81, 1, 8)\nEndFunc\n";
+    assert!(matches!(call(src, "F", vec![]), Value::Int(2)));
+    assert!(matches!(call(src, "G", vec![]), Value::Int(-2147483648)));
+    assert!(matches!(call(src, "H", vec![]), Value::Int(3)));
+}
+
+#[test]
+fn isbool_and_isfloat() {
+    let src = "Func B($v)\n    Return IsBool($v)\nEndFunc\nFunc F($v)\n    Return IsFloat($v)\nEndFunc\n";
+    assert!(matches!(
+        call(src, "B", vec![Value::Bool(true)]),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        call(src, "B", vec![Value::Int(1)]),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        call(src, "F", vec![Value::Float(1.5)]),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        call(src, "F", vec![Value::Float(1.0)]),
+        Value::Bool(false)
+    ));
+    assert!(matches!(
+        call(src, "F", vec![Value::str("2.25")]),
+        Value::Bool(true)
+    ));
+}
+
+#[test]
+fn mapappend_uses_the_next_integer_key() {
+    let src = r#"
+Func F()
+    Local $m[]
+    $m[1] = "a"
+    Local $k = MapAppend($m, "b")
+    Return $k & ":" & $m[2] & ":" & $m[1]
+EndFunc
+"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "2:b:a");
+}
+
+#[test]
+fn assign_eval_and_isdeclared() {
+    let src = r#"
+Func F()
+    Assign("x", 41)
+    Return Eval("x") + 1
+EndFunc
+Func D()
+    Local $a = 1
+    Return IsDeclared("a") & IsDeclared("nope") & IsDeclared("1bad")
+EndFunc
+"#;
+    assert!(matches!(call(src, "F", vec![]), Value::Int(42)));
+    assert_eq!(call(src, "D", vec![]).to_autoit_string(), "10-1");
+}
+
+#[test]
+fn funcname_reports_the_function_name() {
+    let src = "Func Target()\n    Return 1\nEndFunc\nFunc F()\n    Return FuncName(Target)\nEndFunc\n";
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "Target");
+}
+
+#[test]
 fn ubound_and_array_literal() {
     let src = r#"
 Func F()
@@ -428,22 +565,29 @@ fn user_function_shadows_builtin() {
 
 #[test]
 fn evaluates_real_function_table_builder() {
-    // `BuildFunctionTable()` builds the script's function table from array
-    // literals merged by `MergeArrays` — the exact workload the deobfuscator
-    // depends on.
+    // The function-table builder is pure array construction merged by
+    // `MergeArrays` — the exact workload the deobfuscator depends on. Which
+    // function it is differs per script, so call the script's own functions and
+    // keep the one that returns the table-shaped array.
     let Some(src) = sample_script() else { return };
     let prog = autoit3_parse(&src);
     let mut rt = Runtime::with_program(&prog);
-    let v = rt
-        .call_function("BuildFunctionTable", vec![])
-        .expect("builder should evaluate");
-    let Value::Array(a) = v else { panic!("builder did not return an array") };
-    let a = a.borrow();
-    // Element 0 is the count; the real table has 1108 function names.
-    assert_eq!(a[0].to_int(), 1108, "table count");
-    assert_eq!(a.len(), 1109, "count + entries");
-    // A couple of slots resolve to real AutoIt builtins.
-    let all: Vec<String> = a.iter().map(|v| v.to_autoit_string()).collect();
+    rt.set_profile(autoitv3_runtime::ExecutionProfile::deterministic());
+    let mut table = None;
+    for name in rt.function_names() {
+        if let Ok(Value::Array(a)) = rt.call_function(&name, vec![]) {
+            let a = a.borrow();
+            // Element 0 is the count; a table is count + many names.
+            if a.len() > 100 && a[0].to_int() as usize == a.len() - 1 {
+                table = Some(a.iter().map(|v| v.to_autoit_string()).collect::<Vec<_>>());
+                break;
+            }
+        }
+    }
+    let Some(all) = table else {
+        panic!("no function-table-shaped builder found in the sample");
+    };
+    // Some slots hold real AutoIt builtins.
     assert!(all.iter().any(|n| n == "STRING"), "expected STRING in table");
     assert!(all.iter().any(|n| n == "BITAND"), "expected BITAND in table");
 }
