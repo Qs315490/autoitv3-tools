@@ -64,6 +64,18 @@ pub struct Tables {
     values: HashMap<String, Value>,
 }
 
+/// What a substitution sweep is allowed to rewrite.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SubstituteOptions {
+    /// Rewrite `Global Const $t = Build()` into the table's literal value.
+    ///
+    /// **Off by default.** The declaration is the only record of *how* the
+    /// script built the table, and for a runtime table the literal is a lot of
+    /// output — the reference sample's string table alone is several thousand entries.
+    /// Turn it on when the goal is to read the data rather than the code.
+    pub inline_declarations: bool,
+}
+
 /// What one substitution sweep replaced.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SubstitutionCount {
@@ -98,12 +110,22 @@ impl Tables {
     /// produced. Safe to call repeatedly; later sweeps pick up code an earlier
     /// pass spliced in.
     pub fn substitute(&self, prog: &mut Program) -> SubstitutionCount {
+        self.substitute_with(prog, SubstituteOptions::default())
+    }
+
+    /// As [`Tables::substitute`], with explicit [`SubstituteOptions`].
+    pub fn substitute_with(
+        &self,
+        prog: &mut Program,
+        options: SubstituteOptions,
+    ) -> SubstitutionCount {
         // Bare variable reads are only safe to inline when the script itself
         // promises the value never changes.
         let consts = const_globals(prog);
         let mut ctx = SubstituteCtx {
             tables: &self.values,
             consts: &consts,
+            inline_declarations: options.inline_declarations,
             substitutions: 0,
             calls_resolved: 0,
             declarations_resolved: 0,
@@ -141,6 +163,16 @@ pub fn evaluate_with_platform(
     profile: ExecutionProfile,
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
 ) -> EvaluateReport {
+    evaluate_with_options(prog, profile, platform, SubstituteOptions::default())
+}
+
+/// [`evaluate_with_platform`] with explicit [`SubstituteOptions`].
+pub fn evaluate_with_options(
+    prog: &mut Program,
+    profile: ExecutionProfile,
+    platform: Box<dyn autoitv3_runtime::platform::Platform>,
+    options: SubstituteOptions,
+) -> EvaluateReport {
     let mut report = EvaluateReport::default();
 
     // Run the script body. A failure part-way through is expected and useful:
@@ -170,7 +202,7 @@ pub fn evaluate_with_platform(
     }
     report.values = Tables { values };
 
-    let first = report.values.substitute(prog);
+    let first = report.values.substitute_with(prog, options);
     report.substitutions = first.substitutions;
     report.calls_resolved = first.calls_resolved;
     report.declarations_resolved = first.declarations_resolved;
@@ -185,6 +217,8 @@ struct SubstituteCtx<'a> {
     tables: &'a HashMap<String, Value>,
     /// Names declared `Global Const`, which a bare read may be replaced by.
     consts: &'a HashSet<String>,
+    /// Whether a `Global Const` table may be replaced by its value.
+    inline_declarations: bool,
     substitutions: usize,
     calls_resolved: usize,
     declarations_resolved: usize,
@@ -429,6 +463,9 @@ impl SubstituteCtx<'_> {
     /// left of it. Leaving `$t = SomeBuilder()` there would hide the table's
     /// content behind a function the reader has to trace.
     fn inline_global_table(&mut self, s: &mut Stmt) {
+        if !self.inline_declarations {
+            return;
+        }
         let StmtKind::VarDecl(v) = &mut s.kind else {
             return;
         };

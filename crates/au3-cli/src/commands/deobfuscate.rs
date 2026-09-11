@@ -11,7 +11,9 @@
 //! Renaming is optional (`--no-rename`): with it off, only the structure is
 //! rewritten and every original variable/function name is preserved.
 
-use autoitv3_deobf::{evaluate_with_platform, DeobfReport, Deobfuscator};
+use autoitv3_deobf::{
+    evaluate_with_options, DeobfReport, Deobfuscator, SubstituteOptions,
+};
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
@@ -40,6 +42,11 @@ pub struct DeobfuscateArgs {
     #[arg(long)]
     pub no_rename: bool,
 
+    /// With --evaluate, also rewrite `Global Const $t = Build()` into the
+    /// table's literal value (otherwise the declaration keeps its call)
+    #[arg(long)]
+    pub inline_tables: bool,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 
@@ -54,12 +61,16 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     // Runtime evaluation first: it recovers values the syntactic passes cannot
     // see (the obfuscator's string table), and the later passes then fold and
     // rename the result.
+    let options = SubstituteOptions {
+        inline_declarations: args.inline_tables,
+    };
     let mut tables = None;
     if args.evaluate {
-        let outcome = evaluate_with_platform(
+        let outcome = evaluate_with_options(
             &mut prog,
             super::evaluate::profile(args.faithful),
             args.win.platform()?,
+            options,
         );
         super::evaluate::report(&outcome);
         tables = Some(outcome.values);
@@ -79,7 +90,7 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         Some(values) => {
             let split = deobf.after_simplify();
             deobf.run_passes(&mut prog, &deobf.passes[..split], &mut report);
-            let again = values.substitute(&mut prog);
+            let again = values.substitute_with(&mut prog, options);
             if again.total() > 0 {
                 eprintln!(
                     "  {} more values inlined in code the simplifier spliced",

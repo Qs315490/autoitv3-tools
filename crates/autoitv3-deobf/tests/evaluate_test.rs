@@ -6,7 +6,7 @@
 
 use autoitv3_ast::ast::ExprKind;
 use autoitv3_ast::parse;
-use autoitv3_deobf::evaluate;
+use autoitv3_deobf::{evaluate, evaluate_with_options, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
 use autoitv3_runtime::ExecutionProfile;
 
@@ -18,9 +18,29 @@ fn render(prog: &autoitv3_ast::Program) -> String {
 
 /// Build a table, reference it, and inline the result.
 fn run(src: &str) -> (String, autoitv3_deobf::EvaluateReport) {
+    run_with(src, SubstituteOptions::default())
+}
+
+/// As [`run`], with explicit substitution options.
+fn run_with(
+    src: &str,
+    options: SubstituteOptions,
+) -> (String, autoitv3_deobf::EvaluateReport) {
     let mut prog = parse(src).expect("parses");
-    let report = evaluate(&mut prog, ExecutionProfile::deterministic());
+    let report = evaluate_with_options(
+        &mut prog,
+        ExecutionProfile::deterministic(),
+        autoitv3_platform::host_platform(),
+        options,
+    );
     (render(&prog), report)
+}
+
+/// Options that also rewrite a table declaration into its literal value.
+fn inline_declarations() -> SubstituteOptions {
+    SubstituteOptions {
+        inline_declarations: true,
+    }
 }
 
 #[test]
@@ -406,7 +426,27 @@ EndFunc
 }
 
 #[test]
-fn a_global_table_declaration_is_replaced_by_its_value() {
+fn table_declarations_are_left_as_calls_by_default() {
+    // The declaration records *how* the table was built, and a runtime table's
+    // literal is a lot of output, so rewriting it is opt-in.
+    let src = r#"
+Global Const $table = Build()
+Func Build()
+    Local $t[] = [3, "alpha", "beta"]
+    Return $t
+EndFunc
+Func F()
+    Return $table[1]
+EndFunc
+"#;
+    let (out, report) = run(src);
+    assert_eq!(report.declarations_resolved, 0);
+    assert!(out.contains("Build()"), "declaration should stay: {out}");
+    assert!(out.contains("\"alpha\""), "reads should still inline: {out}");
+}
+
+#[test]
+fn a_global_table_declaration_is_replaced_by_its_value_when_asked() {
     // After every read has been substituted the declaration is the last trace
     // of the table; leaving `$t = Build()` there hides the data behind a
     // function the reader has to trace.
@@ -420,7 +460,7 @@ Func F()
     Return $table[1]
 EndFunc
 "#;
-    let (out, report) = run(src);
+    let (out, report) = run_with(src, inline_declarations());
     assert_eq!(report.declarations_resolved, 1);
     let decl = out
         .lines()
@@ -446,7 +486,7 @@ Func F()
     Return MapExists($table, "a")
 EndFunc
 "#;
-    let (out, report) = run(src);
+    let (out, report) = run_with(src, inline_declarations());
     assert_eq!(report.declarations_resolved, 0);
     assert!(out.contains("Build()"), "declaration should be untouched: {out}");
 }
