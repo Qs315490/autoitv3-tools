@@ -87,7 +87,11 @@ impl Crc32 {
         for &b in bytes {
             let mut c = self.value ^ u32::from(b);
             for _ in 0..8 {
-                c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    (c >> 1) ^ 0xEDB8_8320
+                } else {
+                    c >> 1
+                };
             }
             self.value = c;
         }

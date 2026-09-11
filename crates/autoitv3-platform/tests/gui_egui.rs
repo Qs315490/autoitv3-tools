@@ -1,0 +1,111 @@
+//! End-to-end: an AutoIt script's controls reach the egui renderer.
+//!
+//! Only built with the `gui-egui` feature. The emulation owns its backend, so
+//! the test wraps [`EguiBackend`] in a shared handle it can still snapshot after
+//! the run.
+
+#![cfg(all(not(windows), feature = "gui-egui"))]
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use autoitv3_gui::{Control, GuiBackend, GuiImage, Window};
+use autoitv3_gui_egui::EguiBackend;
+use autoitv3_platform::host_platform_with;
+use autoitv3_platform::winemu::WindowsEmulation;
+use autoitv3_runtime::Runtime;
+
+/// A backend the test keeps a handle to after handing it to the emulation.
+#[derive(Clone)]
+struct Shared(Rc<RefCell<EguiBackend>>);
+
+impl GuiBackend for Shared {
+    fn on_window(&mut self, window: &Window) {
+        self.0.borrow_mut().on_window(window);
+    }
+    fn on_window_removed(&mut self, handle: i64) {
+        self.0.borrow_mut().on_window_removed(handle);
+    }
+    fn on_control(&mut self, control: &Control) {
+        self.0.borrow_mut().on_control(control);
+    }
+    fn on_control_removed(&mut self, id: i64) {
+        self.0.borrow_mut().on_control_removed(id);
+    }
+    fn present(&mut self) {
+        self.0.borrow_mut().present();
+    }
+    fn snapshot(&mut self) -> Option<GuiImage> {
+        self.0.borrow_mut().snapshot()
+    }
+}
+
+/// One call per control kind the emulation implements, plus a menu.
+const SCRIPT: &str = r#"
+GUICreate("Full control set", 600, 960)
+GUICtrlCreateLabel("Label", 10, 10, 200, 20)
+$button = GUICtrlCreateButton("Button", 10, 40, 200, 28)
+$input = GUICtrlCreateInput("typed", 10, 80, 200, 24)
+$edit = GUICtrlCreateEdit("line", 10, 110, 200, 40)
+$check = GUICtrlCreateCheckbox("Check", 10, 160, 200, 20)
+$radio = GUICtrlCreateRadio("Radio", 10, 190, 200, 20)
+$group = GUICtrlCreateGroup("Group", 10, 220, 200, 40)
+$list = GUICtrlCreateList("", 10, 270, 200, 60)
+GUICtrlSetData($list, "one|two|three")
+$combo = GUICtrlCreateCombo("", 10, 340, 200, 100)
+GUICtrlSetData($combo, "alpha|beta")
+$listview = GUICtrlCreateListView("name|value", 10, 380, 240, 60)
+GUICtrlCreateListViewItem("a|1", $listview)
+$treeview = GUICtrlCreateTreeView(10, 450, 200, 60)
+GUICtrlCreateTreeViewItem("root", $treeview)
+$tab = GUICtrlCreateTab(10, 520, 240, 40)
+GUICtrlCreateTabItem("First")
+GUICtrlCreateMenu("File")
+GUICtrlCreateMenuItem("Open")
+GUICtrlCreateContextMenu()
+GUICtrlCreatePic("splash.bmp", 10, 570, 60, 40)
+GUICtrlCreateIcon("icon.ico", 80, 570, 32, 32)
+$graphic = GUICtrlCreateGraphic(10, 620, 120, 60)
+GUICtrlSetGraphic($graphic, 1, 0xFF0000)
+GUICtrlSetGraphic($graphic, 0, 0, 0)
+GUICtrlSetGraphic($graphic, 2, 100, 50)
+GUICtrlSetGraphic($graphic, 6, 4, 4, 40, 20)
+GUICtrlSetGraphic($graphic, 7, 30, 10, 20, 20)
+GUICtrlCreateProgress(10, 690, 200, 20)
+$slider = GUICtrlCreateSlider(10, 720, 200, 24)
+$updown = GUICtrlCreateUpdown(10, 750, 60, 24)
+$date = GUICtrlCreateDate("2024/01/02", 10, 780, 200, 24)
+$monthcal = GUICtrlCreateMonthCal("2024/01/01", 230, 690, 200, 160)
+GUICtrlCreateDummy()
+GUICtrlCreateAvi("clip.avi", 0, 10, 820, 60, 30)
+GUICtrlCreateObj(0, 80, 820, 60, 30)
+GUISetState()
+"#;
+
+#[test]
+fn a_scripts_whole_control_set_reaches_the_renderer() {
+    let backend = Shared(Rc::new(RefCell::new(
+        EguiBackend::new().with_size(640, 1020),
+    )));
+    let emulation = WindowsEmulation::new().with_gui_backend(Box::new(backend.clone()));
+
+    let program = autoitv3_ast::parse(SCRIPT).expect("script parses");
+    let mut runtime = Runtime::with_program(&program);
+    runtime.set_platform(host_platform_with(emulation));
+    runtime.run_script().expect("script runs");
+
+    let mut backend = backend.0.borrow_mut();
+    assert_eq!(backend.window_count(), 1, "one window reached the renderer");
+    assert_eq!(
+        backend.control_count(),
+        29,
+        "every control kind reached the renderer"
+    );
+
+    let image = backend.snapshot().expect("renders");
+    let painted = image.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+    assert!(
+        painted > 100_000,
+        "the rendered window is nearly empty: {painted} opaque px"
+    );
+}

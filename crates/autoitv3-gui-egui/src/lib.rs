@@ -19,14 +19,17 @@
 //! The `window` feature adds [`LiveBackend`]: a real eframe window whose button
 //! clicks and text edits are fed back into `GUIGetMsg`/`GUICtrlRead`.
 
+#[cfg(feature = "window")]
+mod live;
 #[cfg(feature = "egui")]
 mod png;
 #[cfg(feature = "egui")]
 mod raster;
 #[cfg(feature = "egui")]
 mod render;
-#[cfg(feature = "window")]
-mod live;
+
+#[cfg(feature = "egui")]
+mod widgets;
 
 #[cfg(feature = "window")]
 pub use live::LiveBackend;
@@ -36,3 +39,5 @@ pub use png::write_png;
 pub use raster::rasterize;
 #[cfg(feature = "egui")]
 pub use render::EguiBackend;
+#[cfg(feature = "egui")]
+pub use widgets::{draw_control, draw_window_body, Action, Interaction};

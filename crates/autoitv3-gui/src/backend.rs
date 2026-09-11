@@ -46,6 +46,8 @@ pub enum GuiUpdate {
     SetText { id: i64, text: String },
     /// A Checkbox/Radio was toggled.
     SetChecked { id: i64, checked: bool },
+    /// A list-like control (List/Combo/ListView/TreeView) selected an item.
+    Select { id: i64, index: usize },
 }
 
 /// A renderer/event source for the GUI model.
@@ -115,9 +117,10 @@ impl GuiEvent {
         match self {
             GuiEvent::Close(_) => GUI_EVENT_CLOSE,
             GuiEvent::System(value) => *value,
-            GuiEvent::Control(id) | GuiEvent::Menu(id) | GuiEvent::Tray(id) | GuiEvent::Dialog(id) => {
-                *id
-            }
+            GuiEvent::Control(id)
+            | GuiEvent::Menu(id)
+            | GuiEvent::Tray(id)
+            | GuiEvent::Dialog(id) => *id,
         }
     }
 }

@@ -116,6 +116,8 @@ pub struct Control {
     pub state: i64,
     /// Items for List/Combo/ListView/TreeView.
     pub data: Vec<String>,
+    /// Which item is selected in a list-like control, when the backend knows.
+    pub selection: Option<usize>,
     pub tip: String,
     pub on_event: Option<String>,
     pub bk_color: Option<i64>,
@@ -151,6 +153,7 @@ impl Control {
             exstyle: 0,
             state: 0,
             data: Vec::new(),
+            selection: None,
             tip: String::new(),
             on_event: None,
             bk_color: None,
