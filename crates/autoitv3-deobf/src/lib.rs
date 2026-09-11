@@ -6,7 +6,7 @@
 //! Current passes:
 //! - `fold`    : constant folding — evaluate pure arithmetic/string/concat
 //!   expressions on literals and inline them.
-//! - `table`   : resolve the `$fn_table` function table and rewrite indexed
+//! - `table`   : resolve the function-indirection table and rewrite indexed
 //!   calls/references to real function names.
 //! - `simplify`: turn `Call("Foo", ...)` / `Execute("Foo(...)")` into direct
 //!   calls, so a function named in a string stops hiding the call graph.
@@ -33,3 +33,4 @@ pub use evaluate::{
 pub use orchestrator::{deobfuscate, DeobfReport, Deobfuscator, Pass};
 pub use rename::{rename_program, rename_program_with, RenameOptions, RenameReport};
 pub use simplify::{simplify_program, SimplifyReport};
+pub use table::TableOptions;

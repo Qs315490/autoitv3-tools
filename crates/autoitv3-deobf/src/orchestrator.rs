@@ -5,7 +5,7 @@ use autoitv3_ast::ast::Program;
 use crate::fold;
 use crate::rename;
 use crate::simplify;
-use crate::table;
+use crate::table::{self, TableOptions};
 
 /// Summary of what a deobfuscation run did.
 #[derive(Debug, Clone, Default)]
@@ -46,9 +46,9 @@ impl SimplifyCount {
 /// Counts for the function-table resolution pass.
 #[derive(Debug, Clone, Default)]
 pub struct TableCount {
-    /// Number of `$fn_table[...](...)` indexed calls rewritten to plain calls.
+    /// Number of `$table[i](...)` indexed calls rewritten to plain calls.
     pub calls: usize,
-    /// Number of `$fn_table[...]` indexed references rewritten to identifiers.
+    /// Number of `$table[i]` indexed references rewritten to identifiers.
     pub refs: usize,
     /// Number of function entries resolved in the table.
     pub entries: usize,
@@ -58,7 +58,7 @@ pub struct TableCount {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pass {
     Fold,
-    /// Resolve the obfuscator's function table (`$fn_table[i](...)`).
+    /// Resolve the obfuscator's function table (`$table[i](...)`).
     Table,
     /// Turn `Call("Foo", ...)` / `Execute("Foo(...)")` into direct calls.
     Simplify,
@@ -69,7 +69,7 @@ impl Pass {
     /// Every pass, in pipeline order.
     ///
     /// `Simplify` runs **before** `Table`: splicing an `Execute` string into the
-    /// program is what exposes `$FN_TABLE[1094](...)` as ordinary code, which the
+    /// program is what exposes `$table[0x..](...)` as ordinary code, which the
     /// table pass then resolves to a real name. `Rename` comes last so
     /// everything the earlier passes produced is renamed consistently.
     pub const ALL: &'static [Pass] = &[Pass::Fold, Pass::Simplify, Pass::Table, Pass::Rename];
@@ -94,6 +94,9 @@ pub struct Deobfuscator {
     pub passes: Vec<Pass>,
     /// Which categories the rename pass may touch.
     pub rename: rename::RenameOptions,
+    /// Where the function-table pass looks. Both fields unset means
+    /// auto-detection, so no sample-specific name is baked in.
+    pub table: TableOptions,
 }
 
 impl Default for Deobfuscator {
@@ -110,6 +113,7 @@ impl Deobfuscator {
         Self {
             passes: Pass::DEFAULT.to_vec(),
             rename: rename::RenameOptions::none(),
+            table: TableOptions::default(),
         }
     }
 
@@ -118,12 +122,29 @@ impl Deobfuscator {
         Self {
             passes: Pass::ALL.to_vec(),
             rename: rename::RenameOptions::all(),
+            table: TableOptions::default(),
         }
     }
 
     /// Same pipeline, with the rename pass limited to `options`.
     pub fn with_rename_options(mut self, options: rename::RenameOptions) -> Self {
         self.rename = options;
+        self
+    }
+
+    /// Point the function-table pass at an explicit table variable and builder.
+    ///
+    /// Without this the pass detects them from the program's shape, so the tool
+    /// carries no sample-specific identifier.
+    pub fn with_function_table(
+        mut self,
+        table_var: impl Into<String>,
+        builder_func: impl Into<String>,
+    ) -> Self {
+        self.table = TableOptions {
+            table_var: Some(table_var.into()),
+            builder_func: Some(builder_func.into()),
+        };
         self
     }
 
@@ -144,7 +165,7 @@ impl Deobfuscator {
             match pass {
                 Pass::Fold => report.folds += fold::fold_program(prog),
                 Pass::Table => {
-                    let r = table::resolve_function_table(prog, "fn_table", "BuildFunctionTable");
+                    let r = table::resolve_function_table_with(prog, &self.table);
                     report.table.calls += r.calls_rewritten;
                     report.table.refs += r.refs_rewritten;
                     report.table.entries += r.entries;

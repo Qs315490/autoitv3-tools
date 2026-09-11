@@ -643,9 +643,215 @@ pub(crate) fn call(
             Value::Int(0)
         }
 
+        // ---------------- language-level variables ----------------
+        // `Assign`/`Eval`/`IsDeclared` touch interpreter state by name, so they
+        // live here next to `Execute`/`Call` rather than in a platform layer.
+        "assign" => {
+            let name = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            let value = args.get(1).cloned().unwrap_or(Value::Null);
+            let flag = args.get(2).map(|v| v.to_int()).unwrap_or(0);
+            // 1 = force global, 2 = only assign to an existing variable.
+            if rt.assign_variable(&name, value, flag == 1, flag == 2) {
+                rt.set_error_value(0, 0);
+                Value::Int(1)
+            } else {
+                rt.set_error_value(1, 0);
+                Value::Int(0)
+            }
+        }
+        "eval" => {
+            let name = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            match rt.variable_value(&name) {
+                Some(v) => {
+                    rt.set_error_value(0, 0);
+                    v
+                }
+                None => {
+                    rt.set_error_value(1, 0);
+                    Value::str("")
+                }
+            }
+        }
+        "isdeclared" => {
+            let name = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            Value::Int(if !is_valid_variable_name(&name) {
+                -1
+            } else {
+                i64::from(rt.variable_declared(&name))
+            })
+        }
+        "funcname" => {
+            let resolved = match args.first() {
+                Some(Value::FuncRef(n)) => Some(n.clone()),
+                Some(other) => {
+                    let s = other.to_autoit_string();
+                    rt.has_function(&s).then_some(s)
+                }
+                None => None,
+            };
+            match resolved {
+                Some(n) => {
+                    rt.set_error_value(0, 0);
+                    Value::Str(n)
+                }
+                None => {
+                    rt.set_error_value(1, 0);
+                    Value::str("")
+                }
+            }
+        }
+
+        // ---------------- more conversions / predicates ----------------
+        // `ChrW` is the Unicode counterpart of `Chr`; both map a code point to
+        // a character, and the interpreter works in `char`s throughout.
+        "chrw" => {
+            let c = args.first().map(|v| v.to_int()).unwrap_or(0) as u32;
+            Value::Str(char::from_u32(c).map(|c| c.to_string()).unwrap_or_default())
+        }
+        "isbool" => Value::Bool(matches!(args.first(), Some(Value::Bool(_)))),
+        "isfloat" => {
+            // AutoIt asks whether the value has a *fractional component*, so an
+            // integral float (`1.0`) is not a float in this sense.
+            let frac = match args.first() {
+                Some(Value::Float(f)) => f.fract() != 0.0,
+                Some(Value::Str(s)) => crate::value::parse_number(s)
+                    .map(|f| f.fract() != 0.0)
+                    .unwrap_or(false),
+                _ => false,
+            };
+            Value::Bool(frac)
+        }
+        "bitrotate" => {
+            let value = args.first().map(|v| v.to_int()).unwrap_or(0);
+            let shift = args.get(1).map(|v| v.to_int()).unwrap_or(0);
+            let size = args.get(2).map(|v| v.to_int()).unwrap_or(32).clamp(1, 64) as u32;
+            let mask = if size == 64 { u64::MAX } else { (1u64 << size) - 1 };
+            let v = (value as u64) & mask;
+            let s = (shift.unsigned_abs() % i64::from(size) as u64) as u32;
+            let back = (size - s) % size;
+            let r = if shift >= 0 {
+                ((v << s) | (v >> back)) & mask
+            } else {
+                ((v >> s) | (v << back)) & mask
+            };
+            let negative = size < 64 && (r >> (size - 1)) & 1 == 1;
+            Value::Int(if negative { (r | !mask) as i64 } else { r as i64 })
+        }
+        "mapappend" => {
+            let inserted = match args.first() {
+                Some(Value::Map(m)) => {
+                    let value = args.get(1).cloned().unwrap_or(Value::Null);
+                    let mut map = m.borrow_mut();
+                    // The next unused positive integer key, as AutoIt does.
+                    let mut key = 1i64;
+                    while map.contains_key(&key.to_string()) {
+                        key += 1;
+                    }
+                    map.insert(key.to_string(), value);
+                    Some(key)
+                }
+                _ => None,
+            };
+            match inserted {
+                Some(key) => {
+                    rt.set_error_value(0, 0);
+                    Value::Int(key)
+                }
+                None => {
+                    rt.set_error_value(1, 0);
+                    Value::Int(0)
+                }
+            }
+        }
+
+        // ---------------- more string tests ----------------
+        "stringisascii" => {
+            let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            Value::Bool(!s.is_empty() && s.chars().all(|c| (c as u32) <= 0x7f))
+        }
+        "stringislower" => {
+            let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            Value::Bool(
+                !s.is_empty()
+                    && s.chars().any(|c| c.is_alphabetic())
+                    && s.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_lowercase()),
+            )
+        }
+        "stringisupper" => {
+            let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            Value::Bool(
+                !s.is_empty()
+                    && s.chars().any(|c| c.is_alphabetic())
+                    && s.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase()),
+            )
+        }
+        "stringisxdigit" => {
+            let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()))
+        }
+        "stringstripcr" => Value::Str(
+            args.first()
+                .map(|v| v.to_autoit_string())
+                .unwrap_or_default()
+                .replace('\r', ""),
+        ),
+        "stringfromasciiarray" => {
+            let Some(Value::Array(a)) = args.first() else {
+                rt.set_error_value(1, 0);
+                return Ok(Some(Value::str("")));
+            };
+            let a = a.borrow();
+            let start = args.get(1).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+            let end = args
+                .get(2)
+                .map(|v| v.to_int())
+                .filter(|n| *n >= 0)
+                .map(|n| n as usize)
+                .unwrap_or_else(|| a.len().saturating_sub(1));
+            let mut out = String::new();
+            for v in a.iter().skip(start).take(end.saturating_sub(start) + 1) {
+                if let Some(c) = char::from_u32(v.to_int() as u32) {
+                    out.push(c);
+                }
+            }
+            rt.set_error_value(0, 0);
+            Value::Str(out)
+        }
+        "stringtoasciiarray" => {
+            let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+            let chars: Vec<char> = s.chars().collect();
+            let start = args.get(1).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+            let end = args
+                .get(2)
+                .map(|v| v.to_int())
+                .filter(|n| *n >= 0)
+                .map(|n| n as usize)
+                .unwrap_or_else(|| chars.len().saturating_sub(1));
+            let out: Vec<Value> = chars
+                .iter()
+                .skip(start)
+                .take(end.saturating_sub(start) + 1)
+                .map(|c| Value::Int(*c as i64))
+                .collect();
+            rt.set_error_value(0, 0);
+            Value::array(out)
+        }
+
         _ => return Ok(None),
     };
     Ok(Some(v))
+}
+
+/// Whether `name` (with or without a leading `$`) is a valid AutoIt variable
+/// name. Used by `IsDeclared` (which returns `-1` for a bad name) and `Assign`.
+fn is_valid_variable_name(name: &str) -> bool {
+    let n = name.trim_start_matches('$');
+    let mut chars = n.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Argument as a flag integer.

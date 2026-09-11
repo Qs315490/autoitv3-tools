@@ -704,6 +704,47 @@ impl Runtime {
         }
     }
 
+    /// Value of a variable for `Eval()`/`IsDeclared()`: the current frame
+    /// first, then the globals. `None` means "not declared".
+    pub fn variable_value(&self, name: &str) -> Option<Value> {
+        let key = var_key(name);
+        if let Some(f) = self.frames.last() {
+            if let Some(v) = f.vars.get(&key) {
+                return Some(v.clone());
+            }
+        }
+        self.globals.get(&key).cloned()
+    }
+
+    /// Whether `name` names a variable that currently exists (`IsDeclared`).
+    pub fn variable_declared(&self, name: &str) -> bool {
+        self.variable_value(name).is_some()
+    }
+
+    /// `Assign()`: write `value` to a variable by name.
+    ///
+    /// `global` forces the global scope; `only_if_exists` mirrors
+    /// `Assign($name, $value, 2)`, which refuses to create a new variable.
+    /// Returns `false` for an invalid name or a refused create.
+    pub fn assign_variable(
+        &mut self,
+        name: &str,
+        value: Value,
+        global: bool,
+        only_if_exists: bool,
+    ) -> bool {
+        let key = var_key(name);
+        if !is_valid_var_name(&key) {
+            return false;
+        }
+        if only_if_exists && self.variable_value(&key).is_none() {
+            return false;
+        }
+        let scope = if global { VarScope::Global } else { VarScope::Auto };
+        self.write_var(&key, value, scope, Span::default());
+        true
+    }
+
     // ------------------------------------------------------------------
     // Expressions
     // ------------------------------------------------------------------
@@ -1607,6 +1648,17 @@ fn is_empty_brackets(dims: &[Expr]) -> bool {
 /// Variable names are case-insensitive in AutoIt and stored without the `$`.
 fn var_key(name: &str) -> String {
     name.trim_start_matches('$').to_ascii_lowercase()
+}
+
+/// A variable name is a non-empty identifier: ASCII letters, digits and `_`,
+/// not starting with a digit.
+fn is_valid_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Where a variable write should land.

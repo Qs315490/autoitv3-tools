@@ -6,7 +6,7 @@
 //! * **Deobfuscation** runs untrusted code to *learn* what it computes. It
 //!   wants to be fast, reproducible and harmless: `Sleep(60000)` must not
 //!   actually wait a minute, `Random` must not change the answer between runs,
-//!   and evaluating a script should not touch the disk.
+//!   and evaluating an untrusted script should not touch the disk.
 //! * **A normal runtime** is running the script *for real*. It must behave like
 //!   AutoIt: real delays, real entropy, real side effects.
 //!

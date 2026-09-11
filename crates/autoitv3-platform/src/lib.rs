@@ -7,20 +7,20 @@
 //!
 //! | layer | module | installed on | contents |
 //! |---|---|---|---|
-//! | portable | [`portable`] | **every** platform | file/directory I/O, environment, math, timers, console — the parts AutoIt does the same way everywhere |
+//! | common | [`common`] | **every** platform | file/directory I/O, INI, environment, math, timers, console, **and** process execution (`Run`/`StdoutRead`/…) plus networking (`TCP*`/`UDP*`/`Inet*`) — the parts AutoIt does the same way everywhere |
 //! | emulation | [`winemu`] | non-Windows | Windows-flavoured identity, paths, `DllStruct*`/`DllCall`, registry, clipboard and drives, so a Windows-targeted script keeps running off Windows |
 //! | system | [`linux`] / [`windows`] | one OS each | what genuinely differs: process queries on Linux; registry, COM, `DllCall`, GUI on Windows |
 //!
 //! [`host_platform`] builds the right stack for the target at compile time; a
 //! build only ever compiles its own system layer. The layers are tried in order
-//! by [`CompositePlatform`], so the portable functions are available on Windows
+//! by [`CompositePlatform`], so the common functions are available on Windows
 //! too and a system layer only has to add what is actually system-specific.
 //!
-//! On non-Windows targets the stack is **emulation → portable → linux**: the
+//! On non-Windows targets the stack is **emulation → common → linux**: the
 //! [`WindowsEmulation`] layer answers first (it deliberately shadows the
-//! portable directory macros), and anything it does not know falls through to
+//! common directory macros), and anything it does not know falls through to
 //! the host. Set `AU3_WIN_EMU=0` — or install a disabled [`WindowsEmulation`]
-//! with [`host_platform_with`] — for the plain `portable+linux` stack, where
+//! with [`host_platform_with`] — for the plain `common+linux` stack, where
 //! Windows-only calls stay undefined functions.
 //!
 //! # Layering with the runtime
@@ -35,7 +35,7 @@
 //! ```
 //! let prog = autoitv3_ast::parse("Func F()\n    Return 1\nEndFunc\n").unwrap();
 //! let mut rt = autoitv3_platform::runtime_with_platform(&prog);
-//! assert!(rt.platform_name().contains("portable"));
+//! assert!(rt.platform_name().contains("common"));
 //! ```
 //!
 //! Lookup order for a call the interpreter cannot resolve itself is
@@ -44,14 +44,14 @@
 //! platform-provided function.
 
 pub mod linux;
-pub mod portable;
+pub mod common;
 pub mod winemu;
 
 #[cfg(windows)]
 pub mod windows;
 
 pub use linux::LinuxPlatform;
-pub use portable::PortablePlatform;
+pub use common::CommonPlatform;
 pub use winemu::{
     find_resource_module, has_staged_resources, resource_search_dirs, CipherAlg, FileRegistry,
     HashAlg, MemoryRegistry, PeImage, RegistryData, RegistryStore, Selector, WindowsArch,
@@ -69,7 +69,7 @@ use autoitv3_runtime::Runtime;
 
 /// Several platforms tried in order.
 ///
-/// This is how the portable layer and the system layer compose: the first layer
+/// This is how the common layer and the system layer compose: the first layer
 /// that provides a name answers it, and a layer that does not know the name
 /// says so with `Ok(None)`.
 pub struct CompositePlatform {
@@ -98,7 +98,7 @@ impl Platform for CompositePlatform {
         self.layers.iter().any(|p| p.provides(name))
     }
 
-    /// Ask each layer in order, so the portable layer can answer the
+    /// Ask each layer in order, so the common layer can answer the
     /// environment macros and the system layer the OS-identity ones.
     fn macro_value(&self, name: &str) -> Option<Value> {
         self.layers.iter().find_map(|p| p.macro_value(name))
@@ -121,8 +121,8 @@ impl Platform for CompositePlatform {
 
 /// The platform stack for the operating system this build targets.
 ///
-/// On a Windows build this is `portable+windows`. On every other target it is
-/// `winemu+portable+linux`: the [`WindowsEmulation`] layer is configured from
+/// On a Windows build this is `common+windows`. On every other target it is
+/// `winemu+common+linux`: the [`WindowsEmulation`] layer is configured from
 /// the environment (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`) and
 /// defaults to emulating **Windows 10 x64**.
 ///
@@ -134,7 +134,7 @@ pub fn host_platform() -> Box<dyn Platform> {
 
 /// Like [`host_platform`], but with an explicit [`WindowsEmulation`] layer.
 ///
-/// The layer is installed first so its macros win over the portable ones; a
+/// The layer is installed first so its macros win over the common ones; a
 /// disabled emulation is left out entirely. Windows builds ignore `emulation`
 /// and use the real [`WindowsPlatform`].
 pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
@@ -142,9 +142,9 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
     {
         let _ = emulation;
         Box::new(CompositePlatform::new(
-            "portable+windows",
+            "common+windows",
             vec![
-                Box::new(PortablePlatform::new()),
+                Box::new(CommonPlatform::new()),
                 Box::new(WindowsPlatform::new()),
             ],
         ))
@@ -156,12 +156,12 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
         if emulated {
             layers.push(Box::new(emulation));
         }
-        layers.push(Box::new(PortablePlatform::new()));
+        layers.push(Box::new(CommonPlatform::new()));
         layers.push(Box::new(LinuxPlatform::new()));
         let name = if emulated {
-            "winemu+portable+linux"
+            "winemu+common+linux"
         } else {
-            "portable+linux"
+            "common+linux"
         };
         Box::new(CompositePlatform::new(name, layers))
     }

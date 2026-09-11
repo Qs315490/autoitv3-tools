@@ -1,12 +1,13 @@
 //! Linux platform — the functions that genuinely differ from other systems.
 //!
-//! Everything portable lives in [`crate::portable`] and is installed on every
+//! Everything in the common layer lives in [`crate::common`] and is installed on every
 //! platform. What remains here is what a Linux build has to answer for itself:
 //!
 //! * `ProcessExists`, `ProcessList`, `ProcessClose` — resolved through `/proc`,
 //!   which is the Linux equivalent of the Windows process APIs
-//! * `ProcessWait`/`ProcessWaitClose` are intentionally absent: blocking waits
-//!   need a scheduling model the interpreter does not have yet
+//! * `ProcessWait`/`ProcessWaitClose` and the `Run`/`StdoutRead` family live in
+//!   the cross-platform common layer (`crate::common::proc`), so they are not
+//!   repeated here
 //!
 //! Windows-only areas (registry, COM, `DllCall`, GUI, clipboard) are **not**
 //! stubbed here. AutoIt is a Windows tool; on Linux the honest answer is "not

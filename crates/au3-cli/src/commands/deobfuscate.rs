@@ -2,7 +2,7 @@
 //! pipeline.
 //!
 //! Pipeline (see `autoitv3-deobf`): constant folding, function-table
-//! resolution (`$fn_table[0x..](...)` → `FuncName(...)`) and indirect-call
+//! resolution (`$table[0x..](...)` → `FuncName(...)`) and indirect-call
 //! simplification (`Call("Foo", ...)` → `Foo(...)`). Comments are stripped,
 //! since they are noise once the code has been rewritten. A summary goes to
 //! stderr so stdout stays a clean AutoIt program.
@@ -49,6 +49,16 @@ pub struct DeobfuscateArgs {
     #[arg(long, hide = true)]
     pub no_rename: bool,
 
+    /// Name of the function-table variable (with or without `$`). Detected
+    /// from the program's shape when omitted
+    #[arg(long, value_name = "NAME")]
+    pub table_var: Option<String>,
+
+    /// Name of the function that builds the function table. Detected from the
+    /// program's shape when omitted
+    #[arg(long, value_name = "NAME")]
+    pub table_builder: Option<String>,
+
     /// With --evaluate, also rewrite `Global Const $t = Build()` into the
     /// table's literal value (otherwise the declaration keeps its call)
     #[arg(long)]
@@ -83,11 +93,14 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         tables = Some(outcome.values);
     }
 
-    let deobf = if args.rename {
+    let mut deobf = if args.rename {
         Deobfuscator::renaming()
     } else {
         Deobfuscator::new()
     };
+    if let (Some(table_var), Some(builder)) = (&args.table_var, &args.table_builder) {
+        deobf = deobf.with_function_table(table_var.clone(), builder.clone());
+    }
     let mut report = DeobfReport::default();
     match &tables {
         // The simplifier splices `Execute("...")` strings into the program as
