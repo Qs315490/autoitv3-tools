@@ -34,6 +34,7 @@
 //! | system info | `MemGetStats` (a fixed machine profile, so runs are reproducible) and `IsAdmin` |
 //! | shell | `ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` launch host processes; `Shutdown` only records the request |
 //! | COM | no runtime: `ObjCreate`/`ObjGet`/… fail with `@error = 1` and `IsObj` is `0`, rather than inventing objects |
+//! | GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/dialogs/tray/input over an in-memory widget model ([`gui`]); rendering and events come from a pluggable [`GuiBackend`], headless by default |
 //!
 //! # Choosing the emulated system
 //!
@@ -55,11 +56,13 @@
 //!
 //! # What is *not* emulated
 //!
-//! Real Win32 behaviour. There is no PE loader, no COM, no GUI, no real
-//! `DllCall`: a struct is a `Vec<u8>` this layer owns, an unimplemented
-//! `DllCall` sets `@error = 1` and returns `0` rather than inventing a result,
-//! and the COM builtins fail the same way. Callback pointers are registered but
-//! never invoked by native code.
+//! Real Win32 behaviour. There is no PE loader, no COM, no real `DllCall`: a
+//! struct is a `Vec<u8>` this layer owns, an unimplemented `DllCall` sets
+//! `@error = 1` and returns `0` rather than inventing a result, and the COM
+//! builtins fail the same way. Callback pointers are registered but never
+//! invoked by native code, and the GUI is **emulated, not rendered**: the
+//! default [`GuiBackend`] draws nothing, so nothing appears on screen until a
+//! real backend (the optional egui crate) is installed.
 //! That keeps a script's own error handling in charge — and when you would
 //! rather stop at the boundary, install [`crate::host_platform`] without this
 //! layer (set `AU3_WIN_EMU=0`, or use `--no-win-emu`).
@@ -67,6 +70,7 @@
 mod compress;
 mod crypto;
 mod dllstruct;
+pub mod gui;
 mod paths;
 mod pe;
 mod registry;
@@ -76,6 +80,7 @@ mod verinfo;
 mod version;
 
 pub use dllstruct::{DllStruct, FieldSelector};
+pub use gui::{Control, GuiBackend, GuiEvent, GuiImage, HeadlessBackend, Window};
 pub use paths::WindowsPaths;
 pub use crypto::{CipherAlg, HashAlg};
 pub use pe::{PeImage, Resource, Selector};
@@ -429,6 +434,8 @@ pub struct WindowsEmulation {
     is_admin: bool,
     /// How many `Shutdown` requests were recorded (none is ever acted on).
     shutdowns: u32,
+    /// The emulated GUI: widget model, backend and scripted events.
+    gui: gui::GuiState,
 }
 
 impl Default for WindowsEmulation {
@@ -479,6 +486,7 @@ impl WindowsEmulation {
             recycle_dir: PathBuf::from(DEFAULT_RECYCLE_DIR),
             is_admin: true,
             shutdowns: 0,
+            gui: gui::GuiState::new(),
         }
     }
 
@@ -604,6 +612,46 @@ impl WindowsEmulation {
     pub fn with_recycle_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.recycle_dir = path.into();
         self
+    }
+
+    /// Install a GUI rendering backend (default: headless, renders nothing).
+    pub fn with_gui_backend(mut self, backend: Box<dyn GuiBackend>) -> Self {
+        self.gui.set_backend(backend);
+        self
+    }
+
+    /// Seed the event queue `GUIGetMsg`/`TrayGetMsg` drain.
+    pub fn with_gui_events(mut self, events: Vec<GuiEvent>) -> Self {
+        self.gui = self.gui.with_events(events);
+        self
+    }
+
+    /// Queue answers for `InputBox` and the `File*Dialog` functions.
+    pub fn with_gui_answers(mut self, answers: Vec<String>) -> Self {
+        self.gui = self.gui.with_answers(answers);
+        self
+    }
+
+    /// Deliver `$GUI_EVENT_CLOSE` on the *n*-th `GUIGetMsg`, so a script's
+    /// message loop terminates without a user.
+    pub fn with_gui_auto_close(mut self, polls: u64) -> Self {
+        self.gui = self.gui.with_auto_close(polls);
+        self
+    }
+
+    /// Install the optional egui **offscreen** renderer.
+    ///
+    /// Compiled only with the `gui-egui` feature; the backend renders the model
+    /// to an RGBA buffer and can write a PNG, but opens no window.
+    #[cfg(feature = "gui-egui")]
+    pub fn with_egui_backend(self) -> Self {
+        self.with_gui_backend(Box::new(autoitv3_gui_egui::EguiBackend::new()))
+    }
+
+    /// Capture the current GUI frame, when the installed backend can render one
+    /// (the headless default cannot).
+    pub fn gui_snapshot(&mut self) -> Option<GuiImage> {
+        self.gui.snapshot()
     }
 
     /// Let the common layer answer the directory macros, so `@TempDir` and
@@ -1566,7 +1614,9 @@ impl Platform for WindowsEmulation {
     }
 
     fn provides(&self, name: &str) -> bool {
-        self.enabled && FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(name))
+        self.enabled
+            && (FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(name))
+                || gui::GuiState::provides(name))
     }
 
     fn macro_value(&self, name: &str) -> Option<Value> {
@@ -1586,6 +1636,10 @@ impl Platform for WindowsEmulation {
             return Ok(None);
         }
         let key = name.to_ascii_lowercase();
+        // The GUI half is a self-contained state machine; let it answer first.
+        if let Some(value) = self.gui.call(&key, &args, ctx) {
+            return Ok(Some(value));
+        }
         let value = match key.as_str() {
             // ---------------- DllStruct ----------------
             "dllstructcreate" => {

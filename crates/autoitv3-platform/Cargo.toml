@@ -6,7 +6,16 @@ description.workspace = true
 
 [dependencies]
 autoitv3-ast = { path = "../autoitv3-ast" }
+autoitv3-gui = { path = "../autoitv3-gui" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
+# Optional GUI renderer: `gui-egui` pulls it (and egui) in.
+autoitv3-gui-egui = { path = "../autoitv3-gui-egui", optional = true }
+
+[features]
+default = []
+# Offscreen egui renderer for the GUI model. Off by default so the analysis
+# stack never depends on a windowing/font stack.
+gui-egui = ["dep:autoitv3-gui-egui", "autoitv3-gui-egui/egui"]
 
 [dev-dependencies]
 autoitv3-deobf = { path = "../autoitv3-deobf" }

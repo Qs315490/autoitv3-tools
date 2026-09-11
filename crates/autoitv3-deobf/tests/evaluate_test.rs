@@ -213,18 +213,16 @@ fn unrepresentable_strings_are_not_inlined() {
 
 #[test]
 fn partial_evaluation_keeps_what_the_run_produced() {
-    // The run stops at the OS boundary, but the tables built before it are
-    // still usable — that is the normal case for a real script. `GUICreate` is
-    // used because it stays unimplemented on every platform, including under
-    // the Windows emulation layer (which answers `RegRead`, version queries,
-    // ... but has no window manager).
+    // The run stops at a call no layer implements, but the tables built before
+    // it are still usable — that is the normal case for a real script. (GUI is
+    // no longer a boundary: the emulation answers it headlessly.)
     let src = r#"
 Global $early = Build()
 Func Build()
     Local $t[] = [1, "recovered"]
     Return $t
 EndFunc
-Global $late = GUICreate("title")
+Global $late = NoSuchPlatformCall("title")
 Func F()
     Return $early[1]
 EndFunc

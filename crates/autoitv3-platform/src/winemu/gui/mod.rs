@@ -1,0 +1,1417 @@
+//! AutoIt's GUI builtins, emulated.
+//!
+//! The AutoIt semantics live here — handle numbering, `@error`, `$GUI_EVENT_*`,
+//! `$GUI_*` state bits — over the in-memory [`model::GuiModel`]. Rendering and
+//! event delivery are a pluggable [`GuiBackend`]: the default
+//! [`HeadlessBackend`] renders nothing, so a script can build its whole UI and
+//! run its message loop with no toolkit and no display.
+//!
+//! # Scripted events
+//!
+//! Analysis runs need the script's `While 1 ... GUIGetMsg() ... WEnd` to end.
+//! Two knobs do that deterministically:
+//!
+//! * [`GuiState::with_events`] seeds a queue of events (`Close`, `Control(id)`,
+//!   …) that `GUIGetMsg`/`TrayGetMsg` consume.
+//! * [`GuiState::with_auto_close`] delivers `$GUI_EVENT_CLOSE` on the *n*-th
+//!   poll, so a script that ignores everything still terminates.
+//!
+//! Dialog answers (`InputBox`, `File*Dialog`) come from
+//! [`GuiState::with_answers`]; with none queued they fail like a cancelled
+//! dialog, which is what a real UI-less run would observe.
+
+mod messages;
+
+/// The widget model and backend seam live in the dependency-free
+/// `autoitv3-gui` crate, so a renderer only has to depend on that.
+pub use autoitv3_gui as model;
+pub use autoitv3_gui::{
+    Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiModel,
+    HeadlessBackend, TrayItem, Window, WindowState, GUI_EVENT_CLOSE, GUI_EVENT_DROPPED,
+    GUI_EVENT_MAXIMIZE, GUI_EVENT_MINIMIZE, GUI_EVENT_MOUSEMOVE, GUI_EVENT_PRIMARYDOWN,
+    GUI_EVENT_PRIMARYUP, GUI_EVENT_RESTORE, GUI_EVENT_RESIZED, GUI_EVENT_SECONDARYDOWN,
+    GUI_EVENT_SECONDARYUP,
+};
+
+use std::collections::VecDeque;
+
+use autoitv3_runtime::host::HostContext;
+use autoitv3_runtime::value::Value;
+
+use autoitv3_gui::{GUI_DISABLE, GUI_HIDE, WIN_ENABLED, WIN_MAXIMIZED, WIN_MINIMIZED, WIN_VISIBLE};
+
+/// Every GUI function this layer answers.
+pub const FUNCTIONS: &[&str] = &[
+    // GUI window / controls
+    "GUICreate", "GUIDelete", "GUISetState", "GUISwitch", "GUIGetMsg", "GUIGetCursorInfo",
+    "GUIRegisterMsg", "GUISetBkColor", "GUISetFont", "GUISetIcon", "GUISetCursor",
+    "GUISetOnEvent", "GUISetStyle", "GUIGetStyle", "GUISetCoord", "GUISetAccelerators",
+    "GUISetHelp", "GUIStartGroup",
+    "GUICtrlCreateLabel", "GUICtrlCreateButton", "GUICtrlCreateCheckbox", "GUICtrlCreateRadio",
+    "GUICtrlCreateGroup", "GUICtrlCreateInput", "GUICtrlCreateEdit", "GUICtrlCreateList",
+    "GUICtrlCreateCombo", "GUICtrlCreateListView", "GUICtrlCreateListViewItem",
+    "GUICtrlCreateTreeView", "GUICtrlCreateTreeViewItem", "GUICtrlCreateTab",
+    "GUICtrlCreateTabItem", "GUICtrlCreateMenu", "GUICtrlCreateMenuItem",
+    "GUICtrlCreateContextMenu", "GUICtrlCreatePic", "GUICtrlCreateIcon",
+    "GUICtrlCreateGraphic", "GUICtrlCreateProgress", "GUICtrlCreateSlider",
+    "GUICtrlCreateUpdown", "GUICtrlCreateDate", "GUICtrlCreateMonthCal",
+    "GUICtrlCreateDummy", "GUICtrlCreateAvi", "GUICtrlCreateObj",
+    "GUICtrlDelete", "GUICtrlGetHandle", "GUICtrlGetState", "GUICtrlRead", "GUICtrlRecvMsg",
+    "GUICtrlRegisterListViewSort", "GUICtrlSendMsg", "GUICtrlSendToDummy",
+    "GUICtrlSetBkColor", "GUICtrlSetColor", "GUICtrlSetCursor", "GUICtrlSetData",
+    "GUICtrlSetDefBkColor", "GUICtrlSetDefColor", "GUICtrlSetFont", "GUICtrlSetGraphic",
+    "GUICtrlSetImage", "GUICtrlSetLimit", "GUICtrlSetOnEvent", "GUICtrlSetPos",
+    "GUICtrlSetResizing", "GUICtrlSetState", "GUICtrlSetStyle", "GUICtrlSetTip",
+    // windows
+    "WinActivate", "WinActive", "WinClose", "WinExists", "WinGetCaretPos", "WinGetClassList",
+    "WinGetClientSize", "WinGetHandle", "WinGetPos", "WinGetProcess", "WinGetState",
+    "WinGetText", "WinGetTitle", "WinKill", "WinList", "WinMenuSelectItem", "WinMinimizeAll",
+    "WinMinimizeAllUndo", "WinMove", "WinSetOnTop", "WinSetState", "WinSetTitle", "WinWait",
+    "WinWaitActive", "WinWaitClose", "WinWaitNotActive", "StatusbarGetText",
+    // controls
+    "ControlClick", "ControlCommand", "ControlDisable", "ControlEnable", "ControlFocus",
+    "ControlGetFocus", "ControlGetHandle", "ControlGetPos", "ControlGetText", "ControlHide",
+    "ControlListView", "ControlMove", "ControlSend", "ControlSetText", "ControlShow",
+    "ControlTreeView",
+    // dialogs
+    "MsgBox", "InputBox", "FileOpenDialog", "FileSaveDialog", "FileSelectFolder",
+    // feedback
+    "SplashTextOn", "SplashImageOn", "SplashOff", "ProgressOn", "ProgressSet", "ProgressOff",
+    "ToolTip",
+    // tray
+    "TrayCreateItem", "TrayCreateMenu", "TrayGetMsg", "TrayItemDelete", "TrayItemGetHandle",
+    "TrayItemGetState", "TrayItemGetText", "TrayItemSetOnEvent", "TrayItemSetState",
+    "TrayItemSetText", "TraySetClick", "TraySetIcon", "TraySetOnEvent", "TraySetPauseIcon",
+    "TraySetState", "TraySetToolTip", "TrayTip",
+    // input
+    "Send", "SendKeepActive", "MouseClick", "MouseClickDrag", "MouseDown", "MouseGetCursor",
+    "MouseGetPos", "MouseMove", "MouseUp", "MouseWheel", "HotKeySet", "BlockInput",
+    // pixel
+    "PixelChecksum", "PixelGetColor", "PixelSearch",
+    // misc
+    "Beep", "SoundPlay", "SoundSetWaveVolume", "CDTray", "AutoItWinGetTitle",
+    "AutoItWinSetTitle", "Break",
+];
+
+/// The GUI half of the emulation: the model, a backend and scripted events.
+pub struct GuiState {
+    /// The widget model all backends agree on.
+    pub model: GuiModel,
+    backend: Box<dyn GuiBackend>,
+    events: VecDeque<GuiEvent>,
+    answers: VecDeque<String>,
+    auto_close: Option<u64>,
+    polls: u64,
+    /// The drawing pen `GUICtrlSetGraphic` moves around.
+    draw_pen: (i32, i32),
+}
+
+impl Default for GuiState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GuiState {
+    /// A headless GUI state.
+    pub fn new() -> Self {
+        Self {
+            model: GuiModel::new(),
+            backend: Box::new(HeadlessBackend::new()),
+            events: VecDeque::new(),
+            answers: VecDeque::new(),
+            auto_close: None,
+            polls: 0,
+            draw_pen: (0, 0),
+        }
+    }
+
+    /// Install a rendering backend.
+    pub fn set_backend(&mut self, backend: Box<dyn GuiBackend>) {
+        self.backend = backend;
+    }
+
+    /// Seed the event queue `GUIGetMsg` drains.
+    pub fn with_events(mut self, events: Vec<GuiEvent>) -> Self {
+        self.events.extend(events);
+        self
+    }
+
+    /// Queue answers for `InputBox` and the `File*Dialog` functions.
+    pub fn with_answers(mut self, answers: Vec<String>) -> Self {
+        self.answers.extend(answers);
+        self
+    }
+
+    /// Make the *n*-th `GUIGetMsg` return `$GUI_EVENT_CLOSE`.
+    pub fn with_auto_close(mut self, polls: u64) -> Self {
+        self.auto_close = Some(polls);
+        self
+    }
+
+    /// Capture the current frame from the backend, when it can render one.
+    pub fn snapshot(&mut self) -> Option<GuiImage> {
+        self.backend.snapshot()
+    }
+
+    /// Whether this layer answers `name`.
+    pub fn provides(name: &str) -> bool {
+        FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(name))
+    }
+
+    /// Drain backend events, then hand out the next scripted one.
+    fn poll_message(&mut self) -> i64 {
+        for event in self.backend.poll() {
+            self.events.push_back(event);
+        }
+        self.polls += 1;
+        if let Some(event) = self.events.pop_front() {
+            return event.message();
+        }
+        if let Some(limit) = self.auto_close {
+            if self.polls >= limit {
+                self.auto_close = None;
+                return GUI_EVENT_CLOSE;
+            }
+        }
+        0
+    }
+
+    fn notify_window(&mut self, handle: i64) {
+        if let Some(window) = self.model.window(handle).cloned() {
+            self.backend.on_window(&window);
+        }
+    }
+
+    fn notify_control(&mut self, id: i64) {
+        if let Some(control) = self.model.control(id).cloned() {
+            self.backend.on_control(&control);
+        }
+    }
+
+    /// Dispatch a GUI call; `None` means "not a GUI function".
+    pub fn call(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Option<Value> {
+        let key = name.to_ascii_lowercase();
+        if let Some(kind) = ControlKind::from_create(&key) {
+            return Some(self.create_control(kind, args, ctx));
+        }
+        Some(match key.as_str() {
+            // ---------------- GUI window ----------------
+            "guicreate" => {
+                let handle = self.model.alloc_window();
+                let window = Window {
+                    handle,
+                    title: arg_str(args, 0),
+                    width: arg_int(args, 1) as i32,
+                    height: arg_int(args, 2) as i32,
+                    x: arg_int(args, 3) as i32,
+                    y: arg_int(args, 4) as i32,
+                    style: arg_int(args, 5),
+                    exstyle: arg_int(args, 6),
+                    visible: false,
+                    enabled: true,
+                    active: true,
+                    state: WindowState::Normal,
+                    bk_color: None,
+                    font: None,
+                    cursor: None,
+                    icon: None,
+                    resizing: 0,
+                    on_event: None,
+                    controls: Vec::new(),
+                };
+                self.model.add_window(window);
+                self.notify_window(handle);
+                ctx.set_error(0, 0);
+                Value::Int(handle)
+            }
+            "guidelete" => {
+                let handle = self.window_arg(args, 0);
+                match handle {
+                    Some(handle) => {
+                        let ok = self.model.remove_window(handle);
+                        self.backend.on_window_removed(handle);
+                        ctx.set_error(if ok { 0 } else { 1 }, 0);
+                        Value::Int(i64::from(ok))
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
+                }
+            }
+            "guisetstate" => {
+                let state = arg_int(args, 0);
+                let handle = self.window_arg(args, 1);
+                let Some(handle) = handle else {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                };
+                if let Some(window) = self.model.window_mut(handle) {
+                    match state {
+                        0 => window.visible = false,
+                        6 => {
+                            window.visible = true;
+                            window.state = WindowState::Minimized;
+                        }
+                        3 => {
+                            window.visible = true;
+                            window.state = WindowState::Maximized;
+                        }
+                        _ => {
+                            window.visible = true;
+                            window.state = WindowState::Normal;
+                        }
+                    }
+                }
+                self.notify_window(handle);
+                self.backend.present();
+                ctx.set_error(0, 0);
+                Value::Int(1)
+            }
+            "guiswitch" => {
+                let handle = self.window_arg(args, 0);
+                let previous = self.model.active_window().unwrap_or(0);
+                self.model.current_window = handle;
+                ctx.set_error(if handle.is_some() { 0 } else { 1 }, 0);
+                Value::Int(previous)
+            }
+            "guigetmsg" => {
+                ctx.set_error(0, 0);
+                Value::Int(self.poll_message())
+            }
+            "guigetcursorinfo" => {
+                let (x, y) = self.model.mouse;
+                ctx.set_error(0, 0);
+                Value::array(vec![
+                    Value::Int(i64::from(x)),
+                    Value::Int(i64::from(y)),
+                    Value::Int(0),
+                    Value::Int(0),
+                    Value::Int(0),
+                ])
+            }
+            "guiregistermsg" => {
+                let msg = arg_int(args, 0) as u32;
+                let handler = arg_str(args, 1);
+                if handler.is_empty() {
+                    self.model.notice_handlers.retain(|(m, _)| *m != msg);
+                } else {
+                    self.model.notice_handlers.retain(|(m, _)| *m != msg);
+                    self.model.notice_handlers.push((msg, handler));
+                }
+                ctx.set_error(0, 0);
+                Value::Int(1)
+            }
+            "guisetbkcolor" => {
+                let color = arg_int(args, 0);
+                if let Some(handle) = self.window_arg(args, 1) {
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.bk_color = Some(color);
+                    }
+                    self.notify_window(handle);
+                }
+                Value::Int(1)
+            }
+            "guisetfont" => {
+                let font = Font {
+                    name: arg_str(args, 3),
+                    size: arg_int(args, 0) as i32,
+                    weight: arg_int(args, 1) as i32,
+                    attribute: arg_int(args, 2) as i32,
+                };
+                if let Some(handle) = self.window_arg(args, 4) {
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.font = Some(font);
+                    }
+                    self.notify_window(handle);
+                }
+                Value::Int(1)
+            }
+            "guiseticon" => {
+                if let Some(handle) = self.window_arg(args, 1) {
+                    let icon = arg_str(args, 0);
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.icon = Some(icon);
+                    }
+                    self.notify_window(handle);
+                }
+                Value::Int(1)
+            }
+            "guisetcursor" => {
+                if let Some(handle) = self.window_arg(args, 1) {
+                    let cursor = arg_int(args, 0);
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.cursor = Some(cursor);
+                    }
+                }
+                Value::Int(1)
+            }
+            "guisetonevent" => {
+                if let Some(handle) = self.window_arg(args, 2) {
+                    let handler = arg_str(args, 1);
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.on_event = Some(handler);
+                    }
+                }
+                Value::Int(1)
+            }
+            "guisetstyle" => {
+                if let Some(handle) = self.window_arg(args, 2) {
+                    let (style, exstyle) = (arg_int(args, 0), arg_int(args, 1));
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.style = style;
+                        window.exstyle = exstyle;
+                    }
+                }
+                Value::Int(1)
+            }
+            "guigetstyle" => {
+                let handle = self.window_arg(args, 0);
+                match handle.and_then(|h| self.model.window(h)) {
+                    Some(window) => {
+                        ctx.set_error(0, 0);
+                        Value::array(vec![
+                            Value::Int(window.style),
+                            Value::Int(window.exstyle),
+                        ])
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::array(vec![Value::Int(0), Value::Int(0)])
+                    }
+                }
+            }
+            "guisetcoord" | "guisetaccelerators" | "guisethelp" | "guistartgroup" => Value::Int(1),
+
+            // ---------------- control state ----------------
+            "guictrldelete" => {
+                let id = arg_int(args, 0);
+                let ok = self.model.remove_control(id);
+                self.backend.on_control_removed(id);
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "guictrlgethandle" => {
+                let id = arg_int(args, 0);
+                ctx.set_error(if self.model.control(id).is_some() { 0 } else { 1 }, 0);
+                Value::Int(id)
+            }
+            "guictrlgetstate" => {
+                let id = arg_int(args, 0);
+                match self.model.control(id) {
+                    Some(control) => {
+                        ctx.set_error(0, 0);
+                        Value::Int(control.state)
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
+                }
+            }
+            "guictrlread" => self.read_control(args, ctx),
+            "guictrlsetstate" => {
+                let id = arg_int(args, 0);
+                let state = arg_int(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    if state & 0x10 != 0 {
+                        control.state &= !GUI_HIDE;
+                    }
+                    if state & GUI_HIDE != 0 {
+                        control.state |= GUI_HIDE;
+                    }
+                    if state & 0x40 != 0 {
+                        control.state &= !GUI_DISABLE;
+                    }
+                    if state & GUI_DISABLE != 0 {
+                        control.state |= GUI_DISABLE;
+                    }
+                    if state & 0x01 != 0 {
+                        control.state |= 0x01;
+                    }
+                    if state & 0x02 != 0 {
+                        control.state &= !0x01;
+                    }
+                    if state & 0x08 != 0 {
+                        control.state |= 0x08;
+                    }
+                }
+                self.notify_control(id);
+                ctx.set_error(0, 0);
+                Value::Int(1)
+            }
+            "guictrlsetdata" => self.set_control_data(args, ctx),
+            "guictrlsetbkcolor" => {
+                let id = arg_int(args, 0);
+                let color = arg_int(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.bk_color = Some(color);
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "guictrlsetcolor" => {
+                let id = arg_int(args, 0);
+                let color = arg_int(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.color = Some(color);
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "guictrlsetcursor" => {
+                let id = arg_int(args, 0);
+                let cursor = arg_int(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.cursor = Some(cursor);
+                }
+                Value::Int(1)
+            }
+            "guictrlsetdefbkcolor" | "guictrlsetdefcolor" => Value::Int(1),
+            "guictrlsetfont" => {
+                let id = arg_int(args, 0);
+                let font = Font {
+                    name: arg_str(args, 4),
+                    size: arg_int(args, 1) as i32,
+                    weight: arg_int(args, 2) as i32,
+                    attribute: arg_int(args, 3) as i32,
+                };
+                if let Some(control) = self.model.control_mut(id) {
+                    control.font = Some(font);
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "guictrlsetimage" => {
+                let id = arg_int(args, 0);
+                let image = arg_str(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.image = Some(image);
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "guictrlsetlimit" => {
+                let id = arg_int(args, 0);
+                let limit = (arg_int(args, 1), arg_int(args, 2));
+                if let Some(control) = self.model.control_mut(id) {
+                    control.limit = Some(limit);
+                }
+                Value::Int(1)
+            }
+            "guictrlsetonevent" => {
+                let id = arg_int(args, 0);
+                let handler = arg_str(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.on_event = Some(handler);
+                }
+                Value::Int(1)
+            }
+            "guictrlsetpos" => {
+                let id = arg_int(args, 0);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.x = arg_int(args, 1) as i32;
+                    control.y = arg_int(args, 2) as i32;
+                    control.width = arg_int(args, 3) as i32;
+                    control.height = arg_int(args, 4) as i32;
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "guictrlsetresizing" => {
+                let id = arg_int(args, 0);
+                let resizing = arg_int(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.resizing = resizing;
+                }
+                Value::Int(1)
+            }
+            "guictrlsetstyle" => {
+                let id = arg_int(args, 0);
+                let (style, exstyle) = (arg_int(args, 1), arg_int(args, 2));
+                if let Some(control) = self.model.control_mut(id) {
+                    control.style = style;
+                    control.exstyle = exstyle;
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "guictrlsettip" => {
+                let id = arg_int(args, 0);
+                let tip = arg_str(args, 1);
+                if let Some(control) = self.model.control_mut(id) {
+                    control.tip = tip;
+                }
+                Value::Int(1)
+            }
+            "guictrlsetgraphic" => self.set_graphic(args, ctx),
+            "guictrlsendmsg" => {
+                let id = arg_int(args, 0);
+                let msg = arg_int(args, 1) as u32;
+                let wparam = arg_int(args, 2);
+                match self.model.control(id) {
+                    Some(control) => {
+                        let (result, known) = messages::send(control, msg, wparam);
+                        ctx.set_error(if known { 0 } else { 1 }, 0);
+                        Value::Int(result)
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
+                }
+            }
+            "guictrlrecvmsg" => {
+                let id = arg_int(args, 0);
+                let msg = arg_int(args, 1) as u32;
+                let result = match self.model.control(id) {
+                    Some(control) => messages::send(control, msg, 0).0,
+                    None => {
+                        ctx.set_error(1, 0);
+                        return Some(Value::array(vec![Value::Int(0)]));
+                    }
+                };
+                ctx.set_error(0, 0);
+                Value::array(vec![Value::Int(result)])
+            }
+            "guictrlregisterlistviewsort" => Value::Int(1),
+            "guictrlsendtodummy" => {
+                // Tell the script's own handler by queueing a control event.
+                let id = arg_int(args, 0);
+                if args.len() > 1 {
+                    self.events.push_back(GuiEvent::Control(id));
+                }
+                Value::Int(1)
+            }
+
+            // ---------------- windows ----------------
+            "winexists" => Value::Int(i64::from(self.window_arg(args, 0).is_some())),
+            "wingethandle" => {
+                ctx.set_error(0, 0);
+                Value::Int(self.window_arg(args, 0).unwrap_or(0))
+            }
+            "wingettitle" => {
+                let title = self
+                    .window_arg(args, 0)
+                    .and_then(|h| self.model.window(h))
+                    .map(|w| w.title.clone())
+                    .unwrap_or_default();
+                Value::Str(title)
+            }
+            "wingetstate" => {
+                let bits = self
+                    .window_arg(args, 0)
+                    .and_then(|h| self.model.window(h))
+                    .map(|w| w.state_bits())
+                    .unwrap_or(0);
+                ctx.set_error(if bits == 0 { 1 } else { 0 }, 0);
+                Value::Int(bits)
+            }
+            "wingetpos" => {
+                let window = self.window_arg(args, 0).and_then(|h| self.model.window(h));
+                match window {
+                    Some(w) => {
+                        ctx.set_error(0, 0);
+                        Value::array(vec![
+                            Value::Int(i64::from(w.x)),
+                            Value::Int(i64::from(w.y)),
+                            Value::Int(i64::from(w.width)),
+                            Value::Int(i64::from(w.height)),
+                        ])
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::array(vec![Value::Int(0); 4])
+                    }
+                }
+            }
+            "wingetclientsize" => {
+                let window = self.window_arg(args, 0).and_then(|h| self.model.window(h));
+                match window {
+                    Some(w) => {
+                        ctx.set_error(0, 0);
+                        Value::array(vec![
+                            Value::Int(i64::from(w.width)),
+                            Value::Int(i64::from(w.height)),
+                        ])
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::array(vec![Value::Int(0), Value::Int(0)])
+                    }
+                }
+            }
+            "winmove" => {
+                if let Some(handle) = self.window_arg(args, 0) {
+                    let (x, y, w, h) = (
+                        arg_int(args, 1) as i32,
+                        arg_int(args, 2) as i32,
+                        arg_int(args, 3) as i32,
+                        arg_int(args, 4) as i32,
+                    );
+                    if let Some(window) = self.model.window_mut(handle) {
+                        if arg_int(args, 1) != -1 {
+                            window.x = x;
+                        }
+                        if arg_int(args, 2) != -1 {
+                            window.y = y;
+                        }
+                        if arg_int(args, 3) != -1 {
+                            window.width = w;
+                        }
+                        if arg_int(args, 4) != -1 {
+                            window.height = h;
+                        }
+                    }
+                    self.notify_window(handle);
+                }
+                Value::Int(1)
+            }
+            "winactivate" => {
+                if let Some(handle) = self.window_arg(args, 0) {
+                    for window in self.model.windows.iter_mut().flatten() {
+                        window.active = window.handle == handle;
+                    }
+                    self.notify_window(handle);
+                    ctx.set_error(0, 0);
+                    Value::Int(handle)
+                } else {
+                    ctx.set_error(1, 0);
+                    Value::Int(0)
+                }
+            }
+            "winactive" => {
+                let handle = self.window_arg(args, 0);
+                let active = self
+                    .model
+                    .windows
+                    .iter()
+                    .flatten()
+                    .find(|w| w.active)
+                    .map(|w| w.handle);
+                ctx.set_error(0, 0);
+                Value::Int(if handle.is_some() && handle == active {
+                    handle.unwrap_or(0)
+                } else {
+                    0
+                })
+            }
+            "winclose" | "winkill" => {
+                match self.window_arg(args, 0) {
+                    Some(handle) => {
+                        self.model.remove_window(handle);
+                        self.backend.on_window_removed(handle);
+                        Value::Int(1)
+                    }
+                    None => Value::Int(0),
+                }
+            }
+            "winsetstate" => {
+                let state = arg_int(args, 2);
+                if let Some(handle) = self.window_arg(args, 0) {
+                    if let Some(window) = self.model.window_mut(handle) {
+                        if state & WIN_VISIBLE != 0 {
+                            window.visible = true;
+                        }
+                        if state & 0x10 == 0 && state & GUI_HIDE != 0 {
+                            window.visible = false;
+                        }
+                        window.enabled = state & WIN_ENABLED != 0 || state & GUI_DISABLE == 0;
+                        if state & WIN_MINIMIZED != 0 {
+                            window.state = WindowState::Minimized;
+                        }
+                        if state & WIN_MAXIMIZED != 0 {
+                            window.state = WindowState::Maximized;
+                        }
+                    }
+                    self.notify_window(handle);
+                }
+                Value::Int(1)
+            }
+            "winsettitle" => {
+                if let Some(handle) = self.window_arg(args, 0) {
+                    let title = arg_str(args, 2);
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.title = title;
+                    }
+                    self.notify_window(handle);
+                }
+                Value::Int(1)
+            }
+            "winlist" => {
+                let mut out: Vec<Value> = Vec::new();
+                let mut items: Vec<Value> = Vec::new();
+                for window in self.model.windows.iter().flatten() {
+                    if window.visible {
+                        items.push(Value::array(vec![
+                            Value::Str(window.title.clone()),
+                            Value::Int(window.handle),
+                        ]));
+                    }
+                }
+                out.push(Value::Int(items.len() as i64));
+                out.extend(items);
+                Value::array(out)
+            }
+            "winminimizeall" => {
+                for window in self.model.windows.iter_mut().flatten() {
+                    window.state = WindowState::Minimized;
+                }
+                Value::Int(1)
+            }
+            "winminimizeallundo" => {
+                for window in self.model.windows.iter_mut().flatten() {
+                    window.state = WindowState::Normal;
+                }
+                Value::Int(1)
+            }
+            "wingettext" | "wingetclasslist" | "statusbargettext" => Value::str(""),
+            "wingetprocess" => Value::Int(i64::from(std::process::id())),
+            "wingetcaretpos" => Value::array(vec![Value::Int(0), Value::Int(0)]),
+            "winmenuselectitem" | "winsetontop" => Value::Int(1),
+            "winwait" | "winwaitactive" => {
+                let handle = self.window_arg(args, 0);
+                let ok = handle.is_some();
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(if ok { handle.unwrap_or(0) } else { 0 })
+            }
+            "winwaitclose" | "winwaitnotactive" => {
+                ctx.set_error(0, 0);
+                Value::Int(i64::from(self.window_arg(args, 0).is_none()))
+            }
+
+            // ---------------- controls ----------------
+            "controlgetpos" => {
+                let control = self.control_arg(args);
+                match control {
+                    Some(control) => {
+                        ctx.set_error(0, 0);
+                        Value::array(vec![
+                            Value::Int(i64::from(control.x)),
+                            Value::Int(i64::from(control.y)),
+                            Value::Int(i64::from(control.width)),
+                            Value::Int(i64::from(control.height)),
+                        ])
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::array(vec![Value::Int(0); 4])
+                    }
+                }
+            }
+            "controlgettext" => {
+                let text = self.control_arg(args).map(|c| c.text.clone()).unwrap_or_default();
+                ctx.set_error(if text.is_empty() { 1 } else { 0 }, 0);
+                Value::Str(text)
+            }
+            "controlsettext" => {
+                let id = self.control_arg(args).map(|c| c.id);
+                if let Some(id) = id {
+                    let text = arg_str(args, 2);
+                    if let Some(control) = self.model.control_mut(id) {
+                        control.text = text;
+                    }
+                    self.notify_control(id);
+                }
+                Value::Int(1)
+            }
+            "controlgethandle" => {
+                let id = self.control_arg(args).map(|c| c.id).unwrap_or(0);
+                ctx.set_error(if id == 0 { 1 } else { 0 }, 0);
+                Value::Int(id)
+            }
+            "controlclick" => {
+                // A click becomes a control event, so a script's GUIGetMsg sees it.
+                if let Some(id) = self.control_arg(args).map(|c| c.id) {
+                    self.events.push_back(GuiEvent::Control(id));
+                }
+                Value::Int(1)
+            }
+            "controlcommand" => {
+                let command = arg_str(args, 2).to_ascii_lowercase();
+                let control = self.control_arg(args);
+                match command.as_str() {
+                    "isvisible" => Value::Str(
+                        if control.map(|c| c.is_visible()).unwrap_or(false) {
+                            "1"
+                        } else {
+                            "0"
+                        }
+                        .to_string(),
+                    ),
+                    "isenabled" => Value::Str(
+                        if control.map(|c| c.is_enabled()).unwrap_or(false) {
+                            "1"
+                        } else {
+                            "0"
+                        }
+                        .to_string(),
+                    ),
+                    _ => Value::str(""),
+                }
+            }
+            "controldisable" | "controlenable" | "controlfocus" | "controlhide"
+            | "controlshow" | "controlmove" | "controlsend" | "controllistview"
+            | "controltreeview" => {
+                let id = self.control_arg(args).map(|c| c.id);
+                if let Some(id) = id {
+                    if let Some(control) = self.model.control_mut(id) {
+                        match key.as_str() {
+                            "controldisable" => control.state |= GUI_DISABLE,
+                            "controlenable" => control.state &= !GUI_DISABLE,
+                            "controlhide" => control.state |= GUI_HIDE,
+                            "controlshow" => control.state &= !GUI_HIDE,
+                            "controlmove" => {
+                                control.x = arg_int(args, 2) as i32;
+                                control.y = arg_int(args, 3) as i32;
+                                control.width = arg_int(args, 4) as i32;
+                                control.height = arg_int(args, 5) as i32;
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.notify_control(id);
+                }
+                Value::Int(1)
+            }
+            "controlgetfocus" => Value::str(""),
+
+            // ---------------- dialogs ----------------
+            "msgbox" => {
+                // Consume a scripted answer, else OK; never blocks.
+                let answer = self
+                    .events
+                    .iter()
+                    .position(|e| matches!(e, GuiEvent::Dialog(_)))
+                    .and_then(|i| self.events.remove(i))
+                    .map(|e| e.message())
+                    .unwrap_or(1);
+                ctx.set_error(0, 0);
+                Value::Int(answer)
+            }
+            "inputbox" => {
+                let answer = self.answers.pop_front();
+                match answer {
+                    Some(text) => {
+                        ctx.set_error(0, 0);
+                        Value::Str(text)
+                    }
+                    None => {
+                        // A real dialog with no user: cancelled.
+                        ctx.set_error(1, 0);
+                        Value::Str(arg_str(args, 2))
+                    }
+                }
+            }
+            "fileopendialog" | "filesavedialog" | "fileselectfolder" => {
+                match self.answers.pop_front() {
+                    Some(path) if !path.is_empty() => {
+                        ctx.set_error(0, 0);
+                        Value::Str(path)
+                    }
+                    _ => {
+                        ctx.set_error(1, 0);
+                        Value::str("")
+                    }
+                }
+            }
+
+            // ---------------- feedback ----------------
+            "splashtexton" => {
+                self.model.splash = model::Splash {
+                    text: arg_str(args, 1),
+                    x: arg_int(args, 4) as i32,
+                    y: arg_int(args, 5) as i32,
+                    width: arg_int(args, 2) as i32,
+                    height: arg_int(args, 3) as i32,
+                    visible: true,
+                    ..Default::default()
+                };
+                Value::Int(1)
+            }
+            "splashimageon" => {
+                self.model.splash = model::Splash {
+                    image: Some(arg_str(args, 1)),
+                    x: arg_int(args, 4) as i32,
+                    y: arg_int(args, 5) as i32,
+                    width: arg_int(args, 2) as i32,
+                    height: arg_int(args, 3) as i32,
+                    visible: true,
+                    ..Default::default()
+                };
+                Value::Int(1)
+            }
+            "splashoff" => {
+                self.model.splash.visible = false;
+                Value::Int(1)
+            }
+            "progresson" => {
+                self.model.progress = model::Progress {
+                    on: true,
+                    text: arg_str(args, 1),
+                    percent: 0,
+                };
+                Value::Int(1)
+            }
+            "progressset" => {
+                self.model.progress.percent = arg_int(args, 0);
+                if args.len() > 1 {
+                    self.model.progress.text = arg_str(args, 1);
+                }
+                Value::Int(1)
+            }
+            "progressoff" => {
+                self.model.progress.on = false;
+                Value::Int(1)
+            }
+            "tooltip" => {
+                self.model.tooltip = arg_str(args, 0);
+                self.model.tooltip_visible = !self.model.tooltip.is_empty();
+                Value::Int(1)
+            }
+
+            // ---------------- tray ----------------
+            "traycreateitem" | "traycreatemenu" => {
+                let id = self.model.alloc_tray_id();
+                self.model.tray.push(TrayItem {
+                    id,
+                    text: arg_str(args, 0),
+                    state: 0,
+                    on_event: None,
+                    menu: key == "traycreatemenu",
+                });
+                Value::Int(id)
+            }
+            "traygetmsg" => {
+                ctx.set_error(0, 0);
+                Value::Int(self.poll_message())
+            }
+            "trayitemdelete" => {
+                let id = arg_int(args, 0);
+                let before = self.model.tray.len();
+                self.model.tray.retain(|t| t.id != id);
+                Value::Int(i64::from(self.model.tray.len() != before))
+            }
+            "trayitemgethandle" => Value::Int(arg_int(args, 0)),
+            "trayitemgetstate" => Value::Int(
+                self.model
+                    .tray
+                    .iter()
+                    .find(|t| t.id == arg_int(args, 0))
+                    .map(|t| t.state)
+                    .unwrap_or(0),
+            ),
+            "trayitemgettext" => Value::Str(
+                self.model
+                    .tray
+                    .iter()
+                    .find(|t| t.id == arg_int(args, 0))
+                    .map(|t| t.text.clone())
+                    .unwrap_or_default(),
+            ),
+            "trayitemsetonevent" => {
+                let id = arg_int(args, 0);
+                let handler = arg_str(args, 1);
+                if let Some(item) = self.model.tray.iter_mut().find(|t| t.id == id) {
+                    item.on_event = Some(handler);
+                }
+                Value::Int(1)
+            }
+            "trayitemsetstate" => {
+                let id = arg_int(args, 0);
+                let state = arg_int(args, 1);
+                if let Some(item) = self.model.tray.iter_mut().find(|t| t.id == id) {
+                    item.state = state;
+                }
+                Value::Int(1)
+            }
+            "trayitemsettext" => {
+                let id = arg_int(args, 0);
+                let text = arg_str(args, 1);
+                if let Some(item) = self.model.tray.iter_mut().find(|t| t.id == id) {
+                    item.text = text;
+                }
+                Value::Int(1)
+            }
+            "traysetclick" | "trayseticon" | "traysetonevent" | "traysetpauseicon"
+            | "traysetstate" | "traysettooltip" | "traytip" => Value::Int(1),
+
+            // ---------------- input ----------------
+            "send" | "sendkeepactive" | "mouseclick" | "mouseclickdrag" | "mousedown"
+            | "mouseup" | "mousewheel" => {
+                if key.starts_with("mouse") {
+                    let x = arg_int(args, 1);
+                    let y = arg_int(args, 2);
+                    if x != 0 || y != 0 {
+                        self.model.mouse = (x as i32, y as i32);
+                    }
+                }
+                Value::Int(1)
+            }
+            "mousemove" => {
+                self.model.mouse = (arg_int(args, 0) as i32, arg_int(args, 1) as i32);
+                Value::Int(1)
+            }
+            "mousegetpos" => {
+                let (x, y) = self.model.mouse;
+                Value::array(vec![Value::Int(i64::from(x)), Value::Int(i64::from(y))])
+            }
+            "mousegetcursor" => Value::Int(0),
+            "hotkeyset" => {
+                let key_code = parse_hotkey(&arg_str(args, 0));
+                let handler = arg_str(args, 1);
+                if handler.is_empty() {
+                    self.model.hotkeys.retain(|(k, _)| *k != key_code);
+                } else {
+                    self.model.hotkeys.retain(|(k, _)| *k != key_code);
+                    self.model.hotkeys.push((key_code, handler));
+                }
+                Value::Int(1)
+            }
+            "blockinput" => {
+                self.model.block_input = arg_int(args, 0) != 0;
+                Value::Int(1)
+            }
+
+            // ---------------- pixel ----------------
+            // No real screen to sample; report "nothing" rather than a colour.
+            "pixelgetcolor" => Value::Int(0),
+            "pixelchecksum" => Value::Int(0),
+            "pixelsearch" => {
+                ctx.set_error(1, 0);
+                Value::Int(0)
+            }
+
+            // ---------------- misc ----------------
+            "beep" | "soundplay" | "soundsetwavevolume" => {
+                self.model.sounds += 1;
+                Value::Int(1)
+            }
+            "cdtray" => {
+                self.model.cd_open = !self.model.cd_open;
+                Value::Int(1)
+            }
+            "autoitwingettitle" => Value::Str(self.model.autoit_win_title.clone()),
+            "autoitwinsettitle" => {
+                self.model.autoit_win_title = arg_str(args, 0);
+                Value::Int(1)
+            }
+            "break" => Value::Int(1),
+
+            _ => return None,
+        })
+    }
+
+    /// `GUICtrlCreate*`: build a control on the current window.
+    fn create_control(
+        &mut self,
+        kind: ControlKind,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Value {
+        let window = match self.model.active_window() {
+            Some(window) => window,
+            None => {
+                ctx.set_error(1, 0);
+                return Value::Int(0);
+            }
+        };
+        let (text, base) = match kind {
+            ControlKind::Label
+            | ControlKind::Button
+            | ControlKind::Checkbox
+            | ControlKind::Radio
+            | ControlKind::Group
+            | ControlKind::Input
+            | ControlKind::Edit
+            | ControlKind::List
+            | ControlKind::Combo
+            | ControlKind::Pic
+            | ControlKind::Icon
+            | ControlKind::TabItem
+            | ControlKind::MenuItem
+            | ControlKind::ListViewItem
+            | ControlKind::TreeViewItem => (arg_str(args, 0), 1),
+            _ => (String::new(), 0),
+        };
+        let control = Control {
+            id: 0,
+            window,
+            kind,
+            text,
+            x: arg_int(args, base) as i32,
+            y: arg_int(args, base + 1) as i32,
+            width: arg_int(args, base + 2) as i32,
+            height: arg_int(args, base + 3) as i32,
+            style: arg_int(args, base + 4),
+            exstyle: arg_int(args, base + 5),
+            state: 0,
+            data: Vec::new(),
+            tip: String::new(),
+            on_event: None,
+            bk_color: None,
+            color: None,
+            font: None,
+            cursor: None,
+            image: None,
+            limit: None,
+            resizing: 0,
+            draw: Vec::new(),
+        };
+        let id = self.model.add_control(control);
+        self.notify_control(id);
+        ctx.set_error(0, 0);
+        Value::Int(id)
+    }
+
+    /// `GUICtrlRead`.
+    fn read_control(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
+        let id = arg_int(args, 0);
+        let Some(control) = self.model.control(id) else {
+            ctx.set_error(1, 0);
+            return Value::Int(0);
+        };
+        ctx.set_error(0, 0);
+        match control.kind {
+            ControlKind::Checkbox | ControlKind::Radio => {
+                Value::Int(if control.is_checked() { 1 } else { 4 })
+            }
+            ControlKind::Progress => Value::Int(self.model.progress.percent),
+            ControlKind::List | ControlKind::Combo | ControlKind::ListView => {
+                Value::Str(control.data.first().cloned().unwrap_or_default())
+            }
+            _ => Value::Str(control.text.clone()),
+        }
+    }
+
+    /// `GUICtrlSetData`.
+    fn set_control_data(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
+        let id = arg_int(args, 0);
+        let data = arg_str(args, 1);
+        let default = if args.len() > 2 {
+            Some(arg_str(args, 2))
+        } else {
+            None
+        };
+        let Some(kind) = self.model.control(id).map(|c| c.kind) else {
+            ctx.set_error(1, 0);
+            return Value::Int(0);
+        };
+        match kind {
+            ControlKind::List | ControlKind::Combo | ControlKind::TreeView => {
+                let items: Vec<String> = if data.is_empty() {
+                    Vec::new()
+                } else {
+                    data.split('|').map(|s| s.to_string()).collect()
+                };
+                if let Some(control) = self.model.control_mut(id) {
+                    control.data = items;
+                }
+            }
+            ControlKind::ListView | ControlKind::ListViewItem | ControlKind::TreeViewItem => {
+                if let Some(control) = self.model.control_mut(id) {
+                    match default {
+                        Some(index) if !index.is_empty() => {
+                            if let Ok(pos) = index.parse::<usize>() {
+                                if pos >= 1 && pos <= control.data.len() {
+                                    control.data[pos - 1] = data;
+                                }
+                            }
+                        }
+                        _ => control.data.push(data),
+                    }
+                }
+            }
+            ControlKind::Progress => {
+                self.model.progress.percent = data.parse().unwrap_or(0);
+            }
+            _ => {
+                if let Some(control) = self.model.control_mut(id) {
+                    control.text = data;
+                }
+            }
+        }
+        self.notify_control(id);
+        ctx.set_error(0, 0);
+        Value::Int(1)
+    }
+
+    /// `GUICtrlSetGraphic`: record a drawing command.
+    fn set_graphic(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
+        let id = arg_int(args, 0);
+        let kind = arg_int(args, 1);
+        if self.model.control(id).is_none() {
+            ctx.set_error(1, 0);
+            return Value::Int(0);
+        }
+        let (pen_x, pen_y) = self.draw_pen;
+        let cmd = match kind {
+            0 => {
+                // $GUI_GR_MOVE
+                self.draw_pen = (arg_int(args, 2) as i32, arg_int(args, 3) as i32);
+                None
+            }
+            1 => Some(DrawCmd::SetColor(arg_int(args, 2))),
+            2 => {
+                let end = (arg_int(args, 2) as i32, arg_int(args, 3) as i32);
+                self.draw_pen = end;
+                Some(DrawCmd::Line {
+                    x1: pen_x,
+                    y1: pen_y,
+                    x2: end.0,
+                    y2: end.1,
+                })
+            }
+            6 => Some(DrawCmd::Rect {
+                x: arg_int(args, 2) as i32,
+                y: arg_int(args, 3) as i32,
+                w: arg_int(args, 4) as i32,
+                h: arg_int(args, 5) as i32,
+            }),
+            7 | 8 => Some(DrawCmd::Ellipse {
+                x: arg_int(args, 2) as i32,
+                y: arg_int(args, 3) as i32,
+                w: arg_int(args, 4) as i32,
+                h: arg_int(args, 5) as i32,
+            }),
+            9 | 10 => Some(DrawCmd::Rect {
+                x: arg_int(args, 2) as i32,
+                y: arg_int(args, 3) as i32,
+                w: 1,
+                h: 1,
+            }),
+            13 => Some(DrawCmd::Clear),
+            _ => None,
+        };
+        if let Some(cmd) = cmd {
+            self.model.draw(id, cmd);
+        }
+        // A text command follows the same entry point in AutoIt via p1..p4;
+        // strings are not used, so nothing more to record here.
+        self.notify_control(id);
+        ctx.set_error(0, 0);
+        Value::Int(1)
+    }
+
+    /// Resolve the window argument at `index`, defaulting to the current one.
+    fn window_arg(&self, args: &[Value], index: usize) -> Option<i64> {
+        let spec = args
+            .get(index)
+            .map(|v| v.to_autoit_string())
+            .unwrap_or_default();
+        self.model.resolve_window(&spec)
+    }
+
+    /// Resolve the `(window, control text)` pair `Control*` functions take.
+    fn control_arg(&self, args: &[Value]) -> Option<&Control> {
+        let window = self.window_arg(args, 0)?;
+        let text = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
+        let id = self.model.find_control(window, &text)?;
+        self.model.control(id)
+    }
+}
+
+fn arg_str(args: &[Value], i: usize) -> String {
+    args.get(i).map(|v| v.to_autoit_string()).unwrap_or_default()
+}
+
+fn arg_int(args: &[Value], i: usize) -> i64 {
+    args.get(i).map(|v| v.to_int()).unwrap_or(0)
+}
+
+/// AutoIt's `^!+` hotkey notation -> a packed HOTKEY word.
+fn parse_hotkey(s: &str) -> u16 {
+    let mut modifiers: u16 = 0;
+    let mut vk: u16 = 0;
+    for c in s.chars() {
+        match c {
+            '^' => modifiers |= 2,
+            '!' => modifiers |= 4,
+            '+' => modifiers |= 1,
+            c => {
+                let up = c.to_ascii_uppercase();
+                if up.is_ascii_alphanumeric() {
+                    vk = up as u16;
+                }
+            }
+        }
+    }
+    (modifiers << 8) | vk
+}
+
+#[cfg(all(test, feature = "gui-egui"))]
+mod egui_render_tests {
+    use super::*;
+    use autoitv3_runtime::host::HostContext;
+    use autoitv3_runtime::profile::ExecutionProfile;
+    use std::collections::HashMap;
+
+    /// A minimal `HostContext` so `GuiState::call` can be driven directly.
+    struct Ctx {
+        profile: ExecutionProfile,
+        error: i64,
+        extended: i64,
+        globals: HashMap<String, Value>,
+    }
+
+    impl HostContext for Ctx {
+        fn get_global(&self, name: &str) -> Option<Value> {
+            self.globals.get(name).cloned()
+        }
+        fn set_global(&mut self, name: &str, value: Value) {
+            self.globals.insert(name.to_string(), value);
+        }
+        fn error(&self) -> i64 {
+            self.error
+        }
+        fn set_error(&mut self, error: i64, extended: i64) {
+            self.error = error;
+            self.extended = extended;
+        }
+        fn profile(&self) -> &ExecutionProfile {
+            &self.profile
+        }
+    }
+
+    #[test]
+    fn the_egui_backend_renders_a_script_built_window() {
+        let mut state = GuiState::new();
+        state.set_backend(Box::new(
+            autoitv3_gui_egui::EguiBackend::new().with_size(200, 120),
+        ));
+        let mut ctx = Ctx {
+            profile: ExecutionProfile::faithful(),
+            error: 0,
+            extended: 0,
+            globals: HashMap::new(),
+        };
+        state
+            .call(
+                "guicreate",
+                &[Value::str("T"), Value::Int(100), Value::Int(60)],
+                &mut ctx,
+            )
+            .unwrap();
+        state
+            .call(
+                "guictrlcreatelabel",
+                &[Value::str("hello"), Value::Int(0), Value::Int(0)],
+                &mut ctx,
+            )
+            .unwrap();
+        state
+            .call("guisetstate", &[Value::Int(5)], &mut ctx)
+            .unwrap();
+
+        let image = state.snapshot().expect("egui snapshot");
+        assert_eq!((image.width, image.height), (200, 120));
+        let opaque = image.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(opaque > 50, "expected a rendered window, got {opaque} opaque px");
+    }
+}
