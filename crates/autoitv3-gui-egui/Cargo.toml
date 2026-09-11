@@ -7,16 +7,30 @@ description = "Offscreen egui renderer for the autoitv3 GUI backend"
 [dependencies]
 autoitv3-gui = { path = "../autoitv3-gui" }
 egui = { version = "0.36", optional = true }
+eframe = { version = "0.36", optional = true }
 
 [features]
 default = []
-# The actual renderer. Off by default so the workspace's normal build/test
+# The offscreen renderer. Off by default so the workspace's normal build/test
 # never pulls a font/GPU stack.
 egui = ["dep:egui"]
+# The live-window backend (PoC): opens a real window and feeds clicks back.
+window = ["egui", "dep:eframe"]
 
 [lib]
 name = "autoitv3_gui_egui"
 path = "src/lib.rs"
+
+# The live-window PoC needs a full runtime to drive a script.
+[dev-dependencies]
+autoitv3-ast = { path = "../autoitv3-ast" }
+autoitv3-platform = { path = "../autoitv3-platform" }
+autoitv3-runtime = { path = "../autoitv3-runtime" }
+
+[[example]]
+name = "live"
+path = "examples/live.rs"
+required-features = ["window"]
 
 [lints.rust]
 unused = "warn"

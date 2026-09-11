@@ -15,6 +15,9 @@
 //!
 //! With the feature enabled, `autoitv3-platform`'s `gui-egui` feature wires the
 //! backend in through `WindowsEmulation::with_egui_backend()`.
+//!
+//! The `window` feature adds [`LiveBackend`]: a real eframe window whose button
+//! clicks and text edits are fed back into `GUIGetMsg`/`GUICtrlRead`.
 
 #[cfg(feature = "egui")]
 mod png;
@@ -22,7 +25,11 @@ mod png;
 mod raster;
 #[cfg(feature = "egui")]
 mod render;
+#[cfg(feature = "window")]
+mod live;
 
+#[cfg(feature = "window")]
+pub use live::LiveBackend;
 #[cfg(feature = "egui")]
 pub use png::write_png;
 #[cfg(feature = "egui")]

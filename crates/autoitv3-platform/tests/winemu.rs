@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use autoitv3_platform::host_platform_with;
 use autoitv3_platform::winemu::{
-    Control, FileRegistry, GuiBackend, GuiEvent, MemoryRegistry, RegistryData, RegistryStore,
-    Window, WindowsArch, WindowsEmulation, WindowsPaths, WindowsVersion,
+    Control, FileRegistry, GuiBackend, GuiEvent, GuiUpdate, MemoryRegistry, RegistryData,
+    RegistryStore, Window, WindowsArch, WindowsEmulation, WindowsPaths, WindowsVersion,
 };
 use autoitv3_runtime::profile::ExecutionProfile;
 use autoitv3_runtime::{Runtime, Value};
@@ -1032,4 +1032,45 @@ Return 1
         entries.iter().any(|e| e.ends_with(":hello")),
         "{entries:?}"
     );
+}
+
+/// A backend that plays the part of a live window: it only reports an edit
+/// once the control exists, which is when a window could produce one.
+#[derive(Default)]
+struct TypingBackend {
+    pending: Vec<GuiUpdate>,
+    input_created: bool,
+}
+
+impl GuiBackend for TypingBackend {
+    fn on_control(&mut self, control: &Control) {
+        if control.kind == autoitv3_platform::winemu::ControlKind::Input {
+            self.input_created = true;
+        }
+    }
+    fn take_updates(&mut self) -> Vec<GuiUpdate> {
+        if self.input_created {
+            std::mem::take(&mut self.pending)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[test]
+fn edits_from_a_live_window_reach_guictrlread() {
+    // What the window thread would queue after the user types into the Input.
+    let emu = win10().with_gui_backend(Box::new(TypingBackend {
+        pending: vec![GuiUpdate::SetText {
+            id: 1,
+            text: "typed".to_string(),
+        }],
+        input_created: false,
+    }));
+    let body = r#"
+GUICreate("T", 120, 80)
+Local $e = GUICtrlCreateInput("start", 0, 0)
+Return GUICtrlRead($e)
+"#;
+    assert_eq!(text(emu, body), "typed");
 }
