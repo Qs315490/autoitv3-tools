@@ -83,6 +83,8 @@ autoitv3-tools/
       src/render.rs          EguiBackend：把模型布局成帧
       src/raster.rs          egui 三角形 → RGBA 的 CPU 光栅器（无 GPU、确定性）
       src/png.rs             极简 PNG 写出（stored deflate，无依赖）
+      src/live.rs            LiveBackend：真窗口（feature "window"），点击/编辑回灌
+      examples/live.rs       实时窗口 PoC：Label + Input + Button
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 可选重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
@@ -826,6 +828,40 @@ cargo test -p autoitv3-platform --features gui-egui # 平台接线（脚本建�
 ```
 
 > `~/.cargo` 只读的环境需要把 `CARGO_HOME` 指到可写目录才能拉取 egui（见上文「受限环境」）。
+
+#### 实时窗口 PoC（feature `window`）
+
+`LiveBackend` 是交互版后端：eframe 在**独立线程**跑真窗口，解释器仍同步调用
+`GuiBackend`。两边靠一个模型镜像 + 两个通道通信：
+
+- **脚本 → 窗口**：`on_window`/`on_control` 更新镜像，窗口每帧读取；
+- **窗口 → 脚本**：按钮点击/窗口关闭进入 `poll()`（`GUIGetMsg` 消费），输入框/复选框的
+  编辑通过 `take_updates()` → `GuiUpdate::{SetText,SetChecked}` 回写模型，于是
+  `GUICtrlRead` 能读到用户刚输入的内容。
+
+示例（需要显示服务器）：
+
+```bash
+cargo run -p autoitv3-gui-egui --features window --example live
+# 窗口里：Label + Input + Button；点 Greet 打印 "Hello, <输入>!"，关窗结束脚本
+```
+
+```rust
+use autoitv3_gui_egui::LiveBackend;
+use autoitv3_platform::winemu::WindowsEmulation;
+
+let backend = LiveBackend::new("AutoIt GUI PoC");
+let _emu = WindowsEmulation::new().with_gui_backend(Box::new(backend));
+// 脚本里 GUISetState() 会触发 present() → 打开真窗口
+```
+
+**PoC 范围与限制**（有意最小化）：只认真画 `Label`/`Button`/`Input`/`Edit`/`Checkbox`/`Radio`，
+其余控件退化为文本；菜单/列表/标签页、`Win*`/`Control*` 的交互仍未接线；eframe 跑在子线程，
+在 Linux/X11·Wayland 上可用，macOS 等要求主线程事件循环的平台需要把两者对调。
+
+```bash
+cargo test -p autoitv3-gui-egui --features window   # 后端管线 + 离屏渲染测试
+```
 
 ## 解包资源（`au3 unpack`）
 

@@ -10,7 +10,7 @@ pub mod backend;
 pub mod model;
 
 pub use backend::{
-    GuiBackend, GuiEvent, GuiImage, HeadlessBackend, GUI_EVENT_CLOSE, GUI_EVENT_DROPPED,
+    GuiBackend, GuiEvent, GuiImage, GuiUpdate, HeadlessBackend, GUI_EVENT_CLOSE, GUI_EVENT_DROPPED,
     GUI_EVENT_MAXIMIZE, GUI_EVENT_MINIMIZE, GUI_EVENT_MOUSEMOVE, GUI_EVENT_PRIMARYDOWN,
     GUI_EVENT_PRIMARYUP, GUI_EVENT_RESTORE, GUI_EVENT_RESIZED, GUI_EVENT_SECONDARYDOWN,
     GUI_EVENT_SECONDARYUP,

@@ -80,7 +80,9 @@ mod verinfo;
 mod version;
 
 pub use dllstruct::{DllStruct, FieldSelector};
-pub use gui::{Control, GuiBackend, GuiEvent, GuiImage, HeadlessBackend, Window};
+pub use gui::{
+    Control, ControlKind, GuiBackend, GuiEvent, GuiImage, GuiUpdate, HeadlessBackend, Window,
+};
 pub use paths::WindowsPaths;
 pub use crypto::{CipherAlg, HashAlg};
 pub use pe::{PeImage, Resource, Selector};

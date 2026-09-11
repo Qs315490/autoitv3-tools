@@ -33,6 +33,21 @@ pub struct GuiImage {
     pub rgba: Vec<u8>,
 }
 
+/// A change the *backend* made in a live window that the semantics layer
+/// should apply on its next GUI call.
+///
+/// The model normally flows one way (semantics → backend). A live window is the
+/// exception: the user types into an `Input` or toggles a `Checkbox`, and that
+/// has to reach `GUICtrlRead`. A backend queues these and the semantics layer
+/// drains them via [`GuiBackend::take_updates`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuiUpdate {
+    /// The text of an Input/Edit control changed.
+    SetText { id: i64, text: String },
+    /// A Checkbox/Radio was toggled.
+    SetChecked { id: i64, checked: bool },
+}
+
 /// A renderer/event source for the GUI model.
 ///
 /// Every method has a no-op default, so a backend only implements what it can
@@ -50,6 +65,10 @@ pub trait GuiBackend {
     fn present(&mut self) {}
     /// Collect events that happened since the last call. Never blocks.
     fn poll(&mut self) -> Vec<GuiEvent> {
+        Vec::new()
+    }
+    /// Edits made in a live window, applied by the semantics layer.
+    fn take_updates(&mut self) -> Vec<GuiUpdate> {
         Vec::new()
     }
     /// Render the current model to an offscreen buffer, when supported.

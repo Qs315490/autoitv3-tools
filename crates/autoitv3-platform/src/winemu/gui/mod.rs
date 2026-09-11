@@ -26,7 +26,7 @@ mod messages;
 /// `autoitv3-gui` crate, so a renderer only has to depend on that.
 pub use autoitv3_gui as model;
 pub use autoitv3_gui::{
-    Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiModel,
+    Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiModel, GuiUpdate,
     HeadlessBackend, TrayItem, Window, WindowState, GUI_EVENT_CLOSE, GUI_EVENT_DROPPED,
     GUI_EVENT_MAXIMIZE, GUI_EVENT_MINIMIZE, GUI_EVENT_MOUSEMOVE, GUI_EVENT_PRIMARYDOWN,
     GUI_EVENT_PRIMARYUP, GUI_EVENT_RESTORE, GUI_EVENT_RESIZED, GUI_EVENT_SECONDARYDOWN,
@@ -154,6 +154,28 @@ impl GuiState {
         self.backend.snapshot()
     }
 
+    /// Apply edits a live window queued (typed text, toggled checkbox).
+    fn apply_updates(&mut self) {
+        for update in self.backend.take_updates() {
+            match update {
+                GuiUpdate::SetText { id, text } => {
+                    if let Some(control) = self.model.control_mut(id) {
+                        control.text = text;
+                    }
+                }
+                GuiUpdate::SetChecked { id, checked } => {
+                    if let Some(control) = self.model.control_mut(id) {
+                        if checked {
+                            control.state |= 0x01;
+                        } else {
+                            control.state &= !0x01;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Whether this layer answers `name`.
     pub fn provides(name: &str) -> bool {
         FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(name))
@@ -190,12 +212,16 @@ impl GuiState {
     }
 
     /// Dispatch a GUI call; `None` means "not a GUI function".
+    ///
+    /// Any edits a live window queued are applied first, so a `GUICtrlRead`
+    /// after typing sees the new text.
     pub fn call(
         &mut self,
         name: &str,
         args: &[Value],
         ctx: &mut dyn HostContext,
     ) -> Option<Value> {
+        self.apply_updates();
         let key = name.to_ascii_lowercase();
         if let Some(kind) = ControlKind::from_create(&key) {
             return Some(self.create_control(kind, args, ctx));
@@ -246,7 +272,8 @@ impl GuiState {
                 }
             }
             "guisetstate" => {
-                let state = arg_int(args, 0);
+                // AutoIt's default flag is `@SW_SHOW`, not "hide".
+                let state = if args.is_empty() { 5 } else { arg_int(args, 0) };
                 let handle = self.window_arg(args, 1);
                 let Some(handle) = handle else {
                     ctx.set_error(1, 0);
