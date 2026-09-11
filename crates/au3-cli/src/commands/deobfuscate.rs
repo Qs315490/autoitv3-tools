@@ -83,9 +83,9 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     }
 
     let deobf = if args.rename {
-        Deobfuscator::new()
+        Deobfuscator::renaming()
     } else {
-        Deobfuscator::without_rename()
+        Deobfuscator::new()
     };
     let mut report = DeobfReport::default();
     match &tables {

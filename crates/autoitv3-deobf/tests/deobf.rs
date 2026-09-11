@@ -12,11 +12,40 @@ fn pretty(prog: &autoitv3_ast::Program) -> String {
     pp.print_program(prog)
 }
 
-/// Deobfuscate a source snippet (parse, fold+rename, print) and return text.
+/// Deobfuscate a source snippet with the **full** pipeline — renaming
+/// included — and return the printed text.
+///
+/// Most tests here are about the aliases, so they want `renaming`; the default
+/// pipeline (no renaming) is covered by its own test.
 fn run(src: &str) -> String {
+    let mut prog = parse(src).unwrap();
+    Deobfuscator::renaming().run(&mut prog);
+    pretty(&prog)
+}
+
+/// Deobfuscate a source snippet with the **default** pipeline, which leaves
+/// every original name alone.
+fn run_default(src: &str) -> String {
     let mut prog = parse(src).unwrap();
     deobfuscate(&mut prog);
     pretty(&prog)
+}
+
+#[test]
+fn the_default_pipeline_leaves_names_alone() {
+    let src = "Global $count = 1\nFunc Helper($v)\n    Return $v + $count\nEndFunc\nHelper($count)\n";
+    let out = run_default(src);
+    assert!(out.contains("$count"), "variable renamed: {out}");
+    assert!(out.contains("Func Helper"), "function renamed: {out}");
+    assert!(out.contains("Helper($count)"), "call renamed: {out}");
+}
+
+#[test]
+fn the_default_pipeline_still_does_the_structural_work() {
+    // Fold and table resolution are structural, so they stay on by default.
+    let out = run_default("$x = 1 + 2\nFunc Foo()\n    Return 1\nEndFunc\nCall(\"Foo\")\n");
+    assert!(out.contains("$x = 3"), "not folded: {out}");
+    assert!(out.contains("Foo()\n"), "indirect call not simplified: {out}");
 }
 
 /// Apply only constant folding, then print (no renaming).
@@ -203,7 +232,7 @@ fn rename_preserves_behavior_through_pretty() {
     let src = "Global Const $A = \"hi\"\nFunc F1($p)\n    Return $p & $A\nEndFunc\nF1(\"x\")\n";
     let mut prog = parse(src).unwrap();
     let before = pretty(&prog);
-    deobfuscate(&mut prog);
+    Deobfuscator::renaming().run(&mut prog);
     let after = pretty(&prog);
     // Re-parse both and compare function count and top-level item count.
     let cnt = |p: &autoitv3_ast::Program| {
@@ -257,7 +286,7 @@ fn rename_leaves_macros_alone() {
 fn renaming_can_be_disabled() {
     let src = "Global $count = 1\nFunc Helper($v)\n    Return $v\nEndFunc\nHelper($count)\n";
     let mut prog = parse(src).unwrap();
-    let report = Deobfuscator::without_rename().run(&mut prog);
+    let report = Deobfuscator::new().run(&mut prog);
     assert_eq!(report.renamed.vars, 0);
     assert_eq!(report.renamed.funcs, 0);
     // The other passes still run; only the names survive unchanged.
@@ -271,7 +300,7 @@ fn renaming_can_be_disabled() {
 fn rename_options_can_select_one_category() {
     let src = "Global $count = 1\nFunc Helper($v)\n    Return $v\nEndFunc\nHelper($count)\n";
     let mut prog = parse(src).unwrap();
-    let report = Deobfuscator::new()
+    let report = Deobfuscator::renaming()
         .with_rename_options(RenameOptions {
             vars: true,
             funcs: false,
@@ -308,7 +337,7 @@ fn simplify_turns_call_and_execute_into_direct_calls() {
         "Main()\n",
     );
     let mut prog = parse(src).unwrap();
-    let report = deobfuscate(&mut prog);
+    let report = Deobfuscator::renaming().run(&mut prog);
     assert_eq!(report.simplified.calls, 2);
     assert_eq!(report.simplified.executes, 3);
     let out = pretty(&prog);
@@ -328,7 +357,7 @@ fn simplify_can_run_without_renaming() {
     // indirect calls from being written out.
     let src = "Func Foo()\n    Return 1\nEndFunc\nCall(\"Foo\")\nExecute(\"Foo()\")\n";
     let mut prog = parse(src).unwrap();
-    let report = Deobfuscator::without_rename().run(&mut prog);
+    let report = Deobfuscator::new().run(&mut prog);
     assert_eq!(report.simplified.total(), 2);
     assert_eq!(report.renamed.funcs, 0);
     let out = pretty(&prog);
@@ -355,7 +384,7 @@ fn simplify_leaves_computed_targets_and_statements_alone() {
         "Main()\n",
     );
     let mut prog = parse(src).unwrap();
-    let report = deobfuscate(&mut prog);
+    let report = Deobfuscator::renaming().run(&mut prog);
     assert_eq!(report.simplified.total(), 0);
     let out = pretty(&prog);
     // Only the definition is renamed; every call stays as written (the
@@ -389,7 +418,7 @@ fn simplify_inlines_any_single_expression_from_execute() {
         "Main()\n",
     );
     let mut prog = parse(src).unwrap();
-    let report = deobfuscate(&mut prog);
+    let report = Deobfuscator::renaming().run(&mut prog);
     assert_eq!(report.simplified.executes, 3);
     let out = pretty(&prog);
     assert!(!out.contains("Execute("), "{out}");
@@ -405,7 +434,7 @@ fn execute_splices_the_expression_as_written() {
     // invented for it.
     let src = "Func Bar()\n    Return 42\nEndFunc\nFunc F()\n    Return Execute(\"Bar\")\nEndFunc\n";
     let mut prog = parse(src).unwrap();
-    let report = deobfuscate(&mut prog);
+    let report = Deobfuscator::renaming().run(&mut prog);
     assert_eq!(report.simplified.executes, 1);
     let out = pretty(&prog);
     assert!(!out.contains("Execute("), "{out}");
@@ -443,7 +472,7 @@ fn execute_strings_reach_the_function_table_after_the_splice() {
         "Main()\n",
     );
     let mut prog = parse(src).unwrap();
-    let report = deobfuscate(&mut prog);
+    let report = Deobfuscator::renaming().run(&mut prog);
     assert_eq!(report.simplified.executes, 1);
     assert_eq!(report.table.calls, 1);
     let out = pretty(&prog);
@@ -476,7 +505,7 @@ fn simplify_uses_the_declared_spelling() {
 fn orchestrator_runs_pipeline() {
     let src = "$zzz = 1 + 2\n$yyy = \"a\" & \"b\"\n";
     let mut prog = parse(src).unwrap();
-    let report = deobfuscate(&mut prog);
+    let report = Deobfuscator::renaming().run(&mut prog);
     assert!(report.folds >= 2);
     assert!(report.renamed.vars >= 2);
 }
@@ -551,7 +580,7 @@ fn tables_can_be_substituted_again_after_the_simplifier_splices_code() {
         ]),
     )]);
 
-    let deobf = Deobfuscator::without_rename();
+    let deobf = Deobfuscator::new();
     let split = deobf.after_simplify();
     assert_eq!(split, 2, "Fold and Simplify come first");
 

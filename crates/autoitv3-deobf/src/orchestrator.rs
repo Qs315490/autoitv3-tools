@@ -66,20 +66,29 @@ pub enum Pass {
 }
 
 impl Pass {
-    /// The default pipeline.
+    /// Every pass, in pipeline order.
     ///
     /// `Simplify` runs **before** `Table`: splicing an `Execute` string into the
     /// program is what exposes `$FN_TABLE[1094](...)` as ordinary code, which the
     /// table pass then resolves to a real name. `Rename` comes last so
     /// everything the earlier passes produced is renamed consistently.
     pub const ALL: &'static [Pass] = &[Pass::Fold, Pass::Simplify, Pass::Table, Pass::Rename];
+
+    /// The default pipeline: everything except [`Pass::Rename`].
+    ///
+    /// Folding and table resolution change the *structure* of the program;
+    /// renaming changes its *names*, which is what makes the output impossible
+    /// to line up with the input. So renaming is opt-in — see
+    /// [`Deobfuscator::renaming`].
+    pub const DEFAULT: &'static [Pass] = &[Pass::Fold, Pass::Simplify, Pass::Table];
 }
 
 /// A deobfuscator configured with a set of passes.
 ///
-/// The rename pass is optional: drop [`Pass::Rename`] from [`passes`](Self::passes)
-/// (see [`without_rename`](Self::without_rename)) to keep the original
-/// identifiers, or narrow [`rename`](Self::rename) to rename only one category.
+/// [`new`](Self::new) is folding, simplification and function-table resolution:
+/// the passes that change the program's structure, leaving every original name
+/// alone. [`renaming`](Self::renaming) adds the rename pass, and
+/// [`rename`](Self::rename) narrows which categories it may touch.
 #[derive(Debug, Clone)]
 pub struct Deobfuscator {
     pub passes: Vec<Pass>,
@@ -94,25 +103,21 @@ impl Default for Deobfuscator {
 }
 
 impl Deobfuscator {
+    /// The default pipeline: fold, simplify, resolve the function table.
+    ///
+    /// No renaming, so the output still lines up with the input.
     pub fn new() -> Self {
         Self {
-            passes: Pass::ALL.to_vec(),
-            rename: rename::RenameOptions::all(),
+            passes: Pass::DEFAULT.to_vec(),
+            rename: rename::RenameOptions::none(),
         }
     }
 
-    /// The default pipeline without the rename pass.
-    ///
-    /// Everything else (folding, function-table resolution) still runs, so the
-    /// output keeps its original variable and function names.
-    pub fn without_rename() -> Self {
+    /// The full pipeline, including deterministic identifier renaming.
+    pub fn renaming() -> Self {
         Self {
-            passes: Pass::ALL
-                .iter()
-                .copied()
-                .filter(|p| *p != Pass::Rename)
-                .collect(),
-            rename: rename::RenameOptions::none(),
+            passes: Pass::ALL.to_vec(),
+            rename: rename::RenameOptions::all(),
         }
     }
 
@@ -172,7 +177,10 @@ impl Deobfuscator {
     }
 }
 
-/// Convenience: parse-less pipeline entry that applies the default passes.
+/// Convenience: run the default pipeline — folding, simplification and
+/// function-table resolution, with names left as written.
+///
+/// Use [`Deobfuscator::renaming`] for the full pipeline.
 pub fn deobfuscate(prog: &mut Program) -> DeobfReport {
     Deobfuscator::new().run(prog)
 }
