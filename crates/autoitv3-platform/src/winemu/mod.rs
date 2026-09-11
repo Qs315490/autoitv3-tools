@@ -28,7 +28,12 @@
 //! | native calls | `DllCall` for the version queries (`GetVersionExW`/`A`, `RtlGetVersion`, `GetVersion`) and `GetSystemInfo` |
 //! | registry | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` through a pluggable [`RegistryStore`]: by default a [`FileRegistry`] on `.au3_registry` (seeded per version, persisted on write), with [`MemoryRegistry`] available via `with_memory_registry()` |
 //! | clipboard | `ClipGet`/`ClipPut` through a file in the working directory |
-//! | drives | `DriveGet*`, `DriveSpace*` against a configurable [`DriveSpec`] list |
+//! | drives | `DriveGet*`, `DriveSpace*` against a configurable [`DriveSpec`] list, plus the emulated `DriveMapAdd`/`DriveMapDel`/`DriveMapGet`/`DriveSetLabel` mappings |
+//! | Windows files | `FileGetVersion` (PE `RT_VERSION`), `FileCreateShortcut`/`FileGetShortcut` (`.lnk`), `FileCreateNTFSLink`, `FileRecycle`/`FileRecycleEmpty`, `FileInstall` |
+//! | callbacks | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` hand out synthetic pointers; `DllCallAddress` has no routine behind it and fails predictably |
+//! | system info | `MemGetStats` (a fixed machine profile, so runs are reproducible) and `IsAdmin` |
+//! | shell | `ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` launch host processes; `Shutdown` only records the request |
+//! | COM | no runtime: `ObjCreate`/`ObjGet`/… fail with `@error = 1` and `IsObj` is `0`, rather than inventing objects |
 //!
 //! # Choosing the emulated system
 //!
@@ -51,8 +56,10 @@
 //! # What is *not* emulated
 //!
 //! Real Win32 behaviour. There is no PE loader, no COM, no GUI, no real
-//! `DllCall`: a struct is a `Vec<u8>` this layer owns, and an unimplemented
-//! `DllCall` sets `@error = 1` and returns `0` rather than inventing a result.
+//! `DllCall`: a struct is a `Vec<u8>` this layer owns, an unimplemented
+//! `DllCall` sets `@error = 1` and returns `0` rather than inventing a result,
+//! and the COM builtins fail the same way. Callback pointers are registered but
+//! never invoked by native code.
 //! That keeps a script's own error handling in charge — and when you would
 //! rather stop at the boundary, install [`crate::host_platform`] without this
 //! layer (set `AU3_WIN_EMU=0`, or use `--no-win-emu`).
@@ -63,6 +70,9 @@ mod dllstruct;
 mod paths;
 mod pe;
 mod registry;
+mod shell;
+mod shortcut;
+mod verinfo;
 mod version;
 
 pub use dllstruct::{DllStruct, FieldSelector};
@@ -70,6 +80,7 @@ pub use paths::WindowsPaths;
 pub use crypto::{CipherAlg, HashAlg};
 pub use pe::{PeImage, Resource, Selector};
 pub use registry::{FileRegistry, MemoryRegistry, RegistryData, RegistryStore};
+pub use shortcut::Shortcut;
 pub use version::{WindowsArch, WindowsVersion};
 
 use std::cell::RefCell;
@@ -157,6 +168,13 @@ pub fn has_staged_resources(dirs: &[PathBuf]) -> bool {
 pub const DEFAULT_CLIPBOARD_FILE: &str = ".au3_clipboard";
 /// The registry file, relative to the working directory.
 pub const DEFAULT_REGISTRY_FILE: &str = ".au3_registry";
+/// The directory `FileRecycle` moves files into, relative to the working
+/// directory.
+pub const DEFAULT_RECYCLE_DIR: &str = ".au3_recycle";
+/// Set this to `0`/`false`/`off` to make `IsAdmin` report a standard user.
+pub const ADMIN_ENV: &str = "AU3_WIN_ADMIN";
+/// The first synthetic pointer `DllCallbackRegister` hands out.
+const CALLBACK_BASE: i64 = 0x0050_0000;
 
 /// Every function this layer implements.
 pub const FUNCTIONS: &[&str] = &[
@@ -189,6 +207,40 @@ pub const FUNCTIONS: &[&str] = &[
     "DriveSpaceTotal",
     "DriveSpaceFree",
     "DriveStatus",
+    // Windows files / PE resources
+    "FileGetVersion",
+    "FileCreateShortcut",
+    "FileGetShortcut",
+    "FileCreateNTFSLink",
+    "FileRecycle",
+    "FileRecycleEmpty",
+    "FileInstall",
+    // native calls: address + callbacks
+    "DllCallAddress",
+    "DllCallbackRegister",
+    "DllCallbackGetPtr",
+    "DllCallbackFree",
+    // COM — no runtime off Windows, so these fail predictably
+    "ObjCreate",
+    "ObjCreateInterface",
+    "ObjEvent",
+    "ObjGet",
+    "ObjName",
+    "IsObj",
+    // system information
+    "MemGetStats",
+    "IsAdmin",
+    // drive mappings
+    "DriveMapAdd",
+    "DriveMapDel",
+    "DriveMapGet",
+    "DriveSetLabel",
+    // shell execution
+    "ShellExecute",
+    "ShellExecuteWait",
+    "RunAs",
+    "RunAsWait",
+    "Shutdown",
 ];
 
 /// The image base a PE is loaded at, as `GetModuleHandleW` reports it.
@@ -366,6 +418,17 @@ pub struct WindowsEmulation {
     trace_dll: bool,
     /// Targets already reported, so the trace stays readable.
     traced: std::collections::HashSet<String>,
+    /// Script functions registered with `DllCallbackRegister`, 1-based. The
+    /// pointer handed out is `CALLBACK_BASE + index * 16`.
+    callbacks: Vec<Option<String>>,
+    /// Emulated network drive mappings: device (`X:`) → remote share.
+    drive_maps: Vec<(String, String)>,
+    /// Where `FileRecycle` moves files and directories.
+    recycle_dir: PathBuf,
+    /// What `IsAdmin` reports.
+    is_admin: bool,
+    /// How many `Shutdown` requests were recorded (none is ever acted on).
+    shutdowns: u32,
 }
 
 impl Default for WindowsEmulation {
@@ -411,6 +474,11 @@ impl WindowsEmulation {
             origin: Instant::now(),
             trace_dll: false,
             traced: std::collections::HashSet::new(),
+            callbacks: Vec::new(),
+            drive_maps: Vec::new(),
+            recycle_dir: PathBuf::from(DEFAULT_RECYCLE_DIR),
+            is_admin: true,
+            shutdowns: 0,
         }
     }
 
@@ -449,6 +517,12 @@ impl WindowsEmulation {
             emu.enabled = !matches!(
                 raw.trim().to_ascii_lowercase().as_str(),
                 "0" | "false" | "no" | "off" | "none" | "disabled"
+            );
+        }
+        if let Ok(raw) = std::env::var(ADMIN_ENV) {
+            emu.is_admin = !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
             );
         }
         emu
@@ -514,6 +588,21 @@ impl WindowsEmulation {
     /// Replace the emulated drive list.
     pub fn with_drives(mut self, drives: Vec<DriveSpec>) -> Self {
         self.drives = drives;
+        self
+    }
+
+    /// Whether `IsAdmin` reports an elevated user (default `true`).
+    ///
+    /// `AU3_WIN_ADMIN=0` selects a standard user for
+    /// [`from_env`](Self::from_env) callers.
+    pub fn with_admin(mut self, admin: bool) -> Self {
+        self.is_admin = admin;
+        self
+    }
+
+    /// Where `FileRecycle` moves files instead of `.au3_recycle`.
+    pub fn with_recycle_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.recycle_dir = path.into();
         self
     }
 
@@ -1397,6 +1486,62 @@ impl WindowsEmulation {
         Value::array(out)
     }
 
+    /// Move a file or directory into the emulated recycle directory.
+    fn recycle(&self, path: &str) -> bool {
+        let src = std::path::Path::new(path);
+        if !src.exists() {
+            return false;
+        }
+        if std::fs::create_dir_all(&self.recycle_dir).is_err() {
+            return false;
+        }
+        let name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "item".to_string());
+        let stamp = self.origin.elapsed().as_millis();
+        std::fs::rename(src, self.recycle_dir.join(format!("{stamp}_{name}"))).is_ok()
+    }
+
+    /// Serve `FileInstall`: copy `source` to `dest`, falling back to the loaded
+    /// module's `RT_RCDATA` resources when the source is not on disk.
+    fn file_install(&self, source: &str, dest: &str, no_overwrite: bool) -> bool {
+        if dest.is_empty() {
+            return false;
+        }
+        if no_overwrite && std::path::Path::new(dest).exists() {
+            return true;
+        }
+        let src = std::path::Path::new(source);
+        if src.is_file() {
+            return std::fs::copy(src, dest).is_ok();
+        }
+        let Some(module) = &self.module else {
+            return false;
+        };
+        let basename = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if basename.is_empty() {
+            return false;
+        }
+        for name in [basename.clone(), format!("__{basename}")] {
+            if let Some(res) = module.find(&Selector::name(name), &Selector::id(10)) {
+                return std::fs::write(dest, &res.data).is_ok();
+            }
+        }
+        false
+    }
+
+    /// The first unused drive letter from `D:` to `Z:`.
+    fn free_drive_letter(&self) -> Option<char> {
+        ('D'..='Z').find(|letter| {
+            !self.drive_maps.iter().any(|(d, _)| d.starts_with(*letter))
+                && !self.drives.iter().any(|d| d.letter == *letter)
+        })
+    }
+
     fn drive_field<F>(&self, args: &[Value], ctx: &mut dyn HostContext, f: F) -> Value
     where
         F: Fn(&DriveSpec) -> Value,
@@ -1610,6 +1755,374 @@ impl Platform for WindowsEmulation {
             "drivestatus" => self.drive_field(&args, ctx, |d| {
                 Value::Str(if d.ready { "READY" } else { "NOTREADY" }.to_string())
             }),
+
+            // ---------------- Windows files / PE resources ----------------
+            "filegetversion" => {
+                let path = arg_str(&args, 0);
+                let field = arg_str(&args, 1);
+                let field = field.trim();
+                let field = if field.is_empty() {
+                    "FileVersion"
+                } else {
+                    field
+                };
+                match verinfo::read(&path) {
+                    Some(info) => {
+                        if let Some(v) = info.string(field) {
+                            ctx.set_error(0, 0);
+                            Value::Str(v.to_string())
+                        } else if field.eq_ignore_ascii_case("FileVersion") && info.dotted().is_some()
+                        {
+                            ctx.set_error(0, 0);
+                            Value::Str(info.dotted().unwrap_or_default())
+                        } else {
+                            ctx.set_error(1, 0);
+                            Value::str("")
+                        }
+                    }
+                    // No version resource (or unreadable file): AutoIt's
+                    // documented failure value for a missing version.
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::Str("0.0.0.0".to_string())
+                    }
+                }
+            }
+            "filecreateshortcut" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let target = arg_str(&args, 0);
+                let lnk = arg_str(&args, 1);
+                if target.is_empty() || lnk.is_empty() {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let sc = shortcut::Shortcut {
+                    target,
+                    working_dir: arg_str(&args, 2),
+                    arguments: arg_str(&args, 3),
+                    description: arg_str(&args, 4),
+                    icon_location: arg_str(&args, 5),
+                    hotkey: parse_hotkey(&arg_str(&args, 6)),
+                    icon_index: args.get(7).map(|v| v.to_int() as i32).unwrap_or(0),
+                    show_command: args.get(8).map(|v| v.to_int() as u32).unwrap_or(1),
+                };
+                let ok = shortcut::write(&lnk, &sc).is_ok();
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "filegetshortcut" => {
+                let lnk = arg_str(&args, 0);
+                match shortcut::read(&lnk) {
+                    Some(sc) => {
+                        ctx.set_error(0, 0);
+                        Value::array(vec![
+                            Value::Str(sc.target),
+                            Value::Str(sc.working_dir),
+                            Value::Str(sc.arguments),
+                            Value::Str(sc.description),
+                            Value::Str(sc.icon_location),
+                            Value::Int(i64::from(sc.icon_index)),
+                            Value::Int(i64::from(sc.show_command)),
+                        ])
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::array(vec![Value::Int(0)])
+                    }
+                }
+            }
+            "filecreatentfslink" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let link = arg_str(&args, 0);
+                let target = arg_str(&args, 1);
+                let ok = if arg_int(&args, 2) == 1 {
+                    create_junction(&target, &link)
+                } else {
+                    std::fs::hard_link(&target, &link).is_ok()
+                };
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "filerecycle" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let ok = self.recycle(&arg_str(&args, 0));
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "filerecycleempty" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let ok = match std::fs::remove_dir_all(&self.recycle_dir) {
+                    Ok(()) => true,
+                    Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+                };
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "fileinstall" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let ok = self.file_install(
+                    &arg_str(&args, 0),
+                    &arg_str(&args, 1),
+                    arg_int(&args, 2) == 1,
+                );
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+
+            // ---------------- DllCallAddress / callbacks ----------------
+            "dllcalladdress" => {
+                // Without a PE loader there is no routine behind an address,
+                // so the call fails rather than inventing a return value.
+                ctx.set_error(1, 0);
+                Value::Int(0)
+            }
+            "dllcallbackregister" => {
+                let name = arg_str(&args, 0);
+                if name.is_empty() {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                self.callbacks.push(Some(name));
+                let ptr = CALLBACK_BASE + (self.callbacks.len() as i64 - 1) * 16;
+                ctx.set_error(0, 0);
+                Value::Int(ptr)
+            }
+            "dllcallbackgetptr" => {
+                let handle = arg_int(&args, 0);
+                let ok = callback_index(handle)
+                    .is_some_and(|i| self.callbacks.get(i).is_some_and(|slot| slot.is_some()));
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(if ok { handle } else { 0 })
+            }
+            "dllcallbackfree" => {
+                let handle = arg_int(&args, 0);
+                let ok = callback_index(handle).is_some_and(|i| {
+                    if i < self.callbacks.len() && self.callbacks[i].is_some() {
+                        self.callbacks[i] = None;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+
+            // ---------------- COM ----------------
+            // There is no COM runtime off Windows, and handing back an object
+            // would be an invented value, so these fail predictably and leave
+            // the script's own error handling in charge.
+            "objcreate" | "objcreateinterface" | "objget" | "objevent" => {
+                ctx.set_error(1, 0);
+                Value::Int(0)
+            }
+            "objname" => {
+                ctx.set_error(1, 0);
+                Value::str("")
+            }
+            "isobj" => Value::Int(0),
+
+            // ---------------- system information ----------------
+            // A fixed machine profile, so a run is reproducible.
+            "memgetstats" => {
+                ctx.set_error(0, 0);
+                Value::array(vec![
+                    Value::Int(50),         // load, percent
+                    Value::Int(8_388_608),  // total physical RAM, KB
+                    Value::Int(4_194_304),  // available physical
+                    Value::Int(16_777_216), // total pagefile
+                    Value::Int(12_582_912), // available pagefile
+                    Value::Int(2_097_152),  // total virtual
+                    Value::Int(2_097_152),  // available virtual
+                ])
+            }
+            "isadmin" => Value::Int(i64::from(self.is_admin)),
+
+            // ---------------- drive mappings ----------------
+            "drivemapadd" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let requested = arg_str(&args, 0).trim().to_ascii_uppercase();
+                let share = arg_str(&args, 1);
+                if share.is_empty() {
+                    ctx.set_error(5, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let device = if requested == "*" {
+                    match self.free_drive_letter() {
+                        Some(letter) => format!("{letter}:"),
+                        None => {
+                            ctx.set_error(4, 0);
+                            return Ok(Some(Value::str("")));
+                        }
+                    }
+                } else {
+                    if !requested.is_empty() && !is_drive_device(&requested) {
+                        ctx.set_error(4, 0);
+                        return Ok(Some(Value::Int(0)));
+                    }
+                    requested.clone()
+                };
+                if !device.is_empty() && self.drive_maps.iter().any(|(d, _)| d == &device) {
+                    ctx.set_error(3, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                self.drive_maps.push((device.clone(), share));
+                ctx.set_error(0, 0);
+                if requested == "*" {
+                    Value::Str(device)
+                } else {
+                    Value::Int(1)
+                }
+            }
+            "drivemapdel" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let device = arg_str(&args, 0).trim().to_ascii_uppercase();
+                let before = self.drive_maps.len();
+                self.drive_maps.retain(|(d, _)| d != &device);
+                let ok = self.drive_maps.len() != before;
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "drivemapget" => {
+                let device = arg_str(&args, 0).trim().to_ascii_uppercase();
+                match self.drive_maps.iter().find(|(d, _)| d == &device) {
+                    Some((_, share)) => {
+                        ctx.set_error(0, 0);
+                        Value::Str(share.clone())
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::str("")
+                    }
+                }
+            }
+            "drivesetlabel" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let letter = arg_str(&args, 0)
+                    .chars()
+                    .next()
+                    .map(|c| c.to_ascii_uppercase());
+                match letter.and_then(|l| self.drives.iter_mut().find(|d| d.letter == l)) {
+                    Some(drive) => {
+                        drive.label = arg_str(&args, 1);
+                        ctx.set_error(0, 0);
+                        Value::Int(1)
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
+                }
+            }
+
+            // ---------------- shell execution ----------------
+            "shellexecute" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let ok = shell::spawn(
+                    &arg_str(&args, 0),
+                    &arg_str(&args, 1),
+                    &arg_str(&args, 2),
+                    0,
+                )
+                .is_ok();
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "shellexecutewait" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let code = shell::spawn(
+                    &arg_str(&args, 0),
+                    &arg_str(&args, 1),
+                    &arg_str(&args, 2),
+                    0,
+                )
+                .and_then(|mut child| child.wait())
+                .map(|status| i64::from(status.code().unwrap_or(0)));
+                match code {
+                    Ok(code) => {
+                        ctx.set_error(0, 0);
+                        Value::Int(code)
+                    }
+                    Err(_) => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
+                }
+            }
+            "runas" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                // Credentials are accepted, not applied (see `shell`).
+                let opt = arg_int(&args, 6);
+                match shell::spawn(&arg_str(&args, 3), "", &arg_str(&args, 4), opt) {
+                    Ok(child) => {
+                        ctx.set_error(0, 0);
+                        Value::Int(i64::from(child.id()))
+                    }
+                    Err(_) => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
+                }
+            }
+            "runaswait" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let opt = arg_int(&args, 6);
+                let code = shell::spawn(&arg_str(&args, 3), "", &arg_str(&args, 4), opt)
+                    .and_then(|mut child| child.wait())
+                    .map(|status| i64::from(status.code().unwrap_or(0)));
+                match code {
+                    Ok(code) => {
+                        ctx.set_error(0, 0);
+                        Value::Int(code)
+                    }
+                    Err(_) => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
+                }
+            }
+            "shutdown" => {
+                // Recorded, never acted on: a run must not power off the host.
+                self.shutdowns += 1;
+                ctx.set_error(0, 0);
+                Value::Int(1)
+            }
             _ => return Ok(None),
         };
         Ok(Some(value))
@@ -1697,6 +2210,54 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         _ => return None,
     };
     Some(value)
+}
+
+/// Parse AutoIt's `^!+` hotkey notation into a Windows `HOTKEY` word.
+fn parse_hotkey(s: &str) -> u16 {
+    let mut modifiers: u16 = 0;
+    let mut vk: u16 = 0;
+    for c in s.chars() {
+        match c {
+            '^' => modifiers |= 2, // Ctrl
+            '!' => modifiers |= 4, // Alt
+            '+' => modifiers |= 1, // Shift
+            c => {
+                let up = c.to_ascii_uppercase();
+                if up.is_ascii_alphanumeric() {
+                    vk = up as u16;
+                }
+            }
+        }
+    }
+    (modifiers << 8) | vk
+}
+
+/// The callback slot a `DllCallbackRegister` pointer refers to.
+fn callback_index(handle: i64) -> Option<usize> {
+    if handle < CALLBACK_BASE || (handle - CALLBACK_BASE) % 16 != 0 {
+        return None;
+    }
+    Some(((handle - CALLBACK_BASE) / 16) as usize)
+}
+
+/// Whether `device` names a drive (`X:`) or a printer port (`LPT1:`).
+fn is_drive_device(device: &str) -> bool {
+    let bytes = device.as_bytes();
+    if bytes.len() == 2 && bytes[1] == b':' {
+        return bytes[0].is_ascii_alphabetic();
+    }
+    device.starts_with("LPT") || device.starts_with("COM")
+}
+
+/// A directory junction; a host symlink is the closest analogue.
+#[cfg(unix)]
+fn create_junction(target: &str, link: &str) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[cfg(not(unix))]
+fn create_junction(_target: &str, _link: &str) -> bool {
+    false
 }
 
 /// `C:` → `C:\` so the common-profile paths can be built from the drive.

@@ -702,7 +702,11 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 原生调用 | `DllCall(dll, rettype, func, type, arg…)`，已实现 `GetVersionExW`/`A`、`RtlGetVersion`、`GetVersion`、`GetSystemInfo`/`GetNativeSystemInfo` 以及几个无副作用的查询。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
 | 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存、写立刻回写文件；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
 | 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
-| 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFilesystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配） |
+| 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFilesystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配）；网络映射 `DriveMapAdd`/`DriveMapDel`/`DriveMapGet` 与 `DriveSetLabel` 维护本层的映射/卷标状态 |
+| Windows 文件 | `FileGetVersion`（解析 PE `RT_VERSION`）、`FileCreateShortcut`/`FileGetShortcut`（读写真实 `.lnk` Shell Link）、`FileCreateNTFSLink`、`FileRecycle`/`FileRecycleEmpty`（落到 `.au3_recycle`，可用 `with_recycle_dir()` 改名）、`FileInstall`（磁盘文件或已加载模块的 `RT_RCDATA` 资源） |
+| 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`DllCallAddress` 无加载器，按边界失败 |
+| 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
+| COM | 无 COM 运行时：`ObjCreate`/`ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 返回 `0`/`""` 并置 `@error = 1`，`IsObj` 恒为 `0`（不编造对象） |
 
 **选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
 `Win10`/`Win11`，**默认 Win10**：
@@ -767,10 +771,11 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
 
 **边界仍然存在，而且是有意的**：仿真层不是 PE 加载器，没有 COM、没有窗口管理器、
 不调用真实 DLL。因此
-- 未列举的 `DllCall` 置 `@error = 1`、返回 `0`，把决定权交回脚本；
-- `GUICreate`/`ObjCreate`/`Win*` 等仍报 `undefined function`；
-- 注册表/剪贴板写入遵循 `ExecutionProfile`：确定性分析配置下同样被拒绝（`@error = 1`），
-  也就不会生成 `.au3_registry` / `.au3_clipboard`；
+- 未列举的 `DllCall` 置 `@error = 1`、返回 `0`，把决定权交回脚本；`DllCallAddress` 同理；
+- COM 内建函数存在但**可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
+- `GUICreate`/`Win*` 等 GUI/窗口/输入函数仍报 `undefined function`（列 C 的待办）；
+- 写文件、回收站、驱动器映射、启动进程同样遵循 `ExecutionProfile`：确定性分析配置下被拒绝
+  （`@error = 1`），也就不会生成 `.au3_registry` / `.au3_clipboard` / `.au3_recycle`；
 - 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，
   回到"停在第一个 Windows 调用"的诚实行为；`with_host_paths()` 则只让**目录**宏回落到
   主机路径（`@TempDir` 等仍可用于真实文件 I/O），Windows 专有宏照旧仿真。

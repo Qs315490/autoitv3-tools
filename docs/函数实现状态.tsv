@@ -58,10 +58,10 @@ DirGetSize	已实现				见对应源码层
 DirMove	已实现				见对应源码层
 DirRemove	已实现				见对应源码层
 DllCall	已实现				见对应源码层
-DllCallAddress	待实现	仿真	winemu	P1	DllCall 扩展 / 回调
-DllCallbackFree	待实现	仿真	winemu	P2	DllCall 扩展 / 回调
-DllCallbackGetPtr	待实现	仿真	winemu	P0	DllCall 扩展 / 回调
-DllCallbackRegister	待实现	仿真	winemu	P0	DllCall 扩展 / 回调
+DllCallAddress	已实现				见对应源码层
+DllCallbackFree	已实现				见对应源码层
+DllCallbackGetPtr	已实现				见对应源码层
+DllCallbackRegister	已实现				见对应源码层
 DllClose	已实现				见对应源码层
 DllOpen	已实现				见对应源码层
 DllStructCreate	已实现				见对应源码层
@@ -74,10 +74,10 @@ DriveGetFileSystem	已实现				见对应源码层
 DriveGetLabel	已实现				见对应源码层
 DriveGetSerial	已实现				见对应源码层
 DriveGetType	已实现				见对应源码层
-DriveMapAdd	待实现	仿真	winemu	P1	驱动器映射
-DriveMapDel	待实现	仿真	winemu	P1	驱动器映射
-DriveMapGet	待实现	仿真	winemu	P1	驱动器映射
-DriveSetLabel	待实现	仿真	winemu	P2	驱动器映射
+DriveMapAdd	已实现				见对应源码层
+DriveMapDel	已实现				见对应源码层
+DriveMapGet	已实现				见对应源码层
+DriveSetLabel	已实现				见对应源码层
 DriveSpaceFree	已实现				见对应源码层
 DriveSpaceTotal	已实现				见对应源码层
 DriveStatus	已实现				见对应源码层
@@ -90,8 +90,8 @@ Exp	已实现				见对应源码层
 FileChangeDir	已实现				见对应源码层
 FileClose	已实现				见对应源码层
 FileCopy	已实现				见对应源码层
-FileCreateNTFSLink	待实现	仿真	winemu	P2	Windows 文件 / PE 版本资源
-FileCreateShortcut	待实现	仿真	winemu	P1	Windows 文件 / PE 版本资源
+FileCreateNTFSLink	已实现				见对应源码层
+FileCreateShortcut	已实现				见对应源码层
 FileDelete	已实现				见对应源码层
 FileExists	已实现				见对应源码层
 FileFindFirstFile	已实现				见对应源码层
@@ -101,20 +101,20 @@ FileGetAttrib	已实现				见对应源码层
 FileGetEncoding	已实现				见对应源码层
 FileGetLongName	已实现				见对应源码层
 FileGetPos	已实现				见对应源码层
-FileGetShortcut	待实现	仿真	winemu	P1	Windows 文件 / PE 版本资源
+FileGetShortcut	已实现				见对应源码层
 FileGetShortName	已实现				见对应源码层
 FileGetSize	已实现				见对应源码层
 FileGetTime	已实现				见对应源码层
-FileGetVersion	待实现	仿真	winemu	P0	Windows 文件 / PE 版本资源
-FileInstall	待实现	仿真	winemu	P1	Windows 文件 / PE 版本资源
+FileGetVersion	已实现				见对应源码层
+FileInstall	已实现				见对应源码层
 FileMove	已实现				见对应源码层
 FileOpen	已实现				见对应源码层
 FileOpenDialog	待实现	仿真	winemu·GUI	P0	文件选择对话框
 FileRead	已实现				见对应源码层
 FileReadLine	已实现				见对应源码层
 FileReadToArray	已实现				见对应源码层
-FileRecycle	待实现	仿真	winemu	P0	Windows 文件 / PE 版本资源
-FileRecycleEmpty	待实现	仿真	winemu	P2	Windows 文件 / PE 版本资源
+FileRecycle	已实现				见对应源码层
+FileRecycleEmpty	已实现				见对应源码层
 FileSaveDialog	待实现	仿真	winemu·GUI	P0	文件选择对话框
 FileSelectFolder	待实现	仿真	winemu·GUI	P0	文件选择对话框
 FileSetAttrib	已实现				见对应源码层
@@ -216,7 +216,7 @@ IniWrite	已实现				见对应源码层
 IniWriteSection	已实现				见对应源码层
 InputBox	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
 Int	已实现				见对应源码层
-IsAdmin	待实现	仿真	winemu	P0	系统信息
+IsAdmin	已实现				见对应源码层
 IsArray	已实现				见对应源码层
 IsBinary	已实现				见对应源码层
 IsBool	已实现				见对应源码层
@@ -229,7 +229,7 @@ IsInt	已实现				见对应源码层
 IsKeyword	已实现				见对应源码层
 IsMap	已实现				见对应源码层
 IsNumber	已实现				见对应源码层
-IsObj	待实现	仿真	winemu	P0	COM（无运行时，短路径为可判定失败）
+IsObj	已实现				见对应源码层
 IsPtr	已实现				见对应源码层
 IsString	已实现				见对应源码层
 Log	已实现				见对应源码层
@@ -237,7 +237,7 @@ MapAppend	已实现				见对应源码层
 MapExists	已实现				见对应源码层
 MapKeys	已实现				见对应源码层
 MapRemove	已实现				见对应源码层
-MemGetStats	待实现	仿真	winemu	P0	系统信息
+MemGetStats	已实现				见对应源码层
 Mod	已实现				见对应源码层
 MouseClick	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
 MouseClickDrag	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
@@ -249,11 +249,11 @@ MouseUp	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
 MouseWheel	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
 MsgBox	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
 Number	已实现				见对应源码层
-ObjCreate	待实现	仿真	winemu	P1	COM（无运行时，短路径为可判定失败）
-ObjCreateInterface	待实现	仿真	winemu	P2	COM（无运行时，短路径为可判定失败）
-ObjEvent	待实现	仿真	winemu	P2	COM（无运行时，短路径为可判定失败）
-ObjGet	待实现	仿真	winemu	P0	COM（无运行时，短路径为可判定失败）
-ObjName	待实现	仿真	winemu	P2	COM（无运行时，短路径为可判定失败）
+ObjCreate	已实现				见对应源码层
+ObjCreateInterface	已实现				见对应源码层
+ObjEvent	已实现				见对应源码层
+ObjGet	已实现				见对应源码层
+ObjName	已实现				见对应源码层
 OnAutoItExitRegister	已实现				见对应源码层
 OnAutoItExitUnRegister	已实现				见对应源码层
 Opt	已实现				见对应源码层
@@ -280,16 +280,16 @@ RegRead	已实现				见对应源码层
 RegWrite	已实现				见对应源码层
 Round	已实现				见对应源码层
 Run	已实现				见对应源码层
-RunAs	待实现	仿真	winemu	P2	执行 / Shell
-RunAsWait	待实现	仿真	winemu	P2	执行 / Shell
+RunAs	已实现				见对应源码层
+RunAsWait	已实现				见对应源码层
 RunWait	已实现				见对应源码层
 Send	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
 SendKeepActive	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
 SetError	已实现				见对应源码层
 SetExtended	已实现				见对应源码层
-ShellExecute	待实现	仿真	winemu	P0	执行 / Shell
-ShellExecuteWait	待实现	仿真	winemu	P1	执行 / Shell
-Shutdown	待实现	仿真	winemu	P0	执行 / Shell
+ShellExecute	已实现				见对应源码层
+ShellExecuteWait	已实现				见对应源码层
+Shutdown	已实现				见对应源码层
 Sin	已实现				见对应源码层
 Sleep	已实现				见对应源码层
 SoundPlay	待实现	仿真	winemu	P2	声音 / 光驱

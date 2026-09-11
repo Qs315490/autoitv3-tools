@@ -671,3 +671,206 @@ fn resources_extracted_next_to_the_script_answer_find_resource() {
     assert_eq!(got, "11|from a file|14|False|1");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// Windows files / PE, callbacks, COM, system info, shell (column B)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn file_create_and_read_shortcut_round_trips() {
+    let dir = scratch("shortcut");
+    let lnk = dir.join("app.lnk");
+    let body = format!(
+        r#"Local $ok = FileCreateShortcut("C:\Tools\app.exe", "{lnk}", "C:\Tools", "/silent", "My app", "C:\Tools\app.exe", "", 2, 3)
+    Local $a = FileGetShortcut("{lnk}")
+    If @error Then Return "error"
+    Return $ok & "|" & $a[0] & "|" & $a[1] & "|" & $a[2] & "|" & $a[3] & "|" & $a[4] & "|" & $a[5] & "|" & $a[6]"#,
+        lnk = lnk.display()
+    );
+    assert_eq!(
+        text(win10(), &body),
+        "1|C:\\Tools\\app.exe|C:\\Tools|/silent|My app|C:\\Tools\\app.exe|2|3"
+    );
+    // A real shell link starts with HeaderSize 0x4C.
+    let bytes = std::fs::read(&lnk).unwrap();
+    assert_eq!(&bytes[..4], &[0x4C, 0x00, 0x00, 0x00]);
+}
+
+#[test]
+fn file_get_version_reports_a_missing_resource() {
+    let dir = scratch("version");
+    let plain = dir.join("plain.txt");
+    std::fs::write(&plain, b"not a PE").unwrap();
+    let body = format!(
+        r#"Local $v = FileGetVersion("{p}")
+    Return $v & ":" & @error"#,
+        p = plain.display()
+    );
+    assert_eq!(text(win10(), &body), "0.0.0.0:1");
+}
+
+#[cfg(unix)]
+#[test]
+fn file_create_ntfs_link_makes_a_hard_link() {
+    let dir = scratch("hardlink");
+    let target = dir.join("orig.txt");
+    let link = dir.join("link.txt");
+    std::fs::write(&target, "payload").unwrap();
+    let body = format!(
+        r#"Return FileCreateNTFSLink("{link}", "{target}") & ":" & FileExists("{link}")"#,
+        link = link.display(),
+        target = target.display()
+    );
+    assert_eq!(text(win10(), &body), "1:1");
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "payload");
+}
+
+#[test]
+fn file_recycle_moves_then_empties() {
+    let dir = scratch("recycle");
+    let victim = dir.join("victim.txt");
+    std::fs::write(&victim, "x").unwrap();
+    let emu = win10().with_recycle_dir(dir.join("trash"));
+    let body = format!(
+        r#"Local $ok = FileRecycle("{v}")
+    Local $gone = FileExists("{v}")
+    Local $empty = FileRecycleEmpty()
+    Return $ok & ":" & $gone & ":" & $empty"#,
+        v = victim.display()
+    );
+    assert_eq!(text(emu, &body), "1:0:1");
+    assert!(!victim.exists());
+}
+
+#[test]
+fn file_install_copies_from_disk() {
+    let dir = scratch("install");
+    let src = dir.join("payload.bin");
+    let dst = dir.join("out.bin");
+    std::fs::write(&src, b"data").unwrap();
+    let body = format!(
+        r#"Local $a = FileInstall("{s}", "{d}")
+    Local $b = FileInstall("{s}", "{d}", 1)
+    Return $a & ":" & $b"#,
+        s = src.display(),
+        d = dst.display()
+    );
+    assert_eq!(text(win10(), &body), "1:1");
+    assert_eq!(std::fs::read(&dst).unwrap(), b"data".to_vec());
+}
+
+#[test]
+fn dll_callbacks_register_get_and_free() {
+    let body = r#"
+Local $h1 = DllCallbackRegister("OnTick", "none", "int")
+Local $h2 = DllCallbackRegister("OnTick", "none", "int")
+Local $ptr = DllCallbackGetPtr($h1)
+Local $free = DllCallbackFree($h1)
+Local $after = DllCallbackGetPtr($h1)
+Return ($h2 > $h1) & ":" & ($ptr = $h1) & ":" & $free & ":" & $after & ":" & @error
+"#;
+    assert_eq!(text(win10(), body), "True:True:1:0:1");
+}
+
+#[test]
+fn dll_call_address_fails_without_a_loader() {
+    let body = r#"Local $r = DllCallAddress("int", 0x1234)
+    Return $r & ":" & @error"#;
+    assert_eq!(text(win10(), body), "0:1");
+}
+
+#[test]
+fn com_calls_fail_predictably() {
+    let body = r#"Local $o = ObjCreate("Scripting.Dictionary")
+    Local $e1 = @error
+    Local $g = ObjGet("", "Some.Object")
+    Local $e2 = @error
+    Local $n = ObjName(0)
+    Local $e3 = @error
+    Return $o & ":" & $e1 & ":" & $g & ":" & $e2 & ":" & $n & ":" & $e3 & ":" & IsObj(0)"#;
+    assert_eq!(text(win10(), body), "0:1:0:1::1:0");
+}
+
+#[test]
+fn mem_get_stats_has_seven_elements() {
+    let body = r#"Local $a = MemGetStats()
+    Return UBound($a) & ":" & $a[0] & ":" & ($a[1] > 0)"#;
+    assert_eq!(text(win10(), body), "7:50:True");
+}
+
+#[test]
+fn is_admin_follows_the_machine() {
+    assert_eq!(text(win10(), "Return IsAdmin()"), "1");
+    assert_eq!(text(win10().with_admin(false), "Return IsAdmin()"), "0");
+}
+
+#[test]
+fn drive_maps_add_get_delete_and_label() {
+    let body = r#"
+Local $add = DriveMapAdd("X:", "\\srv\share")
+Local $got = DriveMapGet("X:")
+Local $dup = DriveMapAdd("X:", "\\srv\other")
+Local $dup_err = @error
+Local $del = DriveMapDel("X:")
+Local $missing = DriveMapGet("X:")
+Local $missing_err = @error
+Local $label = DriveSetLabel("C:", "DATA")
+Local $read = DriveGetLabel("C:")
+Return $add & "|" & $got & "|" & $dup & $dup_err & "|" & $del & "|" & $missing & ":" & $missing_err & "|" & $label & "|" & $read
+"#;
+    assert_eq!(text(win10(), body), "1|\\\\srv\\share|03|1|:1|1|DATA");
+}
+
+#[test]
+fn drive_map_star_picks_a_letter() {
+    let body = r#"Local $d = DriveMapAdd("*", "\\srv\share")
+    Return StringLen($d) & ":" & StringRight($d, 1)"#;
+    assert_eq!(text(win10(), body), "2::");
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_execute_runs_a_program() {
+    assert_eq!(text(win10(), r#"Return ShellExecute("/bin/true")"#), "1");
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_execute_wait_returns_the_exit_code() {
+    let body = r#"Return ShellExecuteWait("/bin/sh", "-c ""exit 3""")"#;
+    assert_eq!(text(win10(), body), "3");
+}
+
+#[cfg(unix)]
+#[test]
+fn run_as_delegates_to_the_host() {
+    // Credentials are accepted, not applied; the program still runs.
+    let body = r#"Local $pid = RunAs("u", "d", "p", "/bin/true")
+    Local $code = RunAsWait("u", "d", "p", "/bin/sh", "", 0, 0)
+    Return ($pid > 0) & ":" & $code"#;
+    assert_eq!(text(win10(), body), "True:0");
+}
+
+#[test]
+fn shutdown_is_recorded_not_acted_on() {
+    let body = r#"Local $a = Shutdown(1)
+    Local $b = Shutdown(0)
+    Return $a & ":" & $b"#;
+    assert_eq!(text(win10(), body), "1:1");
+}
+
+#[test]
+fn the_read_only_profile_refuses_side_effecting_calls() {
+    let dir = scratch("readonly");
+    let lnk = dir.join("x.lnk");
+    let body = format!(
+        r#"Local $a = FileCreateShortcut("C:\a.exe", "{lnk}")
+    Local $b = FileRecycle("C:\nope.txt")
+    Local $c = DriveMapAdd("X:", "\\srv\share")
+    Local $d = ShellExecute("/bin/true")
+    Return $a & ":" & $b & ":" & $c & ":" & $d"#,
+        lnk = lnk.display()
+    );
+    let value = run_profiled(win10(), ExecutionProfile::deterministic(), &body);
+    assert_eq!(value.to_autoit_string(), "0:0:0:0");
+}
