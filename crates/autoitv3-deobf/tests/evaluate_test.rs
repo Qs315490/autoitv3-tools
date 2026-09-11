@@ -490,3 +490,49 @@ EndFunc
     assert_eq!(report.declarations_resolved, 0);
     assert!(out.contains("Build()"), "declaration should be untouched: {out}");
 }
+
+/// Run the optional `AU3_SAMPLE` script with the PE image that sits next to it.
+///
+/// A compiled AutoIt script keeps its encrypted tables in the image's
+/// resources, which is why the resource module is discovered from the sample's
+/// own directory rather than configured by hand.
+///
+/// The script body takes a few minutes to interpret in a debug build, so run
+/// this one with `--release` (about eight seconds there).
+fn sample_evaluate() -> Option<(String, autoitv3_deobf::EvaluateReport)> {
+    let path = std::env::var("AU3_SAMPLE").ok().filter(|p| !p.is_empty())?;
+    let src = std::fs::read_to_string(&path).ok()?;
+    let mut prog = parse(&src).expect("sample parses");
+    let mut emu = autoitv3_platform::WindowsEmulation::new();
+    if let Some(found) =
+        autoitv3_platform::find_resource_module(Some(std::path::Path::new(&path)))
+    {
+        emu = emu.with_module_file(found);
+    }
+    let report = evaluate_with_options(
+        &mut prog,
+        ExecutionProfile::deterministic(),
+        autoitv3_platform::host_platform_with(emu),
+        SubstituteOptions::default(),
+    );
+    // Rendering the whole sample through the pretty printer is slow in a debug
+    // build, so this reports the counts the pass produced rather than text.
+    Some((String::new(), report))
+}
+
+#[test]
+fn the_encrypted_tables_come_out_when_the_resource_image_is_present() {
+    // Without the image the sample stops inside its string-table builder with a
+    // few hundred substitutions; with it the CryptoAPI chain runs and tens of
+    // thousands of references are inlined.
+    let Some((_out, report)) = sample_evaluate() else {
+        return;
+    };
+    assert!(
+        report.substitutions > 20_000,
+        "only {} substitutions (stopped at {:?})",
+        report.substitutions,
+        report.stopped
+    );
+    assert_eq!(report.tables, 9, "the string table should have been built");
+}

@@ -20,6 +20,7 @@ use clap::Args;
 
 use crate::args::{load_program, CliResult, OutputArgs, WinEmuArgs};
 use crate::output::write_output;
+use std::path::Path;
 
 /// Arguments for `au3 deobfuscate`.
 #[derive(Args, Debug)]
@@ -75,7 +76,7 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         let outcome = evaluate_with_options(
             &mut prog,
             super::evaluate::profile(args.faithful),
-            args.win.platform()?,
+            args.win.platform(Some(Path::new(&args.input)))?,
             options,
         );
         super::evaluate::report(&outcome);

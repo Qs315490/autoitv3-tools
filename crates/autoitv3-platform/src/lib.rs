@@ -53,8 +53,8 @@ pub mod windows;
 pub use linux::LinuxPlatform;
 pub use portable::PortablePlatform;
 pub use winemu::{
-    FileRegistry, MemoryRegistry, RegistryData, RegistryStore, WindowsArch, WindowsEmulation,
-    WindowsVersion,
+    find_resource_module, FileRegistry, MemoryRegistry, PeImage, RegistryData, RegistryStore,
+    Selector, WindowsArch, WindowsEmulation, WindowsVersion,
 };
 
 #[cfg(windows)]
