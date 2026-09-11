@@ -46,6 +46,8 @@ pub struct EvaluateReport {
     pub substitutions: usize,
     /// Number of indexed calls resolved to a real function name.
     pub calls_resolved: usize,
+    /// Number of `Global` table declarations replaced by the value itself.
+    pub declarations_resolved: usize,
     /// The globals the run produced, kept so the substitution can be repeated
     /// once the later passes have spliced new code into the tree.
     pub values: Tables,
@@ -69,12 +71,14 @@ pub struct SubstitutionCount {
     pub substitutions: usize,
     /// Indexed calls resolved to a real function name.
     pub calls_resolved: usize,
+    /// `Global` table declarations replaced by the value itself.
+    pub declarations_resolved: usize,
 }
 
 impl SubstitutionCount {
     /// Total number of rewrites.
     pub fn total(&self) -> usize {
-        self.substitutions + self.calls_resolved
+        self.substitutions + self.calls_resolved + self.declarations_resolved
     }
 }
 
@@ -102,6 +106,7 @@ impl Tables {
             consts: &consts,
             substitutions: 0,
             calls_resolved: 0,
+            declarations_resolved: 0,
         };
         for item in &mut prog.items {
             ctx.item(item);
@@ -109,6 +114,7 @@ impl Tables {
         SubstitutionCount {
             substitutions: ctx.substitutions,
             calls_resolved: ctx.calls_resolved,
+            declarations_resolved: ctx.declarations_resolved,
         }
     }
 }
@@ -167,6 +173,7 @@ pub fn evaluate_with_platform(
     let first = report.values.substitute(prog);
     report.substitutions = first.substitutions;
     report.calls_resolved = first.calls_resolved;
+    report.declarations_resolved = first.declarations_resolved;
     report
 }
 
@@ -180,6 +187,7 @@ struct SubstituteCtx<'a> {
     consts: &'a HashSet<String>,
     substitutions: usize,
     calls_resolved: usize,
+    declarations_resolved: usize,
 }
 
 impl SubstituteCtx<'_> {
@@ -195,7 +203,10 @@ impl SubstituteCtx<'_> {
                 }
                 self.stmts(&mut f.body);
             }
-            ItemKind::Stmt(s) => self.stmt(s),
+            ItemKind::Stmt(s) => {
+                self.stmt(s);
+                self.inline_global_table(s);
+            }
             ItemKind::Region(r) => {
                 for it in &mut r.items {
                     self.item(it);
@@ -411,6 +422,42 @@ impl SubstituteCtx<'_> {
         });
     }
 
+    /// Replace `Global $t = Build()` with the value the run produced.
+    ///
+    /// Only arrays: those are the obfuscator's data tables, and once every read
+    /// of one has been substituted, the call in its declaration is all that is
+    /// left of it. Leaving `$t = SomeBuilder()` there would hide the table's
+    /// content behind a function the reader has to trace.
+    fn inline_global_table(&mut self, s: &mut Stmt) {
+        let StmtKind::VarDecl(v) = &mut s.kind else {
+            return;
+        };
+        if !matches!(v.kind, VarKind::Global) {
+            return;
+        }
+        for item in &mut v.vars {
+            if !item.dims.is_empty() {
+                continue;
+            }
+            if !matches!(item.init.as_ref().map(|e| &e.kind), Some(ExprKind::Call(_))) {
+                continue;
+            }
+            let key = item.name.name.trim_start_matches('$').to_ascii_lowercase();
+            // A plain (non-`Const`) global may be assigned later, so its value
+            // now says nothing about its value when the declaration runs.
+            let Some(value) = self.tables.get(&key).filter(|_| v.is_const).cloned() else {
+                continue;
+            };
+            if !matches!(value, Value::Array(_)) {
+                continue;
+            }
+            if let Some(literal) = value_literal(&value, 0) {
+                item.init = Some(literal);
+                self.declarations_resolved += 1;
+            }
+        }
+    }
+
     /// Walk constant subscripts through the runtime value.
     fn resolve(&self, name: &str, indices: &[Expr]) -> Option<Value> {
         let key = name.trim_start_matches('$').to_ascii_lowercase();
@@ -458,6 +505,47 @@ impl SubstituteCtx<'_> {
 /// Strings that cannot appear inside an AutoIt `"..."` literal — AutoIt has no
 /// escape for a line break, and a literal newline would end the statement — are
 /// left alone rather than producing source that does not parse.
+/// The literal form of a whole table: an array literal, nested arrays
+/// included, with binaries written as `Binary("0x…")`.
+///
+/// `None` when any element has no literal form (a map, a string with a newline),
+/// because a half-written table would be worse than none.
+fn value_literal(v: &Value, depth: usize) -> Option<Expr> {
+    if depth > 8 {
+        return None;
+    }
+    match v {
+        Value::Array(a) => {
+            let items = a.borrow();
+            let mut out = Vec::with_capacity(items.len());
+            for e in items.iter() {
+                out.push(value_literal(e, depth + 1)?);
+            }
+            Some(Expr {
+                kind: ExprKind::ArrayLit(out),
+                span: Span::default(),
+            })
+        }
+        Value::Binary(b) => Some(Expr {
+            kind: ExprKind::Call(CallExpr {
+                callee: Ident {
+                    name: "Binary".to_string(),
+                    span: Span::default(),
+                },
+                args: vec![Expr {
+                    kind: ExprKind::Lit(Lit {
+                        kind: LitKind::Str(autoitv3_runtime::value::binary_to_hex(b)),
+                        span: Span::default(),
+                    }),
+                    span: Span::default(),
+                }],
+            }),
+            span: Span::default(),
+        }),
+        other => literal_of(other),
+    }
+}
+
 fn literal_of(v: &Value) -> Option<Expr> {
     if let Value::Str(s) = v {
         if s.contains(['\r', '\n', '\0']) {

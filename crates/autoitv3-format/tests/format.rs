@@ -119,3 +119,25 @@ fn empty_array_brackets_are_not_printed_as_null() {
     let reparsed = parse(&out).unwrap();
     assert_eq!(reparsed.items.len(), prog.items.len());
 }
+
+#[test]
+fn a_long_array_literal_wraps_with_continuations() {
+    // A deobfuscated table can run to thousands of entries; wrapping keeps it
+    // readable without breaking AutoIt's syntax.
+    let items: Vec<String> = (0..40).map(|i| i.to_string()).collect();
+    let src = format!("Local $a = [{}]\n", items.join(", "));
+    let prog = autoitv3_ast::parse(&src).expect("parses");
+    let mut pp = autoitv3_format::PrettyPrinter::new();
+    let out = pp.print_program(&prog);
+    assert!(out.contains(" _"), "no continuation added: {out}");
+    // The wrapped form is still valid AutoIt, and means the same thing.
+    let reparsed = autoitv3_ast::parse(&out).expect("wrapped output re-parses");
+    assert_eq!(reparsed.items.len(), prog.items.len());
+}
+
+#[test]
+fn a_short_array_literal_stays_on_one_line() {
+    let prog = autoitv3_ast::parse("Local $a = [1, 2, 3]\n").expect("parses");
+    let mut pp = autoitv3_format::PrettyPrinter::new();
+    assert_eq!(pp.print_program(&prog), "Local $a = [1, 2, 3]\n");
+}
