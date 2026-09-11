@@ -101,19 +101,11 @@ pub const TRACE_ENV: &str = "AU3_WINEMU_TRACE";
 /// The version used when nothing selects one.
 pub const DEFAULT_VERSION: WindowsVersion = WindowsVersion::Win10;
 
-/// Find the PE image whose resources should answer `FindResourceW`.
-///
-/// A script that was compiled into an `.exe` keeps its payload in that image's
-/// resources, and the image usually sits right next to the script, so nothing
-/// has to be configured in the common case. The script's directory is searched
-/// first, then the working directory; see [`PeImage::find_resource_module`]
-/// for how the image is chosen within a directory.
+/// The directories searched for resources: the script's own directory first,
+/// then the working directory.
 ///
 /// `script` is the path of the `.au3` being analysed, when the caller knows it.
-pub fn find_resource_module(script: Option<&std::path::Path>) -> Option<PathBuf> {
-    let stem = script
-        .and_then(|p| p.file_stem())
-        .and_then(|s| s.to_str());
+pub fn resource_search_dirs(script: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(dir) = script.and_then(|p| p.parent()) {
         if !dir.as_os_str().is_empty() {
@@ -125,8 +117,40 @@ pub fn find_resource_module(script: Option<&std::path::Path>) -> Option<PathBuf>
             dirs.push(cwd);
         }
     }
-    dirs.iter()
+    dirs
+}
+
+/// Find the PE image whose resources should answer `FindResourceW`.
+///
+/// A script that was compiled into an `.exe` keeps its payload in that image's
+/// resources, and the image usually sits right next to the script, so nothing
+/// has to be configured in the common case. [`resource_search_dirs`] gives the
+/// directories; see [`PeImage::find_resource_module`] for how the image is
+/// chosen within one.
+pub fn find_resource_module(script: Option<&std::path::Path>) -> Option<PathBuf> {
+    let stem = script
+        .and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str());
+    resource_search_dirs(script)
+        .iter()
         .find_map(|dir| PeImage::find_resource_module(dir, stem))
+}
+
+/// Whether any search directory holds resources staged as files.
+///
+/// `AutoIt3Wrapper_Res_File_Add` writes them with a `__` prefix (`__NAME`) or
+/// under `__Res64`/`__ResImage`, so that is what to look for.
+pub fn has_staged_resources(dirs: &[PathBuf]) -> bool {
+    dirs.iter().any(|dir| {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("__"))
+        })
+    })
 }
 /// The clipboard file, relative to the working directory.
 pub const DEFAULT_CLIPBOARD_FILE: &str = ".au3_clipboard";
@@ -322,6 +346,9 @@ pub struct WindowsEmulation {
     module: Option<PeImage>,
     /// Where `module` was loaded from, for reporting.
     module_path: Option<PathBuf>,
+    /// Directories searched for resources staged as files (see
+    /// [`PeImage::find_resource_file`]) before the PE image is consulted.
+    resource_dirs: Vec<PathBuf>,
     /// Resources handed out by `FindResourceW`/`LoadResource`, 1-based.
     handles: Vec<Option<ResourceHandle>>,
     /// Resource bytes materialised by `LockResource`, keyed by their address.
@@ -374,6 +401,7 @@ impl WindowsEmulation {
             structs: Vec::new(),
             module: None,
             module_path: None,
+            resource_dirs: Vec::new(),
             handles: Vec::new(),
             blobs: Vec::new(),
             dlls: Vec::new(),
@@ -527,6 +555,25 @@ impl WindowsEmulation {
     /// The file the module was loaded from, if one was named or found.
     pub fn module_path(&self) -> Option<&std::path::Path> {
         self.module_path.as_deref()
+    }
+
+    /// Also look for resources staged as files in these directories, before
+    /// consulting the PE image.
+    ///
+    /// `AutoIt3Wrapper_Res_File_Add` writes each embedded resource next to the
+    /// script (`__NAME`, `__Res64/NAME`, `__ResImage/_NAME`), so this is how an
+    /// analysis reads the payload without the `.exe` that carried it.
+    pub fn with_resource_dirs(
+        mut self,
+        dirs: impl IntoIterator<Item = impl Into<PathBuf>>,
+    ) -> Self {
+        self.resource_dirs = dirs.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The directories searched for staged resource files.
+    pub fn resource_dirs(&self) -> &[PathBuf] {
+        &self.resource_dirs
     }
 
     /// Report every `DllCall` target the emulation does not implement, once
@@ -818,13 +865,30 @@ impl WindowsEmulation {
 
             // ---------------- module resources ----------------
             "getmodulehandlew" | "getmodulehandlea" | "getmodulehandle" => {
-                self.module.as_ref()?;
+                // Either source can answer `FindResourceW`: the image, or
+                // resources already extracted next to the script. Failing
+                // here when neither exists keeps the boundary visible.
+                if self.module.is_none() && self.resource_dirs.is_empty() {
+                    return None;
+                }
                 Some(DllOutcome::value(Value::Int(EMULATED_IMAGE_BASE)))
             }
             "findresourcew" | "findresourcea" | "findresource" => {
                 let name = resource_selector(arg(1).as_ref())?;
                 let kind = resource_selector(arg(2).as_ref())?;
-                let data = self.module.as_ref()?.find(&name, &kind)?.data.clone();
+                // Resources extracted to files win over the image: an analysis
+                // usually has the payload directory and not the `.exe` it came
+                // from, and looking in the working directory first is what
+                // makes that work.
+                let data = match PeImage::find_resource_file(&self.resource_dirs, &name) {
+                    Some(bytes) => {
+                        if self.trace_dll {
+                            eprintln!("[winemu] resource {} from file", name.name.as_deref().unwrap_or("?"));
+                        }
+                        bytes
+                    }
+                    None => self.module.as_ref()?.find(&name, &kind)?.data.clone(),
+                };
                 self.handles.push(Some(ResourceHandle {
                     data,
                     address: None,

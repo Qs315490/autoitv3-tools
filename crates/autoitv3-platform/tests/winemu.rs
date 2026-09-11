@@ -640,3 +640,30 @@ fn a_decrypted_buffer_can_be_re_read_through_the_pointer() {
     Return BinaryLen(DllStructGetData($view, 1)) & ":" & BinaryToString(DllStructGetData($view, 1))"#;
     assert_eq!(text(win10(), body), "4:\u{1}\u{2}\u{3}\u{4}");
 }
+
+#[test]
+fn resources_extracted_next_to_the_script_answer_find_resource() {
+    // `AutoIt3Wrapper_Res_File_Add` leaves the payload next to the script
+    // (`__NAME`, `__Res64/NAME`, `__ResImage/_NAME`), which is what lets an
+    // analysis read a build without the `.exe` it came from. These files are
+    // consulted before any image.
+    let dir = scratch("staged-resources");
+    std::fs::create_dir_all(dir.join("__Res64")).unwrap();
+    std::fs::write(dir.join("__PAYLOAD"), b"from a file").unwrap();
+    std::fs::write(dir.join("__Res64").join("BIG"), b"bigger payload").unwrap();
+
+    let emu = win10().with_resource_dirs([dir.clone()]);
+    let body = r#"Local $h = DllCall("kernel32.dll", "handle", "FindResourceW", "handle", 0, "wstr", "PAYLOAD", "wstr", 10)
+    Local $size = DllCall("kernel32.dll", "dword", "SizeofResource", "handle", 0, "handle", $h[0])
+    Local $ptr = DllCall("kernel32.dll", "ptr", "LockResource", "handle", DllCall("kernel32.dll", "handle", "LoadResource", "handle", 0, "handle", $h[0])[0])
+    Local $buf = DllStructCreate("byte[" & $size[0] & "]")
+    DllCall("kernel32.dll", "none", "RtlMoveMemory", "ptr", DllStructGetPtr($buf), "ptr", $ptr[0], "dword", $size[0])
+    Local $h2 = DllCall("kernel32.dll", "handle", "FindResourceW", "handle", 0, "wstr", "BIG", "wstr", 10)
+    Local $s2 = DllCall("kernel32.dll", "dword", "SizeofResource", "handle", 0, "handle", $h2[0])
+    Local $miss = DllCall("kernel32.dll", "handle", "FindResourceW", "handle", 0, "wstr", "NOPE", "wstr", 10)
+    Local $err = @error
+    Return $size[0] & "|" & BinaryToString(DllStructGetData($buf, 1)) & "|" & $s2[0] & "|" & IsArray($miss) & "|" & $err"#;
+    let got = text(emu, body);
+    assert_eq!(got, "11|from a file|14|False|1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
