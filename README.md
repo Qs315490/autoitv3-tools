@@ -418,6 +418,28 @@ Fold, Simplify  →  再代入一次  →  Table, Rename
 少了这一步，`Execute` 拼出来的代码里会残留 `$table[i]` 引用 —— 真实脚本上正是如此：
 `For $i = 1 To f084($name_table[175])` 这类 191 处引用（另有 36 处 `$name_table[...]`）会留在输出里。
 
+**表声明本身也会被替换成值**。所有读取代入之后，`Global Const $t = Build()` 里那次调用
+就是这张表最后的痕迹了 —— 留着它等于把数据藏在读者要去追的函数后面。所以 `--evaluate`
+会把 `Global Const` 的表声明直接写成字面量数组（嵌套数组、`Binary("0x…")` 都支持；Map 没有
+字面量语法，保持原样）：
+
+```autoit
+Global Const $g_arr_026 = [4144, "dll", "SQLITE_MISUSE", "XHotSpot", _
+    "none,fast,maximum,recovery,XPRESS,LZX,LZMS", "long", "F6F3D", _
+    "scan_error.png", "apply", ...]
+```
+
+真实脚本的字符串表有 数千项、约 数十万字符，所以超过 24 项的数组字面量会按每行 8 项用
+AutoIt 的 `_` 续行折行（`WRAP_ARRAY_AFTER`）—— 否则输出里会出现一行 数十万字符。
+
+**不带 `--evaluate` 时**，`deobfuscate` 无法知道这些表的值（得跑脚本才知道），因此会在
+摘要后提示还有多少个"由函数调用构建的全局"：
+
+```
+deobfuscated: <F> folds, ... ; table: <T> entries, <C> calls, <R> refs; 0 indirect calls simplified
+note: 7 global(s) are built by a function call at load time; re-run with --evaluate to run the script body and inline their values
+```
+
 ### 部分求值是常态
 
 真实脚本的启动代码很快会触碰操作系统（`DllCall`、注册表、GUI）——正是平台层标注的边界。
@@ -440,6 +462,7 @@ script body did not finish: undefined function: GUICREATE (at 10569:31)
 | `$name_table[...]`（名字表） | 817 | **0** |
 | `$string_table[...]`（字符串表） | several thousand | **0** |
 | 输出里残留的表读取 | 171 | **38**（全部是可变 `Global` 数组，本就不该内联） |
+| 表声明 | `Global Const $t = Build()` | **`= [ ... ]`**（值直接可见） |
 | `AU3_WIN_MODULE` 未给出 | — | 资源调用返回 `0` + `@error = 1`（诚实边界） |
 
 跑完的规模：能在本机求出的表都内联了（globals、名字表、字符串表），`deobfuscated`

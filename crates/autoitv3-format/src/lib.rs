@@ -4,6 +4,11 @@
 //! strips comments, normalizes whitespace, and (in later passes) substitutes
 //! constants. Structure is preserved faithfully so the output remains valid.
 
+/// Arrays longer than this are printed a few entries per line, with `_`
+/// continuations, so a deobfuscated table does not become one enormous line.
+const WRAP_ARRAY_AFTER: usize = 24;
+const ARRAY_ITEMS_PER_LINE: usize = 8;
+
 use std::fmt::Write;
 use autoitv3_ast::ast::*;
 
@@ -564,10 +569,22 @@ impl PrettyPrinter {
                 self.print_expr(a);
             }
             ExprKind::ArrayLit(items) => {
+                // A deobfuscated table can run to thousands of entries; one
+                // line per few entries keeps that readable (and AutoIt's `_`
+                // continuation keeps it valid).
+                let wrap = items.len() > WRAP_ARRAY_AFTER;
                 let _ = write!(self.out, "[");
                 for (i, it) in items.iter().enumerate() {
                     if i > 0 {
-                        let _ = write!(self.out, ", ");
+                        let _ = write!(self.out, ",");
+                        if wrap && i % ARRAY_ITEMS_PER_LINE == 0 {
+                            let _ = write!(self.out, " _");
+                            self.nl();
+                            self.pad();
+                            let _ = write!(self.out, "    ");
+                        } else {
+                            let _ = write!(self.out, " ");
+                        }
                     }
                     self.print_expr(it);
                 }

@@ -404,3 +404,49 @@ EndFunc
     assert!(header.contains("= \"beta\""), "table default not inlined: {header}");
     assert!(header.contains("= 7"), "const default not inlined: {header}");
 }
+
+#[test]
+fn a_global_table_declaration_is_replaced_by_its_value() {
+    // After every read has been substituted the declaration is the last trace
+    // of the table; leaving `$t = Build()` there hides the data behind a
+    // function the reader has to trace.
+    let src = r#"
+Global Const $table = Build()
+Func Build()
+    Local $t[] = [3, "alpha", 2.5, Binary("0x4142")]
+    Return $t
+EndFunc
+Func F()
+    Return $table[1]
+EndFunc
+"#;
+    let (out, report) = run(src);
+    assert_eq!(report.declarations_resolved, 1);
+    let decl = out
+        .lines()
+        .find(|l| l.starts_with("Global Const $table"))
+        .expect("declaration");
+    assert!(decl.contains('['), "value not inlined: {decl}");
+    assert!(!decl.contains("Build()"), "builder call left: {decl}");
+    // The literal round-trips: the output still parses.
+    assert!(parse(&out).is_ok(), "output did not re-parse: {out}");
+}
+
+#[test]
+fn a_table_with_no_literal_form_is_left_alone() {
+    // A map has no literal syntax in AutoIt, so the declaration has to stay.
+    let src = r#"
+Global Const $table = Build()
+Func Build()
+    Local $m[]
+    $m["a"] = 1
+    Return $m
+EndFunc
+Func F()
+    Return MapExists($table, "a")
+EndFunc
+"#;
+    let (out, report) = run(src);
+    assert_eq!(report.declarations_resolved, 0);
+    assert!(out.contains("Build()"), "declaration should be untouched: {out}");
+}

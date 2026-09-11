@@ -103,8 +103,62 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         report.simplified.calls + report.simplified.executes,
     );
 
+    if !args.evaluate {
+        // Say why the output still shows `Global Const $t = Build()`: those are
+        // the runtime-built tables, and only a run can resolve them.
+        let computed = computed_globals(&prog);
+        if computed > 0 {
+            eprintln!(
+                "note: {computed} global(s) are built by a function call at load time; \
+                 re-run with --evaluate to run the script body and inline their values"
+            );
+        }
+    }
+
     let mut printer = PrettyPrinter::new().strip_comments(true);
     let rendered = printer.print_program(&prog);
 
     write_output(args.output.output.as_deref(), &rendered)
+}
+/// Globals initialised by calling a function the script defines — the shape a
+/// runtime-built table takes (`Global Const $strings = DecodeResources()`).
+///
+/// Only `--evaluate` can turn those into values, because the value depends on
+/// what the call computes.
+fn computed_globals(prog: &autoitv3_ast::ast::Program) -> usize {
+    use autoitv3_ast::ast::{Expr, ExprKind, ItemKind, StmtKind, VarKind};
+    use std::collections::HashSet;
+
+    let defined: HashSet<String> = prog
+        .items
+        .iter()
+        .filter_map(|i| match &i.kind {
+            ItemKind::Func(f) => Some(f.name.name.to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let mut count = 0;
+    for item in &prog.items {
+        let ItemKind::Stmt(s) = &item.kind else {
+            continue;
+        };
+        let StmtKind::VarDecl(v) = &s.kind else {
+            continue;
+        };
+        if !matches!(v.kind, VarKind::Global) {
+            continue;
+        }
+        for decl in &v.vars {
+            if let Some(Expr {
+                kind: ExprKind::Call(c),
+                ..
+            }) = &decl.init
+            {
+                if defined.contains(&c.callee.name.to_ascii_lowercase()) {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
 }
