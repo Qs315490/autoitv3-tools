@@ -18,7 +18,7 @@
 //! au3 evaluate sample.au3 --no-win-emu     # stop at the first Windows call
 //! ```
 
-use autoitv3_deobf::evaluate_with_platform;
+use autoitv3_deobf::{evaluate_with_options, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
 use autoitv3_runtime::ExecutionProfile;
 use clap::Args;
@@ -37,6 +37,10 @@ pub struct EvaluateArgs {
     /// of the deterministic analysis profile
     #[arg(long)]
     pub faithful: bool,
+
+    /// Also rewrite `Global Const $t = Build()` into the table's literal value
+    #[arg(long)]
+    pub inline_tables: bool,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -60,6 +64,12 @@ pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
         "evaluated: {} globals, {} tables, {} values inlined, {} calls resolved",
         outcome.globals, outcome.tables, outcome.substitutions, outcome.calls_resolved
     );
+    if outcome.declarations_resolved > 0 {
+        eprintln!(
+            "  {} table declaration(s) rewritten as literal values",
+            outcome.declarations_resolved
+        );
+    }
     match (&outcome.stopped, outcome.completed) {
         (Some(why), _) => {
             eprintln!("script body did not finish: {why}");
@@ -81,7 +91,14 @@ pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
 pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let mut prog = load_program(&args.input)?;
 
-    let outcome = evaluate_with_platform(&mut prog, profile(args.faithful), args.win.platform()?);
+    let outcome = evaluate_with_options(
+        &mut prog,
+        profile(args.faithful),
+        args.win.platform()?,
+        SubstituteOptions {
+            inline_declarations: args.inline_tables,
+        },
+    );
     report(&outcome);
 
     let mut printer = PrettyPrinter::new().strip_comments(true);
