@@ -3,8 +3,10 @@
 //! Command-specific arguments live with their command; only the pieces more
 //! than one command needs are here.
 
+use std::path::Path;
+
 use autoitv3_ast::{parse, Program};
-use autoitv3_platform::{WindowsArch, WindowsEmulation, WindowsVersion};
+use autoitv3_platform::{find_resource_module, WindowsArch, WindowsEmulation, WindowsVersion};
 use autoitv3_runtime::platform::Platform;
 use clap::Args;
 
@@ -24,8 +26,8 @@ pub struct OutputArgs {
 /// Off Windows the platform stack starts with the emulation layer described in
 /// `autoitv3_platform::winemu`; these flags choose what machine it presents.
 /// When a flag is omitted the matching environment variable is consulted
-/// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`), and then the default —
-/// **Windows 10 x64**.
+/// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`, `AU3_RESOURCE_MODULE`),
+/// and then the default — **Windows 10 x64**.
 #[derive(Args, Debug, Clone, Default)]
 pub struct WinEmuArgs {
     /// Emulated Windows version: xp, vista, 7, 8, 81, 10, 11
@@ -35,6 +37,11 @@ pub struct WinEmuArgs {
     /// Emulated architecture: x86, x64, arm64
     #[arg(long = "win-arch", value_name = "ARCH")]
     pub win_arch: Option<String>,
+
+    /// PE image whose resources `FindResourceW`/`LoadResource` answer from
+    /// (usually found automatically next to the script)
+    #[arg(long = "resource-module", value_name = "FILE")]
+    pub resource_module: Option<String>,
 
     /// Do not install the emulation layer; Windows-only calls become
     /// undefined-function errors
@@ -47,7 +54,14 @@ impl WinEmuArgs {
     ///
     /// The environment is read first so `AU3_WIN_VERSION` keeps working, then
     /// the flags override it, so an explicit `--win-version` always wins.
-    pub fn platform(&self) -> CliResult<Box<dyn Platform>> {
+    ///
+    /// `script` is the `.au3` being analysed. It seeds the search for the PE
+    /// image that answers `FindResourceW`: a script compiled into an `.exe`
+    /// reads its payload and its string table out of that image's resources,
+    /// and the image normally sits next to the script, so the default is to
+    /// look there and then in the working directory. Passing
+    /// `--resource-module` (or `AU3_RESOURCE_MODULE`) skips the search.
+    pub fn platform(&self, script: Option<&Path>) -> CliResult<Box<dyn Platform>> {
         let mut emu = WindowsEmulation::from_env();
         if self.no_win_emu {
             emu = emu.disabled();
@@ -65,6 +79,22 @@ impl WinEmuArgs {
                 CliError::failure(format!("unknown --win-arch {raw:?} (try x86, x64, arm64)"))
             })?;
             emu = emu.with_arch(arch);
+        }
+        if let Some(path) = &self.resource_module {
+            if !Path::new(path).is_file() {
+                return Err(CliError::failure(format!(
+                    "--resource-module {path}: no such file"
+                )));
+            }
+            emu = emu.with_module_file(path);
+        } else if !self.no_win_emu && emu.module_path().is_none() {
+            if let Some(found) = find_resource_module(script) {
+                eprintln!(
+                    "# resource module: {} (found next to the script; override with --resource-module)",
+                    found.display()
+                );
+                emu = emu.with_module_file(found);
+            }
         }
         Ok(autoitv3_platform::host_platform_with(emu))
     }

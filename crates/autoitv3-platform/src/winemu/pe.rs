@@ -97,6 +97,56 @@ impl PeImage {
         })
     }
 
+    /// Every file in `dir` that parses as a PE image carrying resources, as
+    /// `(path, image)` pairs sorted by name.
+    fn images_in(dir: &std::path::Path) -> Vec<(std::path::PathBuf, PeImage)> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("exe") || e.eq_ignore_ascii_case("dll"))
+            })
+            .collect();
+        // Sorted so a directory holding several images resolves the same way
+        // on every run.
+        names.sort();
+        names
+            .into_iter()
+            .filter_map(|p| PeImage::load(&p).ok().map(|img| (p, img)))
+            .collect()
+    }
+
+    /// Pick the image in `dir` whose resources should answer `FindResourceW`.
+    ///
+    /// A script compiled into an `.exe` keeps its payload in that image's
+    /// resources, so the common case needs no configuration: given the
+    /// directory the script lives in, prefer an image named after the script,
+    /// then the first PE image that actually carries resources.
+    pub fn find_resource_module(
+        dir: impl AsRef<std::path::Path>,
+        stem: Option<&str>,
+    ) -> Option<std::path::PathBuf> {
+        let images = Self::images_in(dir.as_ref());
+        if let Some(stem) = stem {
+            if let Some((path, _)) = images.iter().find(|(p, _)| {
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.eq_ignore_ascii_case(stem))
+            }) {
+                return Some(path.clone());
+            }
+        }
+        images
+            .into_iter()
+            .find(|(_, img)| !img.resources.is_empty())
+            .map(|(path, _)| path)
+    }
+
     /// `type/name` pairs, for diagnostics.
     pub fn listing(&self) -> Vec<String> {
         self.resources
@@ -312,5 +362,88 @@ mod tests {
         assert!(sel.matches(None, Some("PAYLOAD")));
         assert!(!sel.matches(Some(10), None));
         assert!(Selector::id(10).matches(Some(10), None));
+    }
+
+    /// A minimal PE32+ image whose only resource is `RT_RCDATA/1`.
+    ///
+    /// Enough of a file for `parse` to walk the resource tree, so the resource
+    /// lookup and the discovery order can be tested without shipping a real
+    /// `.exe` as a fixture.
+    fn tiny_pe(payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![0u8; 0x400];
+        // DOS header.
+        f[0..2].copy_from_slice(b"MZ");
+        f[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        // PE signature + COFF header.
+        f[0x40..0x44].copy_from_slice(b"PE\0\0");
+        f[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes()); // machine
+        f[0x46..0x48].copy_from_slice(&1u16.to_le_bytes()); // sections
+        f[0x54..0x56].copy_from_slice(&0xf0u16.to_le_bytes()); // optional size
+        // Optional header: PE32+, one data directory (the resource table).
+        let optional = 0x58;
+        f[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        f[optional + 108..optional + 112].copy_from_slice(&2u32.to_le_bytes()); // #dirs
+        let dirs = optional + 112;
+        f[dirs + 16..dirs + 20].copy_from_slice(&0x1000u32.to_le_bytes()); // rsrc RVA
+        f[dirs + 20..dirs + 24].copy_from_slice(&0x200u32.to_le_bytes()); // rsrc size
+        // Section table: `.rsrc` at RVA 0x1000 / file 0x200.
+        let sec = optional + 0xf0;
+        f[sec..sec + 5].copy_from_slice(b".rsrc");
+        f[sec + 8..sec + 12].copy_from_slice(&0x200u32.to_le_bytes()); // vsize
+        f[sec + 12..sec + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // vaddr
+        f[sec + 16..sec + 20].copy_from_slice(&0x200u32.to_le_bytes()); // raw size
+        f[sec + 20..sec + 24].copy_from_slice(&0x200u32.to_le_bytes()); // raw ptr
+        // Resource tree: type 10 -> name 1 -> language 0 -> data entry.
+        let base = 0x200usize;
+        let dir = |f: &mut Vec<u8>, at: usize, entries: u16| {
+            f[at + 12..at + 14].copy_from_slice(&0u16.to_le_bytes()); // named
+            f[at + 14..at + 16].copy_from_slice(&entries.to_le_bytes()); // ids
+        };
+        let entry = |f: &mut Vec<u8>, at: usize, name: u32, child: u32| {
+            f[at..at + 4].copy_from_slice(&name.to_le_bytes());
+            f[at + 4..at + 8].copy_from_slice(&child.to_le_bytes());
+        };
+        dir(&mut f, base, 1);
+        entry(&mut f, base + 16, 10, 0x8000_0000 | 0x18);
+        dir(&mut f, base + 0x18, 1);
+        entry(&mut f, base + 0x28, 1, 0x8000_0000 | 0x30);
+        dir(&mut f, base + 0x30, 1);
+        entry(&mut f, base + 0x40, 0, 0x48);
+        // Data entry: the payload lives at RVA 0x1100 (file 0x300).
+        let data = base + 0x48;
+        f[data..data + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+        f[data + 4..data + 8].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        f[0x300..0x300 + payload.len()].copy_from_slice(payload);
+        f
+    }
+
+    #[test]
+    fn a_synthetic_image_yields_its_resource() {
+        let resources = parse(&tiny_pe(b"hello")).expect("parses");
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].data, b"hello");
+        assert_eq!(resources[0].type_sel, Selector::id(10));
+        assert_eq!(resources[0].name_sel, Selector::id(1));
+    }
+
+    #[test]
+    fn discovery_prefers_the_image_named_after_the_script() {
+        let dir = std::env::temp_dir().join(format!("au3-pe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Sorted first, and *not* the script's name: the name wins.
+        std::fs::write(dir.join("AAA.exe"), tiny_pe(b"other")).unwrap();
+        std::fs::write(dir.join("tool.exe"), tiny_pe(b"payload")).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not an image").unwrap();
+        std::fs::write(dir.join("broken.exe"), b"MZ but truncated").unwrap();
+
+        let found = PeImage::find_resource_module(&dir, Some("tool")).unwrap();
+        assert_eq!(found.file_name().unwrap(), "tool.exe");
+        // Without a stem the first usable image in name order is chosen.
+        let found = PeImage::find_resource_module(&dir, None).unwrap();
+        assert_eq!(found.file_name().unwrap(), "AAA.exe");
+        // A directory with no `FindResourceW` error looks like this:
+        assert!(PeImage::find_resource_module(std::env::temp_dir().join("nope-not-here"), None).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

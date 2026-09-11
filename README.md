@@ -261,6 +261,9 @@ Deobfuscator::renaming()
 > `RtlDecompressBuffer`（LZNT1）以及 `FindResourceW` / `SizeofResource` / `LoadResource` /
 > `LockResource`。真实脚本上 `$string_table` 现在**能完整建出来**，脚本体继续跑到 GUI 创建为止。
 > 也就是说边界已经推到 **GUI/窗口层**，不再是 CryptoAPI。
+> 资源镜像（编译后的 `.exe`）默认**自动查找**：先看脚本所在目录，再看当前工作目录，
+> 优先选与脚本同名的镜像，否则选第一个带资源的 PE；用 `--resource-module <FILE>` 或
+> `AU3_RESOURCE_MODULE` 可显式指定（显式指定优先，自动发现时会打印一行提示）。
 > 用 `--no-win-emu` 可关闭仿真，回到"停在第一个 Windows 调用"的行为。
 >
 > `$name_table`（结构体/API 名表，`$fn_table[0x454]()`，即反混淆输出里的 `f001`）
@@ -327,6 +330,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 | ---- | -------- | ---- |
 | `--win-version <VER>` | `AU3_WIN_VERSION` | `win10` |
 | `--win-arch <ARCH>` | `AU3_WIN_ARCH` | `x64` |
+| `--resource-module <FILE>` | `AU3_RESOURCE_MODULE` | 自动查找脚本旁的 PE 镜像 |
 | （无开关） | `AU3_WIN_REGISTRY` | `./.au3_registry` |
 | `--no-win-emu` | `AU3_WIN_EMU=0` | 启用（非 Windows 主机） |
 
@@ -480,7 +484,7 @@ script body did not finish: undefined function: GUICREATE (at 10569:31)
 | `$string_table[...]`（字符串表） | several thousand | **0** |
 | 输出里残留的表读取 | 171 | **38**（全部是可变 `Global` 数组，本就不该内联） |
 | 表声明 | `Global Const $t = Build()` | 默认保持原样；`--inline-tables` 时 **`= [ ... ]`** |
-| `AU3_WIN_MODULE` 未给出 | — | 资源调用返回 `0` + `@error = 1`（诚实边界） |
+| 目录里没有资源镜像 | — | 资源调用返回 `0` + `@error = 1`（诚实边界） |
 
 跑完的规模：能在本机求出的表都内联了（globals、名字表、字符串表），`deobfuscated`
 阶段没有留下未解析的表引用。脚本体停在 `GUICreate`：GUI 不在仿真范围内，
@@ -682,7 +686,9 @@ rt.set_platform(autoitv3_platform::host_platform_with(emu));
 
 选择版本的三种方式（优先级由低到高）：代码里 `with_version()` → 环境变量
 `AU3_WIN_VERSION` → CLI `--win-version`。同族的还有 `AU3_WIN_ARCH`/`--win-arch`
-（`x86`/`x64`/`arm64`，影响指针宽度与结构体布局）。
+（`x86`/`x64`/`arm64`，影响指针宽度与结构体布局），以及
+`AU3_RESOURCE_MODULE`/`--resource-module`（`FindResourceW` 从哪个 PE 镜像取资源，
+不给就自动查找，见上文）。
 
 #### 注册表落盘（`FileRegistry`）
 
@@ -734,6 +740,20 @@ MD5 口令摘要才能填满 256 位的 AES 密钥 —— 真实脚本里那个 
 - 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，
   回到"停在第一个 Windows 调用"的诚实行为；`with_host_paths()` 则只让**目录**宏回落到
   主机路径（`@TempDir` 等仍可用于真实文件 I/O），Windows 专有宏照旧仿真。
+
+### 资源镜像的查找顺序
+
+编译后的 AutoIt 脚本把加密的表放在 **PE 镜像的资源里**，`FindResourceW` / `LoadResource`
+就从那里取。所以仿真层需要知道"脚本是从哪个 `.exe` 编译来的"。默认不需要配置：
+
+1. `--resource-module <FILE>`（显式指定，最高优先）；
+2. `AU3_RESOURCE_MODULE` 环境变量；
+3. **自动查找**：先脚本所在目录、再当前工作目录；目录内优先选与脚本同名的镜像，
+   否则选第一个真正带资源的 PE（按文件名排序，保证可复现）。自动选中时会往 stderr
+   打一行 `# resource module: ...` 提示，方便发现选错了。
+
+找不到镜像不会报错，只是 `FindResourceW` 等落回"未列举"分支（`@error = 1`、返回 `0`），
+于是否则解不开的字符串表就停在那里 —— 边界是可见的，不会编造数据。
 
 ### 执行配置（ExecutionProfile）——近似行为按用途区分
 
@@ -810,11 +830,13 @@ au3 run F --faithful sample.au3   # 真的 Sleep、真的随机、真的写文�
 `AU3_SAMPLE` 指向一个可读文件时才运行：
 
 ```bash
-AU3_SAMPLE=/path/to/obfuscated.au3 cargo test
+AU3_SAMPLE=/path/to/obfuscated.au3 cargo test --release
 ```
 
-涉及：`autoitv3-ast`（整份脚本冒烟解析）、`autoitv3-deobf`（全量函数表解析，1108 项）、
-`autoitv3-runtime`（用解释器执行函数表构建函数）。
+涉及：`autoitv3-ast`（整份脚本冒烟解析）、`autoitv3-deobf`（全量函数表解析 1108 项；
+用 `--evaluate` 跑完整脚本体、断言加密表被解出）、`autoitv3-runtime`（用解释器执行
+函数表构建函数）。整份样本的解释执行在 debug 构建下要几分钟，所以配上 `--release`
+（8 秒左右）。脚本旁边的 `.exe` 会被自动发现，不需要额外设环境变量。
 
 ## 验证
 

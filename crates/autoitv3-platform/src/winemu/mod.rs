@@ -90,14 +90,44 @@ pub const ARCH_ENV: &str = "AU3_WIN_ARCH";
 pub const ENABLE_ENV: &str = "AU3_WIN_EMU";
 /// Environment variable naming the file the emulated registry lives in.
 pub const REGISTRY_ENV: &str = "AU3_WIN_REGISTRY";
-/// Environment variable naming the PE file whose resources the emulated
-/// `FindResourceW`/`LoadResource` answer from (the `.exe` the script came from).
-pub const MODULE_ENV: &str = "AU3_WIN_MODULE";
+/// Environment variable naming the PE image whose resources the emulated
+/// `FindResourceW`/`LoadResource` answer from — the `.exe` the script was
+/// compiled into. Usually unnecessary: a sibling image is found automatically
+/// (see [`find_resource_module`]).
+pub const RESOURCE_MODULE_ENV: &str = "AU3_RESOURCE_MODULE";
 /// Set this to report every `DllCall` target the emulation does not implement
 /// (once each, on stderr). Handy for finding the next boundary to fill in.
 pub const TRACE_ENV: &str = "AU3_WINEMU_TRACE";
 /// The version used when nothing selects one.
 pub const DEFAULT_VERSION: WindowsVersion = WindowsVersion::Win10;
+
+/// Find the PE image whose resources should answer `FindResourceW`.
+///
+/// A script that was compiled into an `.exe` keeps its payload in that image's
+/// resources, and the image usually sits right next to the script, so nothing
+/// has to be configured in the common case. The script's directory is searched
+/// first, then the working directory; see [`PeImage::find_resource_module`]
+/// for how the image is chosen within a directory.
+///
+/// `script` is the path of the `.au3` being analysed, when the caller knows it.
+pub fn find_resource_module(script: Option<&std::path::Path>) -> Option<PathBuf> {
+    let stem = script
+        .and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str());
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = script.and_then(|p| p.parent()) {
+        if !dir.as_os_str().is_empty() {
+            dirs.push(dir.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if !dirs.contains(&cwd) {
+            dirs.push(cwd);
+        }
+    }
+    dirs.iter()
+        .find_map(|dir| PeImage::find_resource_module(dir, stem))
+}
 /// The clipboard file, relative to the working directory.
 pub const DEFAULT_CLIPBOARD_FILE: &str = ".au3_clipboard";
 /// The registry file, relative to the working directory.
@@ -290,6 +320,8 @@ pub struct WindowsEmulation {
     structs: Vec<Option<DllStruct>>,
     /// The PE file whose resources the module/resource calls answer from.
     module: Option<PeImage>,
+    /// Where `module` was loaded from, for reporting.
+    module_path: Option<PathBuf>,
     /// Resources handed out by `FindResourceW`/`LoadResource`, 1-based.
     handles: Vec<Option<ResourceHandle>>,
     /// Resource bytes materialised by `LockResource`, keyed by their address.
@@ -341,6 +373,7 @@ impl WindowsEmulation {
             drives: vec![DriveSpec::default()],
             structs: Vec::new(),
             module: None,
+            module_path: None,
             handles: Vec::new(),
             blobs: Vec::new(),
             dlls: Vec::new(),
@@ -372,7 +405,7 @@ impl WindowsEmulation {
                 emu = emu.with_registry_file(raw.trim());
             }
         }
-        if let Ok(raw) = std::env::var(MODULE_ENV) {
+        if let Ok(raw) = std::env::var(RESOURCE_MODULE_ENV) {
             if !raw.trim().is_empty() {
                 emu = emu.with_module_file(raw.trim());
             }
@@ -473,6 +506,7 @@ impl WindowsEmulation {
     /// that cannot be read leaves the calls failing, as before.
     pub fn with_module_file(mut self, path: impl AsRef<std::path::Path>) -> Self {
         let path = path.as_ref();
+        self.module_path = Some(path.to_path_buf());
         match PeImage::load(path) {
             Ok(image) => self.module = Some(image),
             Err(e) => {
@@ -488,6 +522,11 @@ impl WindowsEmulation {
     /// The loaded module image, if any.
     pub fn module(&self) -> Option<&PeImage> {
         self.module.as_ref()
+    }
+
+    /// The file the module was loaded from, if one was named or found.
+    pub fn module_path(&self) -> Option<&std::path::Path> {
+        self.module_path.as_deref()
     }
 
     /// Report every `DllCall` target the emulation does not implement, once

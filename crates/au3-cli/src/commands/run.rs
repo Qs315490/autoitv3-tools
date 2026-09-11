@@ -11,6 +11,7 @@ use clap::Args;
 
 use crate::args::{load_program, parse_arg_value, CliError, CliResult, WinEmuArgs};
 use crate::output::format_value;
+use std::path::Path;
 
 /// Arguments for `au3 run`.
 #[derive(Args, Debug)]
@@ -56,7 +57,7 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
     // reached (see `autoitv3-platform`); off Windows the Windows emulation
     // layer answers first, with the version these arguments select.
     let mut rt = Runtime::with_program(&prog);
-    rt.set_platform(args.win.platform()?);
+    rt.set_platform(args.win.platform(Some(Path::new(&args.input)))?);
     // Probing a script wants reproducibility and no side effects; `--faithful`
     // switches to AutoIt's own semantics instead.
     rt.set_profile(if args.faithful {

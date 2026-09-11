@@ -25,6 +25,7 @@ use clap::Args;
 
 use crate::args::{load_program, CliResult, OutputArgs, WinEmuArgs};
 use crate::output::write_output;
+use std::path::Path;
 
 /// Arguments for `au3 evaluate`.
 #[derive(Args, Debug)]
@@ -94,7 +95,7 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let outcome = evaluate_with_options(
         &mut prog,
         profile(args.faithful),
-        args.win.platform()?,
+        args.win.platform(Some(Path::new(&args.input)))?,
         SubstituteOptions {
             inline_declarations: args.inline_tables,
         },

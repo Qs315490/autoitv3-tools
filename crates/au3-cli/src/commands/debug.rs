@@ -46,6 +46,7 @@ use clap::Args;
 
 use crate::args::{load_program, CliError, CliResult, WinEmuArgs};
 use crate::output::format_value;
+use std::path::Path;
 
 /// Arguments for `au3 debug`.
 #[derive(Args, Debug)]
@@ -153,7 +154,7 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
 /// Build a runtime with the platform, profile and shell this session uses.
 fn build_runtime(prog: &Program, args: &DebugArgs, shell: Rc<RefCell<Shell>>) -> Runtime {
     let mut rt = Runtime::with_program(prog);
-    match args.win.platform() {
+    match args.win.platform(Some(Path::new(&args.input))) {
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
     }
