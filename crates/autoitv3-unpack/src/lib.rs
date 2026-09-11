@@ -46,6 +46,8 @@ pub enum Error {
     NotAPackage,
     /// A resource set was found but a stage rejected its data.
     BadData(String),
+    /// The index spec the caller asked for is not usable.
+    BadIndex(String),
     /// A path could not be read.
     Io(String),
 }
@@ -59,6 +61,7 @@ impl fmt::Display for Error {
                  three stream-cipher members among the resources)"
             ),
             Error::BadData(why) => write!(f, "the packed payload is malformed: {why}"),
+            Error::BadIndex(why) => write!(f, "invalid index spec: {why}"),
             // (kept distinct from the inner message so it reads as one line)
             Error::Io(why) => write!(f, "{why}"),
         }
@@ -590,6 +593,59 @@ fn is_mostly_printable(data: &[u8]) -> bool {
     printable * 100 >= data.len() * 95
 }
 
+/// Look up payload entries by 1-based index.
+///
+/// The entries come out of the container in exactly the order a script's own
+/// table uses them, `[0]` being the count and `[1]` the first entry — so an
+/// index from a disassembly or a debugger session maps straight onto a line
+/// here. `spec` is a comma-separated list of single indices and inclusive
+/// ranges: `152`, `1-5,3148`.
+///
+/// This is the other half of the independent check the crate exists for:
+/// decoding the payload by hand says what the table *should* hold, and this
+/// says it without running the script that builds it.
+pub fn select_entries(
+    entries: &[String],
+    spec: &str,
+) -> Result<Vec<(usize, String)>, Error> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (from, to) = match part.split_once('-') {
+            Some((a, b)) => (
+                parse_index(a.trim())?,
+                parse_index(b.trim())?,
+            ),
+            None => {
+                let n = parse_index(part)?;
+                (n, n)
+            }
+        };
+        if from > to {
+            return Err(Error::BadIndex(format!("{part} is a descending range")));
+        }
+        for n in from..=to {
+            let entry = entries.get(n - 1).cloned().ok_or_else(|| {
+                Error::BadIndex(format!("{n} is past the end ({} entries)", entries.len()))
+            })?;
+            if !out.iter().any(|(seen, _)| *seen == n) {
+                out.push((n, entry));
+            }
+        }
+    }
+    out.sort_by_key(|(n, _)| *n);
+    Ok(out)
+}
+
+/// One 1-based index in a [`select_entries`] spec.
+fn parse_index(text: &str) -> Result<usize, Error> {
+    match text.parse::<usize>() {
+        // The table itself is 1-based; `0` is the count, not an entry.
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err(Error::BadIndex(format!("{text:?} is not a 1-based index"))),
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +691,34 @@ mod tests {
         assert_eq!(from_hex("00E0"), Some(224));
         assert_eq!(from_hex("FF"), Some(255));
         assert_eq!(from_hex("xy"), None);
+    }
+
+    #[test]
+    fn entries_can_be_picked_by_the_index_a_disassembly_uses() {
+        let entries: Vec<String> = (1..=10).map(|n| format!("entry{n}")).collect();
+        let picked = select_entries(&entries, "152").unwrap_err();
+        assert!(matches!(picked, Error::BadIndex(_)), "152 is past the end");
+
+        let picked = select_entries(&entries, "3").unwrap();
+        assert_eq!(picked, vec![(3, "entry3".to_string())]);
+        let picked = select_entries(&entries, "2-4,4,1").unwrap();
+        assert_eq!(
+            picked.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4],
+            "ranges are inclusive and duplicates collapse"
+        );
+        assert!(matches!(
+            select_entries(&entries, "4-2").unwrap_err(),
+            Error::BadIndex(_)
+        ));
+        assert!(
+            matches!(select_entries(&entries, "0").unwrap_err(), Error::BadIndex(_)),
+            "0 is the count, not an entry"
+        );
+        assert!(matches!(
+            select_entries(&entries, "abc").unwrap_err(),
+            Error::BadIndex(_)
+        ));
     }
 
     #[test]

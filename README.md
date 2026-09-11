@@ -759,6 +759,8 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
 au3 unpack ./staged/          # 目录：AutoIt3Wrapper 落盘的 __NAME / __Res64/NAME / __ResImage/_NAME
 au3 unpack build.exe          # 或者直接给 PE，自动枚举它的 RT_RCDATA
 au3 unpack build.exe --raw    # --raw 输出拼接后的整段文本，默认一行一条
+au3 unpack build.exe --table  # --table 带 1-based 索引编号
+au3 unpack build.exe --at 152,1263,3147-3149   # 只取这几项
 ```
 
 四个资源的**角色是自动认出来的**：包里没有名字标签，所以把每个候选依次当 loader、
@@ -775,6 +777,21 @@ unpacked: loader <name>, members <a>/<b>/<c> (17 resources considered)
 实现放在独立 crate `autoitv3-unpack`：它是一个**打包器**的格式，不是通用 AutoIt
 能力，所以不塞进解释器。解码链复用 `autoitv3-platform` 的 CryptoAPI 仿真
 （`CryptDeriveKey` 的 HMAC 式扩展）和 PE 解析。
+
+### 当作字符串表的独立基准
+
+同一份载荷往往**就是脚本自己的字符串表**：脚本里那张 `$table[n]` 是它解出来再按序号取的，
+所以解包结果第 N 行 = `$table[N]`（`[0]` 是条数，不是表项）。`--table` / `--at` 就是把这件事
+做得顺手一点：
+
+```bash
+au3 unpack build.exe --at 152,1263        # 表项 152、1263 的原始值
+```
+
+于是**怀疑解释器把表算错了**时有一条不依赖解释器的对照链：拿 exe 独立解出表项，
+和断点里 `print $table[152]` 的值逐项比。两边一致 → 表没问题，往别处找；
+不一致 → 就是求值/解密那一段的问题。这条链在排查"脚本自己解不动自己的数据"时特别有用
+——能先把"我们算错了"这个可能性排除掉。
 
 ### 资源从哪里读
 
