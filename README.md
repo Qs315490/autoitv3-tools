@@ -224,14 +224,21 @@ au3 deobfuscate sample.au3 --rename     # 额外做确定性重命名
 *名字*——一旦改名，输出就没法和输入（或任何引用它的东西）逐行对照了。需要 `$l_str_003`
 这类自带作用域/类型的别名时再开。
 
-```rust
-use autoitv3_deobf::{Deobfuscator, RenameOptions};
+库层同款默认：`Deobfuscator::new()` / `deobfuscate()` 只跑折叠、简化、表解析，
+**不重命名**；要别名就显式用 `Deobfuscator::renaming()`：
 
-Deobfuscator::without_rename().run(&mut prog);                    // 整趟关掉
-Deobfuscator::new()
+```rust
+use autoitv3_deobf::{deobfuscate, Deobfuscator, RenameOptions};
+
+deobfuscate(&mut prog);                                           // 默认：不重命名
+Deobfuscator::new().run(&mut prog);                               // 同上
+Deobfuscator::renaming().run(&mut prog);                          // 完整流水线（含重命名）
+Deobfuscator::renaming()
     .with_rename_options(RenameOptions { vars: true, funcs: false })
     .run(&mut prog);                                              // 只改变量
 ```
+
+`Pass::DEFAULT` = `[Fold, Simplify, Table]`，`Pass::ALL` = 再加上 `Rename`。
 
 ### 运行时相关代码的迁移
 

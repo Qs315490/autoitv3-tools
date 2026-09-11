@@ -29,7 +29,7 @@
 //! [`rename_program`] renames everything, [`rename_program_with`] takes a
 //! selection, and [`RenameOptions::none`] makes the pass a no-op. The
 //! orchestrator exposes the same switch as
-//! [`Deobfuscator::without_rename`](crate::Deobfuscator::without_rename)
+//! [`Deobfuscator::new`](crate::Deobfuscator::new)
 //! and the CLI as `--no-rename`.
 //!
 //! # Scope analysis
