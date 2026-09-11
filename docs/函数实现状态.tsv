@@ -1,0 +1,404 @@
+函数	状态	归类	归属层	优先级	说明
+Abs	已实现				见对应源码层
+ACos	已实现				见对应源码层
+AdlibRegister	已实现				见对应源码层
+AdlibUnRegister	已实现				见对应源码层
+Asc	已实现				见对应源码层
+AscW	已实现				见对应源码层
+ASin	已实现				见对应源码层
+Assign	已实现				见对应源码层
+ATan	已实现				见对应源码层
+AutoItSetOption	已实现				见对应源码层
+AutoItWinGetTitle	待实现	仿真	winemu·GUI	P2	AutoIt 主窗口标题
+AutoItWinSetTitle	待实现	仿真	winemu·GUI	P2	AutoIt 主窗口标题
+Beep	待实现	仿真	winemu	P2	声音 / 光驱
+Binary	已实现				见对应源码层
+BinaryLen	已实现				见对应源码层
+BinaryMid	已实现				见对应源码层
+BinaryToString	已实现				见对应源码层
+BitAND	已实现				见对应源码层
+BitNOT	已实现				见对应源码层
+BitOR	已实现				见对应源码层
+BitRotate	已实现				见对应源码层
+BitShift	已实现				见对应源码层
+BitXOR	已实现				见对应源码层
+BlockInput	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+Break	待实现	仿真	winemu·GUI	P2	托盘退出开关
+Call	已实现				见对应源码层
+CDTray	待实现	仿真	winemu	P2	声音 / 光驱
+Ceiling	已实现				见对应源码层
+Chr	已实现				见对应源码层
+ChrW	已实现				见对应源码层
+ClipGet	已实现				见对应源码层
+ClipPut	已实现				见对应源码层
+ConsoleRead	已实现				见对应源码层
+ConsoleWrite	已实现				见对应源码层
+ConsoleWriteError	已实现				见对应源码层
+ControlClick	待实现	仿真	winemu·GUI	P0	控件操作
+ControlCommand	待实现	仿真	winemu·GUI	P2	控件操作
+ControlDisable	待实现	仿真	winemu·GUI	P2	控件操作
+ControlEnable	待实现	仿真	winemu·GUI	P2	控件操作
+ControlFocus	待实现	仿真	winemu·GUI	P2	控件操作
+ControlGetFocus	待实现	仿真	winemu·GUI	P2	控件操作
+ControlGetHandle	待实现	仿真	winemu·GUI	P2	控件操作
+ControlGetPos	待实现	仿真	winemu·GUI	P0	控件操作
+ControlGetText	待实现	仿真	winemu·GUI	P2	控件操作
+ControlHide	待实现	仿真	winemu·GUI	P2	控件操作
+ControlListView	待实现	仿真	winemu·GUI	P2	控件操作
+ControlMove	待实现	仿真	winemu·GUI	P2	控件操作
+ControlSend	待实现	仿真	winemu·GUI	P2	控件操作
+ControlSetText	待实现	仿真	winemu·GUI	P2	控件操作
+ControlShow	待实现	仿真	winemu·GUI	P2	控件操作
+ControlTreeView	待实现	仿真	winemu·GUI	P2	控件操作
+Cos	已实现				见对应源码层
+Dec	已实现				见对应源码层
+DirCopy	已实现				见对应源码层
+DirCreate	已实现				见对应源码层
+DirGetSize	已实现				见对应源码层
+DirMove	已实现				见对应源码层
+DirRemove	已实现				见对应源码层
+DllCall	已实现				见对应源码层
+DllCallAddress	待实现	仿真	winemu	P1	DllCall 扩展 / 回调
+DllCallbackFree	待实现	仿真	winemu	P2	DllCall 扩展 / 回调
+DllCallbackGetPtr	待实现	仿真	winemu	P0	DllCall 扩展 / 回调
+DllCallbackRegister	待实现	仿真	winemu	P0	DllCall 扩展 / 回调
+DllClose	已实现				见对应源码层
+DllOpen	已实现				见对应源码层
+DllStructCreate	已实现				见对应源码层
+DllStructGetData	已实现				见对应源码层
+DllStructGetPtr	已实现				见对应源码层
+DllStructGetSize	已实现				见对应源码层
+DllStructSetData	已实现				见对应源码层
+DriveGetDrive	已实现				见对应源码层
+DriveGetFileSystem	已实现				见对应源码层
+DriveGetLabel	已实现				见对应源码层
+DriveGetSerial	已实现				见对应源码层
+DriveGetType	已实现				见对应源码层
+DriveMapAdd	待实现	仿真	winemu	P1	驱动器映射
+DriveMapDel	待实现	仿真	winemu	P1	驱动器映射
+DriveMapGet	待实现	仿真	winemu	P1	驱动器映射
+DriveSetLabel	待实现	仿真	winemu	P2	驱动器映射
+DriveSpaceFree	已实现				见对应源码层
+DriveSpaceTotal	已实现				见对应源码层
+DriveStatus	已实现				见对应源码层
+EnvGet	已实现				见对应源码层
+EnvSet	已实现				见对应源码层
+EnvUpdate	已实现				见对应源码层
+Eval	已实现				见对应源码层
+Execute	已实现				见对应源码层
+Exp	已实现				见对应源码层
+FileChangeDir	已实现				见对应源码层
+FileClose	已实现				见对应源码层
+FileCopy	已实现				见对应源码层
+FileCreateNTFSLink	待实现	仿真	winemu	P2	Windows 文件 / PE 版本资源
+FileCreateShortcut	待实现	仿真	winemu	P1	Windows 文件 / PE 版本资源
+FileDelete	已实现				见对应源码层
+FileExists	已实现				见对应源码层
+FileFindFirstFile	已实现				见对应源码层
+FileFindNextFile	已实现				见对应源码层
+FileFlush	已实现				见对应源码层
+FileGetAttrib	已实现				见对应源码层
+FileGetEncoding	已实现				见对应源码层
+FileGetLongName	已实现				见对应源码层
+FileGetPos	已实现				见对应源码层
+FileGetShortcut	待实现	仿真	winemu	P1	Windows 文件 / PE 版本资源
+FileGetShortName	已实现				见对应源码层
+FileGetSize	已实现				见对应源码层
+FileGetTime	已实现				见对应源码层
+FileGetVersion	待实现	仿真	winemu	P0	Windows 文件 / PE 版本资源
+FileInstall	待实现	仿真	winemu	P1	Windows 文件 / PE 版本资源
+FileMove	已实现				见对应源码层
+FileOpen	已实现				见对应源码层
+FileOpenDialog	待实现	仿真	winemu·GUI	P0	文件选择对话框
+FileRead	已实现				见对应源码层
+FileReadLine	已实现				见对应源码层
+FileReadToArray	已实现				见对应源码层
+FileRecycle	待实现	仿真	winemu	P0	Windows 文件 / PE 版本资源
+FileRecycleEmpty	待实现	仿真	winemu	P2	Windows 文件 / PE 版本资源
+FileSaveDialog	待实现	仿真	winemu·GUI	P0	文件选择对话框
+FileSelectFolder	待实现	仿真	winemu·GUI	P0	文件选择对话框
+FileSetAttrib	已实现				见对应源码层
+FileSetEnd	已实现				见对应源码层
+FileSetPos	已实现				见对应源码层
+FileSetTime	已实现				见对应源码层
+FileWrite	已实现				见对应源码层
+FileWriteLine	已实现				见对应源码层
+Floor	已实现				见对应源码层
+FtpSetProxy	已实现				见对应源码层
+FuncName	已实现				见对应源码层
+GUICreate	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateAvi	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateButton	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateCheckbox	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateCombo	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateContextMenu	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateDate	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateDummy	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateEdit	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateGraphic	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateGroup	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateIcon	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateInput	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateLabel	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateList	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateListView	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateListViewItem	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateMenu	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateMenuItem	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateMonthCal	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateObj	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreatePic	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateProgress	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateRadio	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateSlider	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateTab	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateTabItem	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateTreeView	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateTreeViewItem	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlCreateUpdown	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlDelete	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlGetHandle	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlGetState	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlRead	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlRecvMsg	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlRegisterListViewSort	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSendMsg	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSendToDummy	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetBkColor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetColor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetCursor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetData	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetDefBkColor	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetDefColor	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetFont	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetGraphic	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetImage	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetLimit	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetOnEvent	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetPos	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetResizing	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetState	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetStyle	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUICtrlSetTip	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUIDelete	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUIGetCursorInfo	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUIGetMsg	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUIGetStyle	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUIRegisterMsg	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUISetAccelerators	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUISetBkColor	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUISetCoord	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUISetCursor	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUISetFont	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUISetHelp	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUISetIcon	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUISetOnEvent	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUISetState	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+GUISetStyle	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUIStartGroup	待实现	仿真	winemu·GUI	P2	GUI 窗口 / 控件（无头仿真）
+GUISwitch	待实现	仿真	winemu·GUI	P0	GUI 窗口 / 控件（无头仿真）
+Hex	已实现				见对应源码层
+HotKeySet	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+HttpSetProxy	已实现				见对应源码层
+HttpSetUserAgent	已实现				见对应源码层
+HWnd	已实现				见对应源码层
+InetClose	已实现				见对应源码层
+InetGet	已实现				见对应源码层
+InetGetInfo	已实现				见对应源码层
+InetGetSize	已实现				见对应源码层
+InetRead	已实现				见对应源码层
+IniDelete	已实现				见对应源码层
+IniRead	已实现				见对应源码层
+IniReadSection	已实现				见对应源码层
+IniReadSectionNames	已实现				见对应源码层
+IniRenameSection	已实现				见对应源码层
+IniWrite	已实现				见对应源码层
+IniWriteSection	已实现				见对应源码层
+InputBox	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+Int	已实现				见对应源码层
+IsAdmin	待实现	仿真	winemu	P0	系统信息
+IsArray	已实现				见对应源码层
+IsBinary	已实现				见对应源码层
+IsBool	已实现				见对应源码层
+IsDeclared	已实现				见对应源码层
+IsDllStruct	已实现				见对应源码层
+IsFloat	已实现				见对应源码层
+IsFunc	已实现				见对应源码层
+IsHWnd	已实现				见对应源码层
+IsInt	已实现				见对应源码层
+IsKeyword	已实现				见对应源码层
+IsMap	已实现				见对应源码层
+IsNumber	已实现				见对应源码层
+IsObj	待实现	仿真	winemu	P0	COM（无运行时，短路径为可判定失败）
+IsPtr	已实现				见对应源码层
+IsString	已实现				见对应源码层
+Log	已实现				见对应源码层
+MapAppend	已实现				见对应源码层
+MapExists	已实现				见对应源码层
+MapKeys	已实现				见对应源码层
+MapRemove	已实现				见对应源码层
+MemGetStats	待实现	仿真	winemu	P0	系统信息
+Mod	已实现				见对应源码层
+MouseClick	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+MouseClickDrag	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+MouseDown	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+MouseGetCursor	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+MouseGetPos	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
+MouseMove	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+MouseUp	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+MouseWheel	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+MsgBox	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
+Number	已实现				见对应源码层
+ObjCreate	待实现	仿真	winemu	P1	COM（无运行时，短路径为可判定失败）
+ObjCreateInterface	待实现	仿真	winemu	P2	COM（无运行时，短路径为可判定失败）
+ObjEvent	待实现	仿真	winemu	P2	COM（无运行时，短路径为可判定失败）
+ObjGet	待实现	仿真	winemu	P0	COM（无运行时，短路径为可判定失败）
+ObjName	待实现	仿真	winemu	P2	COM（无运行时，短路径为可判定失败）
+OnAutoItExitRegister	已实现				见对应源码层
+OnAutoItExitUnRegister	已实现				见对应源码层
+Opt	已实现				见对应源码层
+Ping	已实现				见对应源码层
+PixelChecksum	待实现	仿真	winemu·GUI	P2	像素
+PixelGetColor	待实现	仿真	winemu·GUI	P2	像素
+PixelSearch	待实现	仿真	winemu·GUI	P2	像素
+ProcessClose	已实现				见对应源码层
+ProcessExists	已实现				见对应源码层
+ProcessGetStats	已实现				见对应源码层
+ProcessList	已实现				见对应源码层
+ProcessSetPriority	已实现				见对应源码层
+ProcessWait	已实现				见对应源码层
+ProcessWaitClose	已实现				见对应源码层
+ProgressOff	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+ProgressOn	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+ProgressSet	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+Ptr	已实现				见对应源码层
+Random	已实现				见对应源码层
+RegDelete	已实现				见对应源码层
+RegEnumKey	已实现				见对应源码层
+RegEnumVal	已实现				见对应源码层
+RegRead	已实现				见对应源码层
+RegWrite	已实现				见对应源码层
+Round	已实现				见对应源码层
+Run	已实现				见对应源码层
+RunAs	待实现	仿真	winemu	P2	执行 / Shell
+RunAsWait	待实现	仿真	winemu	P2	执行 / Shell
+RunWait	已实现				见对应源码层
+Send	待实现	仿真	winemu·GUI	P0	输入 / 鼠标 / 对话框
+SendKeepActive	待实现	仿真	winemu·GUI	P2	输入 / 鼠标 / 对话框
+SetError	已实现				见对应源码层
+SetExtended	已实现				见对应源码层
+ShellExecute	待实现	仿真	winemu	P0	执行 / Shell
+ShellExecuteWait	待实现	仿真	winemu	P1	执行 / Shell
+Shutdown	待实现	仿真	winemu	P0	执行 / Shell
+Sin	已实现				见对应源码层
+Sleep	已实现				见对应源码层
+SoundPlay	待实现	仿真	winemu	P2	声音 / 光驱
+SoundSetWaveVolume	待实现	仿真	winemu	P2	声音 / 光驱
+SplashImageOn	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+SplashOff	待实现	仿真	winemu·GUI	P0	界面反馈 / 托盘
+SplashTextOn	待实现	仿真	winemu·GUI	P0	界面反馈 / 托盘
+Sqrt	已实现				见对应源码层
+SRandom	已实现				见对应源码层
+StatusbarGetText	待实现	仿真	winemu·GUI	P2	窗口管理
+StderrRead	已实现				见对应源码层
+StdinWrite	已实现				见对应源码层
+StdioClose	已实现				见对应源码层
+StdoutRead	已实现				见对应源码层
+String	已实现				见对应源码层
+StringAddCR	已实现				见对应源码层
+StringCompare	已实现				见对应源码层
+StringFormat	已实现				见对应源码层
+StringFromASCIIArray	已实现				见对应源码层
+StringInStr	已实现				见对应源码层
+StringIsAlNum	已实现				见对应源码层
+StringIsAlpha	已实现				见对应源码层
+StringIsASCII	已实现				见对应源码层
+StringIsDigit	已实现				见对应源码层
+StringIsFloat	已实现				见对应源码层
+StringIsInt	已实现				见对应源码层
+StringIsLower	已实现				见对应源码层
+StringIsSpace	已实现				见对应源码层
+StringIsUpper	已实现				见对应源码层
+StringIsXDigit	已实现				见对应源码层
+StringLeft	已实现				见对应源码层
+StringLen	已实现				见对应源码层
+StringLower	已实现				见对应源码层
+StringMid	已实现				见对应源码层
+StringRegExp	已实现				见对应源码层
+StringRegExpReplace	已实现				见对应源码层
+StringReplace	已实现				见对应源码层
+StringReverse	已实现				见对应源码层
+StringRight	已实现				见对应源码层
+StringSplit	已实现				见对应源码层
+StringStripCR	已实现				见对应源码层
+StringStripWS	已实现				见对应源码层
+StringToASCIIArray	已实现				见对应源码层
+StringToBinary	已实现				见对应源码层
+StringTrimLeft	已实现				见对应源码层
+StringTrimRight	已实现				见对应源码层
+StringUpper	已实现				见对应源码层
+Tan	已实现				见对应源码层
+TCPAccept	已实现				见对应源码层
+TCPCloseSocket	已实现				见对应源码层
+TCPConnect	已实现				见对应源码层
+TCPListen	已实现				见对应源码层
+TCPNameToIP	已实现				见对应源码层
+TCPRecv	已实现				见对应源码层
+TCPSend	已实现				见对应源码层
+TCPShutdown	已实现				见对应源码层
+TCPStartup	已实现				见对应源码层
+TimerDiff	已实现				见对应源码层
+TimerInit	已实现				见对应源码层
+ToolTip	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayCreateItem	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayCreateMenu	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayGetMsg	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayItemDelete	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayItemGetHandle	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayItemGetState	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayItemGetText	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayItemSetOnEvent	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayItemSetState	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayItemSetText	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TraySetClick	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TraySetIcon	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TraySetOnEvent	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TraySetPauseIcon	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TraySetState	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TraySetToolTip	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+TrayTip	待实现	仿真	winemu·GUI	P2	界面反馈 / 托盘
+UBound	已实现				见对应源码层
+UDPBind	已实现				见对应源码层
+UDPCloseSocket	已实现				见对应源码层
+UDPOpen	已实现				见对应源码层
+UDPRecv	已实现				见对应源码层
+UDPSend	已实现				见对应源码层
+UDPShutdown	已实现				见对应源码层
+UDPStartup	已实现				见对应源码层
+VarGetType	已实现				见对应源码层
+WinActivate	待实现	仿真	winemu·GUI	P2	窗口管理
+WinActive	待实现	仿真	winemu·GUI	P2	窗口管理
+WinClose	待实现	仿真	winemu·GUI	P2	窗口管理
+WinExists	待实现	仿真	winemu·GUI	P2	窗口管理
+WinGetCaretPos	待实现	仿真	winemu·GUI	P2	窗口管理
+WinGetClassList	待实现	仿真	winemu·GUI	P2	窗口管理
+WinGetClientSize	待实现	仿真	winemu·GUI	P0	窗口管理
+WinGetHandle	待实现	仿真	winemu·GUI	P2	窗口管理
+WinGetPos	待实现	仿真	winemu·GUI	P0	窗口管理
+WinGetProcess	待实现	仿真	winemu·GUI	P2	窗口管理
+WinGetState	待实现	仿真	winemu·GUI	P0	窗口管理
+WinGetText	待实现	仿真	winemu·GUI	P2	窗口管理
+WinGetTitle	待实现	仿真	winemu·GUI	P2	窗口管理
+WinKill	待实现	仿真	winemu·GUI	P2	窗口管理
+WinList	待实现	仿真	winemu·GUI	P2	窗口管理
+WinMenuSelectItem	待实现	仿真	winemu·GUI	P2	窗口管理
+WinMinimizeAll	待实现	仿真	winemu·GUI	P2	窗口管理
+WinMinimizeAllUndo	待实现	仿真	winemu·GUI	P2	窗口管理
+WinMove	待实现	仿真	winemu·GUI	P0	窗口管理
+WinSetOnTop	待实现	仿真	winemu·GUI	P2	窗口管理
+WinSetState	待实现	仿真	winemu·GUI	P2	窗口管理
+WinSetTitle	待实现	仿真	winemu·GUI	P2	窗口管理
+WinWait	待实现	仿真	winemu·GUI	P2	窗口管理
+WinWaitActive	待实现	仿真	winemu·GUI	P2	窗口管理
+WinWaitClose	待实现	仿真	winemu·GUI	P2	窗口管理
+WinWaitNotActive	待实现	仿真	winemu·GUI	P2	窗口管理
