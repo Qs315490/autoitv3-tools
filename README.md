@@ -60,7 +60,7 @@ autoitv3-tools/
         platform.rs   分层、选择、注入、通用函数与宏（33 项）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
         winemu.rs     Windows 仿真层（32 项）
-    autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 重命名）
+    autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 可选重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
         rename.rs      确定性重命名：变量按 作用域_类型_序号（$g_int_000 /
@@ -127,8 +127,8 @@ autoitv3-tools/
    `$fn_table[0x..]` 改写为 `FuncName`。在真实脚本上改写约 several thousand 处引用。
    表名按 AutoIt 语义**大小写不敏感**匹配——样本代码里写 `$fn_table`，而
    `Execute` 字符串里写 `$FN_TABLE`。
-4. **标识符重命名**（rename）：确定性重命名，别名自带**作用域**与**推断类型**
-   （见下文「标识符重命名」）。
+4. **标识符重命名**（rename，**默认关闭**）：加 `--rename` 才做，别名自带**作用域**与
+   **推断类型**（见下文「标识符重命名」）。默认保留原始名字，输出与输入还能对得上。
 
 simplify 必须排在 table **之前**：把 `Execute("<代码>")` 摊平成普通代码，table 才看得见
 `$FN_TABLE[1094](...)` 并把它解析成真实函数名；rename 最后跑，于是字符串里提到的
@@ -213,11 +213,16 @@ EndFunc
 **宏**（`@error`、`@CRLF`…）一律原样保留——它们是运行时按名字解析的，改名只会把
 脚本改坏。
 
-**重命名可选**：
+**重命名可选（默认不做）**：
 
 ```bash
-au3 deobfuscate sample.au3 --no-rename     # 跳过重命名，名字全保留（简化照做）
+au3 deobfuscate sample.au3              # 默认：常量折叠 / 函数表解析照做，名字全保留
+au3 deobfuscate sample.au3 --rename     # 额外做确定性重命名
 ```
+
+重命名**默认关闭**的理由：折叠、表解析、间接调用简化改变的是*结构*，而重命名改变的是
+*名字*——一旦改名，输出就没法和输入（或任何引用它的东西）逐行对照了。需要 `$l_str_003`
+这类自带作用域/类型的别名时再开。
 
 ```rust
 use autoitv3_deobf::{Deobfuscator, RenameOptions};
@@ -269,10 +274,10 @@ au3 parse some.au3
 # pretty：规范化重打印（默认保留注释、统一缩进）——反混淆输出基础
 au3 pretty some.au3
 
-# deobfuscate：常量折叠 + 函数表解析 + 间接调用简化 + 标识符重命名 + 去注释
+# deobfuscate：常量折叠 + 函数表解析 + 间接调用简化 + 去注释
 #              统计信息走 stderr，stdout 保持为干净的 AutoIt 源码
-au3 deobfuscate some.au3
-au3 deobfuscate some.au3 --no-rename      # 跳过重命名，保留原始变量/函数名
+au3 deobfuscate some.au3                  # 默认保留原始变量/函数名
+au3 deobfuscate some.au3 --rename         # 额外做确定性重命名（$l_str_003 / f042）
 
 # -o FILE 将输出写入文件；-o - 或省略 -o 则输出到 stdout（原文件永不被修改）
 au3 pretty      some.au3 -o out.au3
@@ -322,8 +327,8 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 | ------ | ---- | ---- |
 | `parse <FILE>` | `p`, `check` | 解析并报告顶层条目/函数数量 |
 | `pretty <FILE> [-o FILE]` | `fmt`, `format` | 规范化重打印，保留注释 |
-| `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值；`--no-rename` 跳过重命名；`--win-version` 等选仿真版本） |
-| `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
+| `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值；`--inline-tables` 顺带把表声明换成字面量；`--rename` 做标识符重命名，默认关闭；`--win-version` 等选仿真版本） |
+| `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--inline-tables` 顺带把表声明换成字面量；`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
 | `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数（同样接受 `--win-*` 开关） |
 | `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
