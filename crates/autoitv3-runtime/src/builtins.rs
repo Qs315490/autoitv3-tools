@@ -605,6 +605,24 @@ pub(crate) fn call(
                 Value::Int(1)
             }
         }
+        // `AdlibRegister`/`AdlibUnRegister` are core language builtins, not an
+        // operating-system interface, so they live here rather than in a
+        // platform layer. AutoIt calls the callbacks whenever the script goes
+        // idle; see `Runtime::adlib_handlers`.
+        "adlibregister" => {
+            let name = args.first().map(|a| a.to_autoit_string()).unwrap_or_default();
+            let interval = args.get(1).map(|a| a.to_int()).unwrap_or(250);
+            if name.is_empty() || interval <= 0 || !rt.has_function(&name) {
+                Value::Int(0)
+            } else {
+                Value::Int(i64::from(rt.register_adlib(name, interval)))
+            }
+        }
+        "adlibunregister" => {
+            let name = args.first().map(|a| a.to_autoit_string());
+            let name = name.as_deref().filter(|n| !n.is_empty());
+            Value::Int(i64::from(rt.unregister_adlib(name)))
+        }
         "onautoitexitunregister" => {
             let name = args.first().map(|a| a.to_autoit_string()).unwrap_or_default();
             Value::Int(i64::from(rt.unregister_exit_handler(&name)))

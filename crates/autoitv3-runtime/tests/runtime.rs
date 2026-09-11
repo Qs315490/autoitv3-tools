@@ -844,3 +844,56 @@ fn an_error_is_offered_once_per_run() {
     // One offer each time — not two for the first run and none for the second.
     assert_eq!(*hits.borrow(), 2);
 }
+
+#[test]
+fn adlib_callbacks_are_recorded_rather_than_fired() {
+    // `AdlibRegister` is a core language builtin: it schedules a script
+    // function, it does not touch the operating system. This interpreter has
+    // no idle clock, so registrations are recorded for the caller instead of
+    // being fired on a timer.
+    let src = r#"Func Tick()
+    Return 1
+EndFunc
+Func F()
+    Local $ok = AdlibRegister("Tick", 60000)
+    Local $missing = AdlibRegister("NoSuchFunction", 100)
+    Local $again = AdlibRegister("Tick", 120)
+    Local $dropped = AdlibUnRegister("Tick")
+    Local $twice = AdlibUnRegister("Tick")
+    Return $ok & $missing & $again & $dropped & $twice
+EndFunc
+"#;
+    let mut r = Runtime::with_program(&autoit3_parse(src));
+    assert_eq!(r.call_function("F", vec![]).unwrap().to_autoit_string(), "10110");
+    assert!(r.adlib_handlers().is_empty(), "the callback was unregistered");
+}
+
+#[test]
+fn adlib_registrations_keep_their_interval() {
+    let src = "Func Tick()\nEndFunc\nFunc F()\n    AdlibRegister(\"Tick\", 60000)\nEndFunc\n";
+    let mut r = Runtime::with_program(&autoit3_parse(src));
+    r.call_function("F", vec![]).unwrap();
+    assert_eq!(r.adlib_handlers().len(), 1);
+    assert_eq!(r.adlib_handlers()[0].name, "Tick");
+    assert_eq!(r.adlib_handlers()[0].interval_ms, 60000);
+}
+
+#[test]
+fn adlib_registration_stops_at_autoits_limit() {
+    // AutoIt keeps at most ten callbacks; the eleventh registration fails.
+    let mut src = String::new();
+    for i in 0..11 {
+        src.push_str(&format!("Func Tick{i}()\nEndFunc\n"));
+    }
+    src.push_str("Func F()\n    Local $r = \"\"\n");
+    for i in 0..11 {
+        src.push_str(&format!("    $r &= AdlibRegister(\"Tick{i}\")\n"));
+    }
+    src.push_str("    Return $r\nEndFunc\n");
+    let mut r = Runtime::with_program(&autoit3_parse(&src));
+    assert_eq!(
+        r.call_function("F", vec![]).unwrap().to_autoit_string(),
+        "11111111110"
+    );
+    assert_eq!(r.adlib_handlers().len(), 10);
+}
