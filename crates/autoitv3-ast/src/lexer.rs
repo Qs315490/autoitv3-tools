@@ -60,6 +60,49 @@ impl<'a> Lexer<'a> {
         Pos::new(self.line, self.col)
     }
 
+    /// Append the character at the cursor to `out`, decoding UTF-8.
+    ///
+    /// The lexer walks bytes, which is right for keywords and identifiers but
+    /// wrong for anything that carries text through to the output: casting a
+    /// byte to `char` would turn `济` (`e6 b5 8e`) into `æµ` and re-encode that
+    /// as UTF-8, so a comment or directive written in Chinese came out as
+    /// mojibake. A byte that starts no valid sequence becomes U+FFFD and costs
+    /// one byte, so the cursor always moves.
+    fn push_char(&mut self, out: &mut String) {
+        let Some(first) = self.peek() else {
+            return;
+        };
+        if first < 0x80 {
+            out.push(first as char);
+            self.bump();
+            return;
+        }
+        let rest = &self.src[self.idx..];
+        let len = match first {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => 1,
+        };
+        match rest
+            .get(..len)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|text| text.chars().next())
+        {
+            Some(ch) => {
+                out.push(ch);
+                self.idx += len;
+                // Columns count bytes, as they did before this decoded a run at
+                // a time, so spans do not move.
+                self.col += len as u32;
+            }
+            None => {
+                out.push(char::REPLACEMENT_CHARACTER);
+                self.bump();
+            }
+        }
+    }
+
     fn bump(&mut self) -> Option<u8> {
         let c = self.peek()?;
         self.idx += 1;
@@ -137,8 +180,7 @@ impl<'a> Lexer<'a> {
                     if c == b'\n' {
                         break;
                     }
-                    s.push(c as char);
-                    self.bump();
+                    self.push_char(&mut s);
                 }
                 TokenKind::Comment {
                     text: s.trim_end().to_string(),
@@ -315,8 +357,7 @@ impl<'a> Lexer<'a> {
             if c == b'\n' {
                 break;
             }
-            s.push(c as char);
-            self.bump();
+            self.push_char(&mut s);
         }
         TokenKind::Preproc(s.trim_end().to_string())
     }
@@ -332,8 +373,7 @@ impl<'a> Lexer<'a> {
         loop {
             if let Some(end) = self.block_closer_end() {
                 while self.idx < end {
-                    let c = self.bump().unwrap();
-                    raw.push(c as char);
+                    self.push_char(&mut raw);
                 }
                 self.take_line(&mut raw);
                 break;
@@ -375,8 +415,7 @@ impl<'a> Lexer<'a> {
     /// Append the rest of the current line (newline included) to `out`.
     fn take_line(&mut self, out: &mut String) {
         while let Some(c) = self.peek() {
-            out.push(c as char);
-            self.bump();
+            self.push_char(out);
             if c == b'\n' {
                 break;
             }
@@ -433,9 +472,7 @@ impl<'a> Lexer<'a> {
                     }
                     break;
                 }
-                Some(_) => {
-                    s.push(self.bump().unwrap() as char);
-                }
+                Some(_) => self.push_char(&mut s),
             }
         }
         Ok(TokenKind::Str(s))

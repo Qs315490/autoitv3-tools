@@ -407,3 +407,51 @@ fn chained_subscripts_on_a_call_accumulate() {
     assert!(matches!(base.kind, ExprKind::Call(..)));
     assert_eq!(indices.len(), 2);
 }
+
+#[test]
+fn non_ascii_text_survives_every_token_that_carries_it() {
+    // The lexer walks bytes, so anything it hands back as text has to be
+    // decoded as UTF-8. Casting a byte to `char` turned `示` (`e7 a4 ba`) into
+    // mojibake and re-encoded that, which showed up in the output.
+    let src = "#AutoIt3Wrapper_Res_Field=CompanyName|示例软件有限公司\n\
+               ;行注释：也是中文\n\
+               Func F()\n\
+               \x20   Return \"字符串里的中文：你好\"\n\
+               EndFunc\n";
+    let prog = parse(src).expect("parses");
+
+    let ItemKind::Directive(directive) = &prog.items[0].kind else {
+        panic!("expected a directive, got {:?}", prog.items[0].kind);
+    };
+    assert!(directive.ends_with("示例软件有限公司"), "{directive}");
+
+    let body = prog
+        .items
+        .iter()
+        .find_map(|i| match &i.kind {
+            ItemKind::Func(f) => Some(&f.body),
+            _ => None,
+        })
+        .expect("function");
+    let StmtKind::Return(Some(expr)) = &body[0].kind else {
+        panic!("expected return");
+    };
+    let ExprKind::Lit(lit) = &expr.kind else {
+        panic!("expected string literal, got {:?}", expr.kind);
+    };
+    let LitKind::Str(text) = &lit.kind else {
+        panic!("expected a string, got {:?}", lit.kind);
+    };
+    assert_eq!(text, "字符串里的中文：你好");
+}
+
+#[test]
+fn non_ascii_in_comments_is_kept_whole() {
+    // Both comment kinds carry text through to the pretty-printer, so both
+    // have to survive the byte walk.
+    let src = ";中文行注释，不应乱码\n#cs\n    中文块注释：测试\n#ce\n$x = 1\n";
+    let prog = parse(src).expect("parses");
+    assert_eq!(prog.comments.len(), 2);
+    assert_eq!(prog.comments[0].text.trim(), "中文行注释，不应乱码");
+    assert!(prog.comments[1].text.contains("中文块注释：测试"), "{:?}", prog.comments[1]);
+}
