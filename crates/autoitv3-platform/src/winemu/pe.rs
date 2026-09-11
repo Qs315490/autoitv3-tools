@@ -147,6 +147,38 @@ impl PeImage {
             .map(|(path, _)| path)
     }
 
+    /// Read a resource out of a directory of files extracted from an image.
+    ///
+    /// `AutoIt3Wrapper_Res_File_Add` stages each embedded resource next to the
+    /// script, and the staging path is recoverable from the resource name:
+    /// `__NAME` for a file added straight from the directory, `__Res64/NAME`
+    /// for the 64-bit payload directory and `__ResImage/_NAME` for the image
+    /// one. Reading those files means an analysis does not need the (often
+    /// multi-megabyte) `.exe` at all.
+    ///
+    /// `name` is matched case-insensitively, as `FindResourceW` does.
+    pub fn find_resource_file(
+        dirs: &[std::path::PathBuf],
+        name: &Selector,
+    ) -> Option<Vec<u8>> {
+        let wanted = name.name.clone().or_else(|| name.id.map(|id| id.to_string()))?;
+        for dir in dirs {
+            for rel in [
+                std::path::PathBuf::from(format!("__{wanted}")),
+                std::path::PathBuf::from(&wanted),
+                std::path::PathBuf::from("__Res64").join(&wanted),
+                std::path::PathBuf::from("__ResImage").join(format!("_{wanted}")),
+            ] {
+                if let Some(path) = resolve_ci(&dir.join(rel)) {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        return Some(bytes);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// `type/name` pairs, for diagnostics.
     pub fn listing(&self) -> Vec<String> {
         self.resources
@@ -427,6 +459,29 @@ mod tests {
     }
 
     #[test]
+    fn staged_resource_files_are_found_by_name() {
+        let dir = std::env::temp_dir().join(format!("au3-res-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("__Res64")).unwrap();
+        std::fs::create_dir_all(dir.join("__ResImage")).unwrap();
+        std::fs::write(dir.join("__PLAIN"), b"plain").unwrap();
+        std::fs::write(dir.join("__Res64").join("PAY64"), b"payload64").unwrap();
+        std::fs::write(dir.join("__ResImage").join("_IMG"), b"image").unwrap();
+        let dirs = vec![dir.clone()];
+
+        // `AutoIt3Wrapper_Res_File_Add` staging names, in the three shapes.
+        let get = |n: &str| PeImage::find_resource_file(&dirs, &Selector::name(n));
+        assert_eq!(get("PLAIN").as_deref(), Some(&b"plain"[..]));
+        assert_eq!(get("PAY64").as_deref(), Some(&b"payload64"[..]));
+        assert_eq!(get("IMG").as_deref(), Some(&b"image"[..]));
+        // `FindResourceW` matches case-insensitively.
+        assert_eq!(get("plain").as_deref(), Some(&b"plain"[..]));
+        assert!(get("MISSING").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn discovery_prefers_the_image_named_after_the_script() {
         let dir = std::env::temp_dir().join(format!("au3-pe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -446,4 +501,26 @@ mod tests {
         assert!(PeImage::find_resource_module(std::env::temp_dir().join("nope-not-here"), None).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Resolve a path that may differ from `path` only in case.
+///
+/// Resource names are matched case-insensitively on Windows, but the staged
+/// files sit on whatever filesystem the analysis runs on, so fall back to a
+/// scan of the parent directory.
+fn resolve_ci(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if path.exists() {
+        return Some(path.to_path_buf());
+    }
+    let dir = path.parent()?;
+    let want = path.file_name()?.to_str()?;
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.eq_ignore_ascii_case(want) {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
 }

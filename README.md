@@ -742,19 +742,24 @@ MD5 口令摘要才能填满 256 位的 AES 密钥 —— 真实脚本里那个 
   回到"停在第一个 Windows 调用"的诚实行为；`with_host_paths()` 则只让**目录**宏回落到
   主机路径（`@TempDir` 等仍可用于真实文件 I/O），Windows 专有宏照旧仿真。
 
-### 资源镜像的查找顺序
+### 资源从哪里读
 
-编译后的 AutoIt 脚本把加密的表放在 **PE 镜像的资源里**，`FindResourceW` / `LoadResource`
-就从那里取。所以仿真层需要知道"脚本是从哪个 `.exe` 编译来的"。默认不需要配置：
+编译后的 AutoIt 脚本把加密的表放进 **PE 镜像的 `RT_RCDATA` 资源**，
+`FindResourceW` / `LoadResource` 再从那里取。有两种来源，**先文件夹、后镜像**：
 
-1. `--resource-module <FILE>`（显式指定，最高优先）；
-2. `AU3_RESOURCE_MODULE` 环境变量；
-3. **自动查找**：先脚本所在目录、再当前工作目录；目录内优先选与脚本同名的镜像，
-   否则选第一个真正带资源的 PE（按文件名排序，保证可复现）。自动选中时会往 stderr
-   打一行 `# resource module: ...` 提示，方便发现选错了。
+1. **已提取的资源文件**（优先）。`AutoIt3Wrapper_Res_File_Add` 会把每个内嵌资源
+   摊在脚本旁边，文件名可以从资源名反推：
+   `__NAME`、`__Res64/NAME`、`__ResImage/_NAME`，最后才试裸名 `NAME`。
+   在脚本所在目录和当前工作目录里依次找，大小写不敏感（`FindResourceW` 本来就是）。
+   于是**只要有从 exe 提取出来的资源，就不需要那个几 MB 的 exe**。
+2. **PE 镜像**（回退）。`--resource-module <FILE>` → `AU3_RESOURCE_MODULE` →
+   自动查找：脚本所在目录、再当前工作目录，优先选与脚本同名的镜像，否则选第一个
+   真正带资源的 PE（按文件名排序，保证可复现）。自动选中时会往 stderr 打一行
+   `# resource module: ...` 提示。
 
-找不到镜像不会报错，只是 `FindResourceW` 等落回"未列举"分支（`@error = 1`、返回 `0`），
-于是否则解不开的字符串表就停在那里 —— 边界是可见的，不会编造数据。
+两边都找不到时，`GetModuleHandleW`/`FindResourceW` 落回"未列举"分支
+（`@error = 1`、返回 `0`），脚本自己决定怎么办 —— 边界可见，不编造数据。
+`AU3_WINEMU_TRACE=1` 会打印每次"资源来自文件"的命中，便于确认读的是哪一份。
 
 ### 执行配置（ExecutionProfile）——近似行为按用途区分
 

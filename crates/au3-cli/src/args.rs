@@ -6,7 +6,10 @@
 use std::path::Path;
 
 use autoitv3_ast::{parse, Program};
-use autoitv3_platform::{find_resource_module, WindowsArch, WindowsEmulation, WindowsVersion};
+use autoitv3_platform::{
+    find_resource_module, has_staged_resources, resource_search_dirs, WindowsArch,
+    WindowsEmulation, WindowsVersion,
+};
 use autoitv3_runtime::platform::Platform;
 use clap::Args;
 
@@ -95,6 +98,17 @@ impl WinEmuArgs {
                 );
                 emu = emu.with_module_file(found);
             }
+        }
+        if !self.no_win_emu {
+            // Resources already extracted next to the script answer before the
+            // image does, so the payload alone is enough to analyse a build.
+            let dirs = resource_search_dirs(script);
+            if emu.module_path().is_none() && !has_staged_resources(&dirs) {
+                eprintln!(
+                    "# no resource image or extracted resource files found: resource calls will fail"
+                );
+            }
+            emu = emu.with_resource_dirs(dirs);
         }
         Ok(autoitv3_platform::host_platform_with(emu))
     }
