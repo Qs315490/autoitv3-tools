@@ -56,4 +56,8 @@ pub enum Command {
     /// Load a script and debug it: breakpoints, stepping, a prompt
     #[command(visible_aliases = ["dbg"])]
     Debug(commands::debug::DebugArgs),
+
+    /// Decode a resource-packed payload out of a directory or a PE image
+    #[command(visible_aliases = ["unp"])]
+    Unpack(commands::unpack::UnpackArgs),
 }

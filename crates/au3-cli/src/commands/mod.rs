@@ -10,6 +10,7 @@
 //! | `evaluate` | [`evaluate`] |
 //! | `run` | [`run`] |
 //! | `debug` | [`debug`] |
+//! | `unpack` | [`unpack`] |
 //!
 //! The registry itself (names, aliases, help) is declared in
 //! [`crate::cli`]; adding a command means adding a module here and a variant
@@ -21,6 +22,7 @@ pub mod evaluate;
 pub mod parse;
 pub mod pretty;
 pub mod run;
+pub mod unpack;
 
 use crate::args::CliResult;
 use crate::cli::{Cli, Command};
@@ -34,5 +36,6 @@ pub fn dispatch(cli: &Cli) -> CliResult<()> {
         Command::Evaluate(args) => evaluate::run(args),
         Command::Run(args) => run::run(args),
         Command::Debug(args) => debug::run(args),
+        Command::Unpack(args) => unpack::run(args),
     }
 }

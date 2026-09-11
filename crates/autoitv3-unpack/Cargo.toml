@@ -1,0 +1,15 @@
+[package]
+name = "autoitv3-unpack"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+
+[dependencies]
+autoitv3-platform = { path = "../autoitv3-platform" }
+
+[lib]
+name = "autoitv3_unpack"
+path = "src/lib.rs"
+
+[lints.rust]
+unused = "warn"

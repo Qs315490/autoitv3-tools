@@ -10,6 +10,7 @@ autoitv3-format = { path = "../autoitv3-format" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
 autoitv3-platform = { path = "../autoitv3-platform" }
 autoitv3-deobf = { path = "../autoitv3-deobf" }
+autoitv3-unpack = { path = "../autoitv3-unpack" }
 
 # CLI parsing: subcommand aliases + unambiguous abbreviations (`au3 deob`).
 clap = { version = "4.5", features = ["derive"] }

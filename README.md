@@ -59,7 +59,7 @@ autoitv3-tools/
       tests/
         platform.rs   分层、选择、注入、通用函数与宏（33 项）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
-        winemu.rs     Windows 仿真层（32 项）
+        winemu/       Windows 仿真层（DllStruct / CryptoAPI / LZNT1 / PE 资源 / 注册表 …）
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 可选重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
@@ -77,6 +77,9 @@ autoitv3-tools/
       tests/
         deobf.rs      反混淆 pass 单元测试（30 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
+    autoitv3-unpack/         # 库 crate——资源打包载荷的解包（au3 unpack）
+      src/lib.rs            7 阶段解码 + 资源角色自动识别（loader/member 靠
+                            SHA1 校验确认，不做名字假设）
     au3-cli/                # CLI 二进制 crate（产物名为 au3，使用 clap 解析参数）
       src/
         main.rs     入口：Cli::parse() → dispatch → 把 CliError 转成退出码
@@ -342,6 +345,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 | `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--inline-tables` 顺带把表声明换成字面量；`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
 | `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数（同样接受 `--win-*` 开关） |
 | `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停） |
+| `unpack <PATH> [-o FILE]` | `unp` | 解包资源打包的载荷（目录或 PE 都行，自动认角色，`--raw` 输出整段文本） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
 **缩写**：只要前缀无歧义即可使用，例如 `au3 deob`、`au3 pars`、`au3 pret`。
@@ -727,6 +731,9 @@ MD5 口令摘要才能填满 256 位的 AES 密钥 —— 真实脚本里那个 
 回归测试 `an_aes_key_wider_than_the_hash_uses_the_documented_expansion` 用样本里真实的
 口令钉住了整条派生（MD5 → 32 字节密钥）。
 
+S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节块都重算，一份 700 KB
+的载荷要 8 秒，现在是 0.03 秒）。这同时把真实脚本的 `--evaluate` 从 8.3 秒降到 0.2 秒。
+
 `DllStruct` 的内存是 `Rc<RefCell<Vec<u8>>>`：`DllStructCreate($def, $ptr)` 会**映射**到
 已存在的地址而不是另开一块，于是 `_Crypt_DecryptData` 那套"交给 `DllCall` 解密、
 再用第二个 struct 从同一地址按实际长度读回明文"的写法才成立。写入经过 `write_at()`
@@ -741,6 +748,33 @@ MD5 口令摘要才能填满 256 位的 AES 密钥 —— 真实脚本里那个 
 - 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，
   回到"停在第一个 Windows 调用"的诚实行为；`with_host_paths()` 则只让**目录**宏回落到
   主机路径（`@TempDir` 等仍可用于真实文件 I/O），Windows 专有宏照旧仿真。
+
+## 解包资源（`au3 unpack`）
+
+有些编译产物把载荷加密后放进 4 个 `RT_RCDATA` 资源（一个 loader + 三个 member），
+只有它自己的脚本能读回来。`au3 unpack` 直接按该格式解码，**不需要 `.au3`，
+也不需要那个几 MB 的 `.exe`**：
+
+```bash
+au3 unpack ./staged/          # 目录：AutoIt3Wrapper 落盘的 __NAME / __Res64/NAME / __ResImage/_NAME
+au3 unpack build.exe          # 或者直接给 PE，自动枚举它的 RT_RCDATA
+au3 unpack build.exe --raw    # --raw 输出拼接后的整段文本，默认一行一条
+```
+
+四个资源的**角色是自动认出来的**：包里没有名字标签，所以把每个候选依次当 loader、
+每个有序三元组当 member 试，只有当整条链跑通——包括最后一层的 `SHA1(明文) == Hash`
+——才接受。这一步保证了搜索不会被巧合骗到（错组合过不了摘要校验），也意味着
+**资源名每次构建随机变化都不影响**：
+
+```
+$ au3 unpack build.exe
+unpacked: loader <name>, members <a>/<b>/<c> (17 resources considered)
+  4144 entries, 347887 bytes
+```
+
+实现放在独立 crate `autoitv3-unpack`：它是一个**打包器**的格式，不是通用 AutoIt
+能力，所以不塞进解释器。解码链复用 `autoitv3-platform` 的 CryptoAPI 仿真
+（`CryptDeriveKey` 的 HMAC 式扩展）和 PE 解析。
 
 ### 资源从哪里读
 
