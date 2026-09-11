@@ -2,10 +2,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use autoitv3_gui::{Control, ControlKind, GuiBackend, GuiImage, Window};
-use egui::{Pos2, Rect, TextureId, vec2};
+use autoitv3_gui::{Control, GuiBackend, GuiImage, Window};
+use egui::{vec2, Pos2, Rect, TextureId};
 
-use crate::raster::{Texture, rasterize};
+use crate::raster::{rasterize, Texture};
 
 /// An offscreen egui renderer for the AutoIt GUI model.
 ///
@@ -61,6 +61,16 @@ impl EguiBackend {
         self
     }
 
+    /// How many windows the mirrored model holds.
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+
+    /// How many controls the mirrored model holds.
+    pub fn control_count(&self) -> usize {
+        self.controls.len()
+    }
+
     /// Lay the current model out and return the pixels.
     pub fn render(&mut self) -> GuiImage {
         let raw = egui::RawInput {
@@ -97,10 +107,7 @@ impl EguiBackend {
             for (window, controls) in &frames {
                 let rect = Rect::from_min_size(
                     Pos2::new(window.x as f32, window.y as f32),
-                    vec2(
-                        window.width.max(1) as f32,
-                        window.height.max(1) as f32,
-                    ),
+                    vec2(window.width.max(1) as f32, window.height.max(1) as f32),
                 );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                     egui::Frame::window(ui.style()).show(ui, |ui| {
@@ -114,9 +121,9 @@ impl EguiBackend {
                         if controls.is_empty() {
                             ui.label("(empty window)");
                         }
-                        for control in controls {
-                            draw_control(ui, control);
-                        }
+                        // The shared widget layer draws every control kind,
+                        // including the menu bar.
+                        let _ = crate::widgets::draw_window_body(ui, controls);
                     });
                 });
             }
@@ -174,10 +181,7 @@ impl GuiBackend for EguiBackend {
 }
 
 #[allow(irrefutable_let_patterns)]
-fn apply_textures(
-    textures: &mut HashMap<TextureId, Texture>,
-    delta: &egui::TexturesDelta,
-) {
+fn apply_textures(textures: &mut HashMap<TextureId, Texture>, delta: &egui::TexturesDelta) {
     for (id, deltas) in &delta.set {
         for image_delta in deltas {
             // Whole-texture updates only; offscreen frames never patch the atlas.
@@ -193,72 +197,6 @@ fn apply_textures(
                         pixels: image.pixels.clone(),
                     },
                 );
-            }
-        }
-    }
-}
-
-/// Draw one control with the closest egui widget.
-fn draw_control(ui: &mut egui::Ui, control: &Control) {
-    match control.kind {
-        ControlKind::Label => {
-            ui.label(&control.text);
-        }
-        ControlKind::Button => {
-            let _ = ui.button(&control.text);
-        }
-        ControlKind::Checkbox => {
-            let mut checked = control.is_checked();
-            ui.checkbox(&mut checked, &control.text);
-        }
-        ControlKind::Radio => {
-            let checked = control.is_checked();
-            let _ = ui.radio(checked, &control.text);
-        }
-        ControlKind::Input | ControlKind::Edit => {
-            let mut text = control.text.clone();
-            ui.text_edit_singleline(&mut text);
-        }
-        ControlKind::Group => {
-            ui.group(|ui| {
-                ui.label(&control.text);
-            });
-        }
-        ControlKind::Progress => {
-            let value = (control.text.parse::<f32>().unwrap_or(0.0) / 100.0).clamp(0.0, 1.0);
-            ui.add(egui::ProgressBar::new(value));
-        }
-        ControlKind::Slider => {
-            let mut value = 0.0f32;
-            ui.add(egui::Slider::new(&mut value, 0.0..=100.0));
-        }
-        ControlKind::List | ControlKind::Combo => {
-            if control.data.is_empty() {
-                ui.label(&control.text);
-            } else {
-                ui.label(control.data.join(", "));
-            }
-        }
-        ControlKind::ListView | ControlKind::TreeView => {
-            for item in &control.data {
-                ui.label(item);
-            }
-        }
-        ControlKind::Pic | ControlKind::Icon | ControlKind::Graphic => {
-            let label = if control.text.is_empty() {
-                "[graphic]"
-            } else {
-                control.text.as_str()
-            };
-            ui.label(label);
-        }
-        ControlKind::Menu
-        | ControlKind::MenuItem
-        | ControlKind::ContextMenu
-        | ControlKind::Dummy => {}
-        _ => {
-            if !control.text.is_empty() {
-                ui.label(&control.text);
             }
         }
     }

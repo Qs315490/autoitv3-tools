@@ -32,5 +32,10 @@ name = "live"
 path = "examples/live.rs"
 required-features = ["window"]
 
+[[example]]
+name = "gallery"
+path = "examples/gallery.rs"
+required-features = ["egui"]
+
 [lints.rust]
 unused = "warn"

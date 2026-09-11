@@ -1,0 +1,691 @@
+//! The one mapping from an AutoIt [`Control`] to an egui widget.
+//!
+//! Both the offscreen [`crate::EguiBackend`] and the windowed
+//! [`crate::LiveBackend`] lay the same model out, so the translation lives here
+//! once instead of twice. Drawing returns the [`Interaction`]s the user
+//! produced during the frame: the offscreen renderer discards them, while the
+//! live window turns them into `GuiEvent`/`GuiUpdate`s for the semantics layer.
+//!
+//! # Fidelity
+//!
+//! AutoIt's real controls are Win32 (or scripts' own) widgets, so this is an
+//! approximation, not a clone. Two deliberate simplifications:
+//!
+//! * The widget model has no parent links (AutoIt passes a parent handle to
+//!   `GUICtrlCreateMenuItem`/`GUICtrlCreateTabItem`, which the model does not
+//!   retain), so a `Menu` lists the window's `MenuItem` controls — every menu
+//!   shows every item. Tab items are drawn as a row of tabs.
+//! * Colors are read as AutoIt documents them, `0xRRGGBB`.
+
+use autoitv3_gui::{Control, ControlKind, DrawCmd};
+use egui::{
+    vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
+    TextStyle,
+};
+
+/// What the user did to a control while it was drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// A Button/ListViewItem/etc. was clicked.
+    Clicked,
+    /// A MenuItem was chosen.
+    Menu,
+    /// The text of an Input/Edit changed.
+    Text(String),
+    /// A Checkbox/Radio was toggled.
+    Checked(bool),
+    /// A list-like control selected `index`.
+    Selected(usize),
+}
+
+/// An [`Action`] and the control that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interaction {
+    pub id: i64,
+    pub action: Action,
+}
+
+/// Draw `control` and report any interaction with it.
+///
+/// Hidden controls are skipped; disabled ones are drawn greyed out and inert;
+/// a non-empty `tip` becomes a hover tooltip.
+pub fn draw_control(ui: &mut egui::Ui, control: &Control) -> Vec<Interaction> {
+    let mut actions: Vec<Action> = Vec::new();
+    if !control.is_visible() {
+        return Vec::new();
+    }
+    let response = ui
+        .push_id(control.id, |ui| {
+            ui.add_enabled_ui(control.is_enabled(), |ui| {
+                apply_style(ui, control);
+                let mut body = |ui: &mut egui::Ui| draw_kind(ui, control, &mut actions);
+                match control.bk_color {
+                    // A background color paints behind whatever the control draws.
+                    Some(color) => {
+                        egui::Frame::new()
+                            .fill(autoit_color(color))
+                            .inner_margin(2.0)
+                            .show(ui, &mut body);
+                    }
+                    None => body(ui),
+                }
+            });
+        })
+        .response;
+    if !control.tip.is_empty() {
+        response.on_hover_text(&control.tip);
+    }
+    actions
+        .into_iter()
+        .map(|action| Interaction {
+            id: control.id,
+            action,
+        })
+        .collect()
+}
+
+/// Draw an entire window body: the menu bar, then the controls that are not
+/// drawn by it.
+///
+/// Returns the interactions produced by the whole window, so a live backend can
+/// report menu clicks as menu events.
+pub fn draw_window_body(ui: &mut egui::Ui, controls: &[Control]) -> Vec<Interaction> {
+    let mut actions: Vec<Interaction> = Vec::new();
+    let menus: Vec<&Control> = controls
+        .iter()
+        .filter(|control| control.kind == ControlKind::Menu && control.is_visible())
+        .collect();
+    let has_menus = !menus.is_empty();
+    if has_menus {
+        let items: Vec<&Control> = controls
+            .iter()
+            .filter(|control| {
+                matches!(
+                    control.kind,
+                    ControlKind::MenuItem | ControlKind::ContextMenu
+                ) && control.is_visible()
+            })
+            .collect();
+        ui.horizontal(|ui| {
+            for menu in menus {
+                let title = text_or(&menu.text, "Menu");
+                ui.menu_button(title, |ui| {
+                    if items.is_empty() {
+                        ui.label("(no items)");
+                    }
+                    for item in &items {
+                        // (The model keeps no menu→item link, so each menu
+                        // lists the window's items.)
+                        if ui
+                            .add_enabled(
+                                item.is_enabled(),
+                                egui::Button::new(text_or(&item.text, "Item")),
+                            )
+                            .clicked()
+                        {
+                            actions.push(Interaction {
+                                id: item.id,
+                                action: Action::Menu,
+                            });
+                        }
+                    }
+                });
+            }
+        });
+        ui.separator();
+    }
+    for control in controls {
+        // `Menu` is the bar itself. `MenuItem`/`ContextMenu` are drawn by the
+        // bar when one exists, and standalone (as buttons) when it does not.
+        let drawn_by_bar = has_menus
+            && matches!(
+                control.kind,
+                ControlKind::MenuItem | ControlKind::ContextMenu
+            );
+        if control.kind == ControlKind::Menu || drawn_by_bar {
+            continue;
+        }
+        actions.append(&mut draw_control(ui, control));
+    }
+    actions
+}
+
+/// Apply the control's font and text color to every text style inside `ui`.
+fn apply_style(ui: &mut egui::Ui, control: &Control) {
+    if let Some(font) = &control.font {
+        let name = font.name.to_ascii_lowercase();
+        let family = if name.contains("mono") || name.contains("consol") || name.contains("courier")
+        {
+            FontFamily::Monospace
+        } else {
+            FontFamily::Proportional
+        };
+        let size = if font.size > 0 {
+            font.size as f32
+        } else {
+            12.0
+        };
+        let mut style: egui::Style = (**ui.style()).clone();
+        for text_style in [
+            TextStyle::Body,
+            TextStyle::Button,
+            TextStyle::Small,
+            TextStyle::Heading,
+            TextStyle::Monospace,
+        ] {
+            style
+                .text_styles
+                .insert(text_style, FontId::new(size, family.clone()));
+        }
+        *ui.style_mut() = style;
+    }
+    if let Some(color) = control.color {
+        ui.style_mut().visuals.override_text_color = Some(autoit_color(color));
+    }
+}
+
+fn draw_kind(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+    match control.kind {
+        ControlKind::Label => {
+            ui.label(&control.text);
+        }
+        ControlKind::Button => {
+            let label = text_or(&control.text, "Button").to_string();
+            if place(ui, control, egui::Button::new(label)).clicked() {
+                actions.push(Action::Clicked);
+            }
+        }
+        ControlKind::Checkbox => {
+            let mut checked = control.is_checked();
+            if ui.checkbox(&mut checked, &control.text).changed() {
+                actions.push(Action::Checked(checked));
+            }
+        }
+        ControlKind::Radio => {
+            // `ui.radio` needs a target value; a radio can only turn on.
+            if ui.radio(control.is_checked(), &control.text).clicked() && !control.is_checked() {
+                actions.push(Action::Checked(true));
+            }
+        }
+        ControlKind::Group => {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                if !control.text.is_empty() {
+                    ui.strong(&control.text);
+                }
+                ui.label(" ");
+            });
+        }
+        ControlKind::Input => {
+            let mut text = control.text.clone();
+            let widget = egui::TextEdit::singleline(&mut text);
+            if place(ui, control, widget).changed() {
+                actions.push(Action::Text(text));
+            }
+        }
+        ControlKind::Edit => {
+            let mut text = control.text.clone();
+            let widget = egui::TextEdit::multiline(&mut text);
+            if place(ui, control, widget).changed() {
+                actions.push(Action::Text(text));
+            }
+        }
+        ControlKind::List => draw_list(ui, control, actions),
+        ControlKind::Combo => draw_combo(ui, control, actions),
+        ControlKind::ListView => draw_listview(ui, control, actions),
+        ControlKind::ListViewItem => draw_listview_item(ui, control, actions),
+        ControlKind::TreeView => draw_treeview(ui, control, actions),
+        ControlKind::TreeViewItem => {
+            let selected = control.selection == Some(0);
+            if ui
+                .selectable_label(selected, indent(&control.text))
+                .clicked()
+            {
+                actions.push(Action::Selected(0));
+            }
+        }
+        ControlKind::Tab => {
+            ui.strong(text_or(&control.text, "[tabs]"));
+        }
+        ControlKind::TabItem => {
+            if ui
+                .selectable_label(control.is_checked(), text_or(&control.text, "Tab"))
+                .clicked()
+            {
+                actions.push(Action::Clicked);
+            }
+        }
+        ControlKind::Menu => {
+            // Drawn by `draw_window_body`; standalone menus get a placeholder.
+            ui.strong(text_or(&control.text, "Menu"));
+        }
+        ControlKind::MenuItem | ControlKind::ContextMenu => {
+            if ui.button(text_or(&control.text, "Item")).clicked() {
+                actions.push(Action::Menu);
+            }
+        }
+        ControlKind::Pic | ControlKind::Icon => draw_placeholder(
+            ui,
+            control,
+            control.image.as_deref().unwrap_or(&control.text),
+            "[image]",
+        ),
+        ControlKind::Graphic => draw_graphic(ui, control),
+        ControlKind::Progress => {
+            let percent = parse_number(control).unwrap_or(0.0).clamp(0.0, 100.0);
+            ui.add(egui::ProgressBar::new(percent / 100.0).text(format!("{}%", percent as i64)));
+        }
+        ControlKind::Slider => {
+            let (min, max) = control.limit.unwrap_or((0, 100));
+            let (min, max) = (min as f32, max as f32);
+            let mut value = parse_number(control)
+                .unwrap_or(min)
+                .clamp(min, max.max(min));
+            if ui
+                .add(egui::Slider::new(&mut value, min..=max.max(min)))
+                .changed()
+            {
+                actions.push(Action::Text(format!("{}", value.round() as i64)));
+            }
+        }
+        ControlKind::Updown => {
+            let mut value = parse_number(control).unwrap_or(0.0) as i64;
+            if ui.add(egui::DragValue::new(&mut value)).changed() {
+                actions.push(Action::Text(value.to_string()));
+            }
+        }
+        ControlKind::Date => {
+            ui.label(format!("[date] {}", text_or(&control.text, "")));
+        }
+        ControlKind::MonthCal => {
+            ui.label("[month calendar]");
+        }
+        ControlKind::Avi => {
+            ui.label(text_or(&control.text, "[animation]"));
+        }
+        ControlKind::Obj => {
+            ui.label(text_or(&control.text, "[obj]"));
+        }
+        ControlKind::Dummy => {}
+    }
+}
+
+fn draw_list(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+    if control.data.is_empty() {
+        ui.label(text_or(&control.text, "[empty list]"));
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .max_height(120.0)
+        .id_salt(control.id)
+        .show(ui, |ui| {
+            for (index, item) in control.data.iter().enumerate() {
+                let selected = control.selection == Some(index);
+                if ui.selectable_label(selected, item).clicked() {
+                    actions.push(Action::Selected(index));
+                }
+            }
+        });
+}
+
+fn draw_combo(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+    let selected = control.selection.unwrap_or(0);
+    let current = control
+        .data
+        .get(selected)
+        .cloned()
+        .unwrap_or_else(|| control.text.clone());
+    egui::ComboBox::from_id_salt(control.id)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (index, item) in control.data.iter().enumerate() {
+                if ui.selectable_label(selected == index, item).clicked() {
+                    actions.push(Action::Selected(index));
+                }
+            }
+        });
+}
+
+fn draw_listview(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+    let columns: Vec<&str> = control.text.split('|').collect();
+    egui::ScrollArea::vertical()
+        .max_height(160.0)
+        .id_salt(control.id)
+        .show(ui, |ui| {
+            egui::Grid::new(("listview", control.id))
+                .striped(true)
+                .show(ui, |ui| {
+                    if !control.text.is_empty() {
+                        for column in &columns {
+                            ui.strong(*column);
+                        }
+                        ui.end_row();
+                    }
+                    for (index, row) in control.data.iter().enumerate() {
+                        let selected = control.selection == Some(index);
+                        let cells: Vec<&str> = row.split('|').collect();
+                        let width = columns.len().max(cells.len()).max(1);
+                        for cell in 0..width {
+                            let text = cells.get(cell).copied().unwrap_or("");
+                            if ui.selectable_label(selected, text).clicked() {
+                                actions.push(Action::Selected(index));
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+fn draw_listview_item(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+    let selected = control.selection == Some(0);
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        for cell in control.text.split('|') {
+            clicked |= ui.selectable_label(selected, cell).clicked();
+        }
+    });
+    if clicked {
+        actions.push(Action::Selected(0));
+    }
+}
+
+fn draw_treeview(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+    if control.data.is_empty() {
+        ui.label(text_or(&control.text, "[empty tree]"));
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .max_height(160.0)
+        .id_salt(control.id)
+        .show(ui, |ui| {
+            for (index, item) in control.data.iter().enumerate() {
+                let selected = control.selection == Some(index);
+                if ui.selectable_label(selected, indent(item)).clicked() {
+                    actions.push(Action::Selected(index));
+                }
+            }
+        });
+}
+
+/// Render a stand-in box for controls whose real content (a bitmap, an icon, a
+/// video frame) is not in the model: a framed rectangle with a caption.
+fn draw_placeholder(ui: &mut egui::Ui, control: &Control, caption: &str, fallback: &str) {
+    let size = vec2(control.width.max(48) as f32, control.height.max(24) as f32);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter_at(rect);
+    let radius = CornerRadius::same(2);
+    painter.rect_filled(rect, radius, ui.visuals().extreme_bg_color);
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text_or(caption, fallback),
+        FontId::proportional(11.0),
+        ui.visuals().text_color(),
+    );
+}
+
+/// Replay the `GUICtrlSetGraphic` command list onto a framed canvas.
+fn draw_graphic(ui: &mut egui::Ui, control: &Control) {
+    let size = vec2(control.width.max(64) as f32, control.height.max(48) as f32);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(24));
+    let mut color = ui.visuals().text_color();
+    let mut width = 1.0f32;
+    for command in &control.draw {
+        match command {
+            DrawCmd::SetColor(value) => color = autoit_color(*value),
+            DrawCmd::SetWidth(value) => width = (*value).max(1) as f32,
+            DrawCmd::SetBkColor(_) | DrawCmd::SetStyle(_) | DrawCmd::Clear => {}
+            DrawCmd::Line { x1, y1, x2, y2 } => {
+                painter.line_segment(
+                    [point(rect, *x1, *y1), point(rect, *x2, *y2)],
+                    Stroke::new(width, color),
+                );
+            }
+            DrawCmd::Rect { x, y, w, h } => {
+                painter.rect_stroke(
+                    Rect::from_min_size(point(rect, *x, *y), vec2(*w as f32, *h as f32)),
+                    CornerRadius::ZERO,
+                    Stroke::new(width, color),
+                    StrokeKind::Inside,
+                );
+            }
+            DrawCmd::Ellipse { x, y, w, h } => {
+                painter.circle_stroke(
+                    point(rect, *x + *w / 2, *y + *h / 2),
+                    (*w).min(*h).max(0) as f32 / 2.0,
+                    Stroke::new(width, color),
+                );
+            }
+            DrawCmd::Text { x, y, text } => {
+                painter.text(
+                    point(rect, *x, *y),
+                    Align2::LEFT_TOP,
+                    text,
+                    FontId::proportional(12.0),
+                    color,
+                );
+            }
+        }
+    }
+}
+
+/// Add a widget at the control's AutoIt pixel size when the script gave one.
+///
+/// Controls are laid out in creation order rather than at their absolute
+/// `x`/`y` (egui lays out in flow), but an explicit width/height is honored so
+/// an Input or Button keeps the size the script asked for.
+fn place(ui: &mut egui::Ui, control: &Control, widget: impl egui::Widget) -> egui::Response {
+    if control.width > 0 && control.height > 0 {
+        ui.add_sized(vec2(control.width as f32, control.height as f32), widget)
+    } else {
+        ui.add(widget)
+    }
+}
+
+/// AutoIt GUI colors are documented as `0xRRGGBB`.
+fn autoit_color(value: i64) -> Color32 {
+    let value = value as u32;
+    Color32::from_rgb(
+        ((value >> 16) & 0xFF) as u8,
+        ((value >> 8) & 0xFF) as u8,
+        (value & 0xFF) as u8,
+    )
+}
+
+/// `control.text` as a number, tolerating the empty string.
+fn parse_number(control: &Control) -> Option<f32> {
+    control.text.trim().parse::<f32>().ok()
+}
+
+fn point(rect: Rect, x: i32, y: i32) -> Pos2 {
+    rect.min + vec2(x as f32, y as f32)
+}
+
+/// Indent a tree item by its level, encoded as leading tabs (or a `|` prefix).
+fn indent(text: &str) -> String {
+    let mut level = 0usize;
+    let mut rest = text;
+    while let Some(stripped) = rest
+        .strip_prefix('\t')
+        .or_else(|| rest.strip_prefix("  "))
+        .or_else(|| rest.strip_prefix("| "))
+        .or_else(|| rest.strip_prefix('|'))
+    {
+        level += 1;
+        rest = stripped;
+    }
+    if level == 0 {
+        text.to_string()
+    } else {
+        format!("{}{}", "    ".repeat(level), rest)
+    }
+}
+
+fn text_or<'a>(text: &'a str, fallback: &'a str) -> &'a str {
+    if text.is_empty() {
+        fallback
+    } else {
+        text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autoitv3_gui::{Control, ControlKind};
+    use egui::{vec2, Context, Event, Modifiers, PointerButton, RawInput};
+
+    fn frame() -> RawInput {
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0))),
+            // A fixed time keeps the layout and the animations deterministic.
+            time: Some(0.0),
+            ..Default::default()
+        }
+    }
+
+    /// One headless pass. `TexturesDelta` must be handled or dropped empty.
+    fn run_ui(ctx: &Context, raw: RawInput, run: impl FnMut(&mut egui::Ui)) {
+        let mut output = ctx.run_ui(raw, run);
+        output.textures_delta.clear();
+    }
+
+    /// The rectangle a control occupies, measured with a first pass.
+    fn probe(ctx: &Context, control: &Control) -> Rect {
+        let mut rect = Rect::NOTHING;
+        run_ui(ctx, frame(), |ui| {
+            rect = ui.scope(|ui| draw_control(ui, control)).response.rect;
+        });
+        rect
+    }
+
+    /// Run one frame whose pointer clicks at `pos`, collecting interactions.
+    fn click(ctx: &Context, control: &Control, pos: Pos2) -> Vec<Interaction> {
+        let mut raw = frame();
+        raw.events = vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ];
+        let mut seen = Vec::new();
+        run_ui(ctx, raw, |ui| {
+            seen.extend(ui.scope(|ui| draw_control(ui, control)).inner);
+        });
+        seen
+    }
+
+    #[test]
+    fn a_click_on_a_button_reports_clicked() {
+        let ctx = Context::default();
+        let mut button = Control::new(3, 1, ControlKind::Button);
+        button.text = "Click".to_string();
+
+        let rect = probe(&ctx, &button);
+        assert!(rect.width() > 0.0, "the button was laid out");
+
+        let seen = click(&ctx, &button, rect.center());
+        assert!(
+            seen.contains(&Interaction {
+                id: 3,
+                action: Action::Clicked
+            }),
+            "a click on the button produced {seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_checkbox_reports_checked() {
+        let ctx = Context::default();
+        let mut checkbox = Control::new(4, 1, ControlKind::Checkbox);
+        checkbox.text = "Enable".to_string();
+
+        let rect = probe(&ctx, &checkbox);
+        let seen = click(&ctx, &checkbox, rect.center());
+        assert!(
+            seen.contains(&Interaction {
+                id: 4,
+                action: Action::Checked(true)
+            }),
+            "a click on the checkbox produced {seen:?}"
+        );
+    }
+
+    #[test]
+    fn typing_in_an_input_reports_the_new_text() {
+        let ctx = Context::default();
+        let mut input = Control::new(6, 1, ControlKind::Input);
+        input.text = String::new();
+
+        // Focus it, then type.
+        let rect = probe(&ctx, &input);
+        let _ = click(&ctx, &input, rect.center());
+
+        let mut raw = frame();
+        raw.events = vec![Event::Text("hello".to_string())];
+        let mut seen = Vec::new();
+        run_ui(&ctx, raw, |ui| {
+            seen.extend(ui.scope(|ui| draw_control(ui, &input)).inner);
+        });
+        assert!(
+            seen.contains(&Interaction {
+                id: 6,
+                action: Action::Text("hello".to_string())
+            }),
+            "typing produced {seen:?}"
+        );
+    }
+
+    #[test]
+    fn clicking_a_list_item_reports_the_selection() {
+        let ctx = Context::default();
+        let mut list = Control::new(7, 1, ControlKind::List);
+        list.data = vec!["only".to_string()];
+
+        let rect = probe(&ctx, &list);
+        let seen = click(&ctx, &list, rect.center());
+        assert!(
+            seen.contains(&Interaction {
+                id: 7,
+                action: Action::Selected(0)
+            }),
+            "clicking the item produced {seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_hidden_or_disabled_control_reports_nothing() {
+        let ctx = Context::default();
+        let mut button = Control::new(5, 1, ControlKind::Button);
+        button.text = "Click".to_string();
+        let rect = probe(&ctx, &button);
+
+        button.state = autoitv3_gui::GUI_HIDE;
+        let hidden = click(&ctx, &button, rect.center());
+        assert!(hidden.is_empty(), "a hidden control produced {hidden:?}");
+
+        button.state = autoitv3_gui::GUI_DISABLE;
+        let disabled = click(&ctx, &button, rect.center());
+        assert!(
+            disabled.is_empty(),
+            "a disabled control produced {disabled:?}"
+        );
+    }
+}

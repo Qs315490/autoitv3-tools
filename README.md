@@ -79,12 +79,15 @@ autoitv3-tools/
     autoitv3-gui/            # 库 crate（零依赖）——GUI 控件模型 + 后端接缝
       src/model.rs           Window/Control/GuiModel、绘制指令、$GUI_* 状态位
       src/backend.rs         GuiBackend trait + HeadlessBackend + GuiEvent/GuiImage
-    autoitv3-gui-egui/       # 库 crate——离屏 egui 渲染后端（feature "egui"，默认关）
+    autoitv3-gui-egui/       # 库 crate——egui 渲染后端（feature "egui" 离屏，"window" 真窗口）
+      src/widgets.rs         控件 → egui 控件的唯一映射：29 种 ControlKind 全画，
+                             返回 Interaction（点击/输入/勾选/列表选择）
       src/render.rs          EguiBackend：把模型布局成帧
       src/raster.rs          egui 三角形 → RGBA 的 CPU 光栅器（无 GPU、确定性）
       src/png.rs             极简 PNG 写出（stored deflate，无依赖）
       src/live.rs            LiveBackend：真窗口（feature "window"），点击/编辑回灌
-      examples/live.rs       实时窗口 PoC：Label + Input + Button
+      tests/controls.rs      29 种控件逐一渲染 + 整窗画廊 + 确定性
+      examples/live.rs       实时窗口示例：Label + Input + Button
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 可选重命名）
       src/
         fold.rs        常量折叠：遍历 AST，把纯常量表达式交给 runtime 求值后内联
@@ -723,7 +726,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
 | COM | 无 COM 运行时：`ObjCreate`/`ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 返回 `0`/`""` 并置 `@error = 1`，`IsObj` 恒为 `0`（不编造对象） |
-| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui`），默认 `HeadlessBackend` 不画任何东西；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
+| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
 
 **选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
 `Win10`/`Win11`，**默认 Win10**：
@@ -792,7 +795,7 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
 - COM 内建函数存在但**可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
 - GUI 已由 `winemu/gui/` 的**无头语义**回答（不再是 `undefined function`）；默认后端
   **不渲染**。可选 crate `autoitv3-gui-egui`（feature `gui-egui`）提供**离屏渲染 + PNG
-  截图**，但它不开真窗口、也不注入交互——实时窗口仍是后续工作；
+  截图**；`window` feature 另有**实时窗口**后端，点击/输入会回灌 `GUIGetMsg`/`GUICtrlRead`；
 - 写文件、回收站、驱动器映射、启动进程同样遵循 `ExecutionProfile`：确定性分析配置下被拒绝
   （`@error = 1`），也就不会生成 `.au3_registry` / `.au3_clipboard` / `.au3_recycle`；
 - 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，
@@ -804,6 +807,15 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
 控件模型与 `GuiBackend` 接缝在零依赖的 `autoitv3-gui`；`autoitv3-gui-egui` 用 egui 把模型
 布局成帧，再用自带的 **CPU 光栅器**渲染成 RGBA。**不依赖 GPU、不依赖显示服务器**，
 因此可复现、可在 CI 里断言像素。
+
+**`widgets.rs` 是控件 → egui 控件的唯一映射**，离屏与实时窗口共用，所以两边画的是同一套：
+29 种 `ControlKind` 全部落地——`Label`/`Button`/`Input`/`Edit`/`Checkbox`/`Radio`/`Group` 用原生
+组件，`List`/`Combo`/`ListView`/`TreeView` 画成可选中的列表（选择写回 `selection`），
+`Progress`/`Slider`/`Updown` 读 `text`/`limit` 显示数值，`Graphic` 重放 `GUICtrlSetGraphic`
+的 `DrawCmd`，`Pic`/`Icon`/`Avi`/`Obj`/`Date`/`MonthCal` 画带标题的占位框，
+`Menu`/`MenuItem` 组成菜单栏。控件自带的字体、文字色、背景色和 `tip`（悬停提示）也一并生效；
+脚本给的 `width`/`height` 会用作控件尺寸。绘制时返回 `Interaction`
+（`Clicked`/`Menu`/`Text`/`Checked`/`Selected`），实时后端再把它变成事件或模型更新。
 
 ```rust
 use autoitv3_platform::winemu::WindowsEmulation;
@@ -829,15 +841,18 @@ cargo test -p autoitv3-platform --features gui-egui # 平台接线（脚本建�
 
 > `~/.cargo` 只读的环境需要把 `CARGO_HOME` 指到可写目录才能拉取 egui（见上文「受限环境」）。
 
-#### 实时窗口 PoC（feature `window`）
+#### 实时窗口（feature `window`）
 
 `LiveBackend` 是交互版后端：eframe 在**独立线程**跑真窗口，解释器仍同步调用
 `GuiBackend`。两边靠一个模型镜像 + 两个通道通信：
 
 - **脚本 → 窗口**：`on_window`/`on_control` 更新镜像，窗口每帧读取；
-- **窗口 → 脚本**：按钮点击/窗口关闭进入 `poll()`（`GUIGetMsg` 消费），输入框/复选框的
-  编辑通过 `take_updates()` → `GuiUpdate::{SetText,SetChecked}` 回写模型，于是
-  `GUICtrlRead` 能读到用户刚输入的内容。
+- **窗口 → 脚本**：点击/菜单/列表选择进入 `poll()`（`GUIGetMsg` 消费），输入框/复选框/
+  列表的改动通过 `take_updates()` → `GuiUpdate::{SetText,SetChecked,Select}` 回写模型，
+  于是 `GUICtrlRead` 能读到用户刚输入/选中的内容。
+
+窗口画什么、怎么交互都由 `widgets.rs` 决定，和离屏渲染完全一致；`LiveBackend::simulate`
+可以脱离窗口喂一条交互，便于测试。
 
 示例（需要显示服务器）：
 
@@ -855,12 +870,14 @@ let _emu = WindowsEmulation::new().with_gui_backend(Box::new(backend));
 // 脚本里 GUISetState() 会触发 present() → 打开真窗口
 ```
 
-**PoC 范围与限制**（有意最小化）：只认真画 `Label`/`Button`/`Input`/`Edit`/`Checkbox`/`Radio`，
-其余控件退化为文本；菜单/列表/标签页、`Win*`/`Control*` 的交互仍未接线；eframe 跑在子线程，
-在 Linux/X11·Wayland 上可用，macOS 等要求主线程事件循环的平台需要把两者对调。
+**已知近似**（不是 bug，是模型里没有的信息）：控件按创建顺序纵向排列而不是按脚本的
+绝对 `x`/`y`；模型没有保留菜单→菜单项的父子关系，所以每个菜单列出本窗口所有菜单项；
+`Tab` 只画成一行标签而不是真正的分层面板；`ListView` 没有列宽/表头点击，`TreeView`
+用前导缩进表现层级。`Win*`/`Control*`（`WinMove`/`ControlClick` 等）仍只改内存模型，
+不会真的搬动这个窗口；托盘、像素与输入注入也还没接。
 
 ```bash
-cargo test -p autoitv3-gui-egui --features window   # 后端管线 + 离屏渲染测试
+cargo test -p autoitv3-gui-egui --features window   # 后端管线 + 交互映射测试
 ```
 
 ## 解包资源（`au3 unpack`）

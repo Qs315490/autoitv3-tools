@@ -10,11 +10,10 @@
 //!   [`GuiEvent`]/[`GuiUpdate`] the semantics layer drains on its next call.
 //! * script → GUI: `on_window`/`on_control` update the mirror the window draws.
 //!
-//! # PoC scope
-//!
-//! Only `Label`, `Button`, `Input`/`Edit`, `Checkbox` and `Radio` are drawn;
-//! everything else falls back to a text label. There is no menu/list/tab
-//! fidelity yet, and the window opens on `present()` (i.e. `GUISetState`).
+//! Drawing is shared with the offscreen renderer (see [`crate::widgets`]), so
+//! the window shows the same full control set. The window opens on `present()`
+//! (i.e. `GUISetState`); a script-side change reaches it because the interpreter
+//! calls `on_window`/`on_control` and the window re-reads the mirror ~20×/s.
 //!
 //! # Platform note
 //!
@@ -27,7 +26,9 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use autoitv3_gui::{Control, ControlKind, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window};
+use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window};
+
+use crate::widgets::{draw_window_body, Action, Interaction};
 
 /// The model copy the GUI thread reads.
 #[derive(Default)]
@@ -70,6 +71,14 @@ impl LiveBackend {
     /// tests that cannot open one).
     pub fn queue(&self, event: GuiEvent) {
         let _ = self.events_tx.send(event);
+    }
+
+    /// Report one widget interaction exactly as the window loop would.
+    ///
+    /// A click becomes a `GuiEvent` for `GUIGetMsg`; an edit becomes a
+    /// `GuiUpdate` for `GUICtrlRead`.
+    pub fn simulate(&self, interaction: Interaction) {
+        dispatch(&self.events_tx, &self.updates, interaction);
     }
 
     /// How many windows the mirror currently holds.
@@ -123,7 +132,9 @@ impl GuiBackend for LiveBackend {
     fn on_window_removed(&mut self, handle: i64) {
         let mut mirror = self.mirror.lock().unwrap();
         mirror.windows.remove(&handle);
-        mirror.controls.retain(|_, control| control.window != handle);
+        mirror
+            .controls
+            .retain(|_, control| control.window != handle);
     }
 
     fn on_control(&mut self, control: &Control) {
@@ -153,6 +164,41 @@ impl GuiBackend for LiveBackend {
 
     fn snapshot(&mut self) -> Option<GuiImage> {
         None
+    }
+}
+
+/// Turn one widget interaction into the event/update the semantics layer reads.
+fn dispatch(
+    events_tx: &mpsc::Sender<GuiEvent>,
+    updates: &Mutex<Vec<GuiUpdate>>,
+    interaction: Interaction,
+) {
+    let id = interaction.id;
+    match interaction.action {
+        Action::Clicked => {
+            let _ = events_tx.send(GuiEvent::Control(id));
+        }
+        Action::Menu => {
+            let _ = events_tx.send(GuiEvent::Menu(id));
+        }
+        Action::Text(text) => {
+            updates
+                .lock()
+                .unwrap()
+                .push(GuiUpdate::SetText { id, text });
+        }
+        Action::Checked(checked) => {
+            updates
+                .lock()
+                .unwrap()
+                .push(GuiUpdate::SetChecked { id, checked });
+        }
+        Action::Selected(index) => {
+            updates
+                .lock()
+                .unwrap()
+                .push(GuiUpdate::Select { id, index });
+        }
     }
 }
 
@@ -191,52 +237,18 @@ impl eframe::App for LiveApp {
             let mut open = true;
             egui::Window::new(title)
                 .default_pos([window.x as f32, window.y as f32])
-                .default_size([
-                    window.width.max(80) as f32,
-                    window.height.max(60) as f32,
-                ])
+                .default_size([window.width.max(80) as f32, window.height.max(60) as f32])
                 .open(&mut open)
                 .show(&ctx, |ui| {
-                    for id in &window.controls {
-                        let Some(control) = controls.get(id) else {
-                            continue;
-                        };
-                        match control.kind {
-                            ControlKind::Label => {
-                                ui.label(&control.text);
-                            }
-                            ControlKind::Button => {
-                                if ui.button(&control.text).clicked() {
-                                    let _ = self.events_tx.send(GuiEvent::Control(control.id));
-                                }
-                            }
-                            ControlKind::Input | ControlKind::Edit => {
-                                let mut text = control.text.clone();
-                                if ui.text_edit_singleline(&mut text).changed() {
-                                    self.updates.lock().unwrap().push(GuiUpdate::SetText {
-                                        id: control.id,
-                                        text,
-                                    });
-                                }
-                            }
-                            ControlKind::Checkbox => {
-                                let mut checked = control.is_checked();
-                                if ui.checkbox(&mut checked, &control.text).changed() {
-                                    self.updates.lock().unwrap().push(GuiUpdate::SetChecked {
-                                        id: control.id,
-                                        checked,
-                                    });
-                                }
-                            }
-                            ControlKind::Radio => {
-                                let _ = ui.radio(control.is_checked(), &control.text);
-                            }
-                            _ => {
-                                if !control.text.is_empty() {
-                                    ui.label(&control.text);
-                                }
-                            }
-                        }
+                    // Snapshot this window's controls (in creation order) so
+                    // the shared widget layer can lay them out.
+                    let body: Vec<Control> = window
+                        .controls
+                        .iter()
+                        .filter_map(|id| controls.get(id).cloned())
+                        .collect();
+                    for interaction in draw_window_body(ui, &body) {
+                        dispatch(&self.events_tx, &self.updates, interaction);
                     }
                 });
             if !open {

@@ -172,6 +172,11 @@ impl GuiState {
                         }
                     }
                 }
+                GuiUpdate::Select { id, index } => {
+                    if let Some(control) = self.model.control_mut(id) {
+                        control.selection = Some(index);
+                    }
+                }
             }
         }
     }
@@ -1149,7 +1154,10 @@ impl GuiState {
                 return Value::Int(0);
             }
         };
+        // Most creators take a caption/filename first; the rest start at `left`.
+        // `GUICtrlCreateAvi` is special: `(filename, subfileid, left, top, ...)`.
         let (text, base) = match kind {
+            ControlKind::Avi => (arg_str(args, 0), 2),
             ControlKind::Label
             | ControlKind::Button
             | ControlKind::Checkbox
@@ -1164,7 +1172,9 @@ impl GuiState {
             | ControlKind::TabItem
             | ControlKind::MenuItem
             | ControlKind::ListViewItem
-            | ControlKind::TreeViewItem => (arg_str(args, 0), 1),
+            | ControlKind::TreeViewItem
+            | ControlKind::Date
+            | ControlKind::MonthCal => (arg_str(args, 0), 1),
             _ => (String::new(), 0),
         };
         let control = Control {
@@ -1180,6 +1190,7 @@ impl GuiState {
             exstyle: arg_int(args, base + 5),
             state: 0,
             data: Vec::new(),
+            selection: None,
             tip: String::new(),
             on_event: None,
             bk_color: None,
@@ -1209,9 +1220,12 @@ impl GuiState {
             ControlKind::Checkbox | ControlKind::Radio => {
                 Value::Int(if control.is_checked() { 1 } else { 4 })
             }
-            ControlKind::Progress => Value::Int(self.model.progress.percent),
-            ControlKind::List | ControlKind::Combo | ControlKind::ListView => {
-                Value::Str(control.data.first().cloned().unwrap_or_default())
+            ControlKind::Progress | ControlKind::Slider | ControlKind::Updown => {
+                Value::Int(control.text.trim().parse().unwrap_or(0))
+            }
+            ControlKind::List | ControlKind::Combo | ControlKind::ListView | ControlKind::TreeView => {
+                let index = control.selection.unwrap_or(0);
+                Value::Str(control.data.get(index).cloned().unwrap_or_default())
             }
             _ => Value::Str(control.text.clone()),
         }
@@ -1239,6 +1253,7 @@ impl GuiState {
                 };
                 if let Some(control) = self.model.control_mut(id) {
                     control.data = items;
+                    control.selection = None;
                 }
             }
             ControlKind::ListView | ControlKind::ListViewItem | ControlKind::TreeViewItem => {
@@ -1255,8 +1270,12 @@ impl GuiState {
                     }
                 }
             }
-            ControlKind::Progress => {
-                self.model.progress.percent = data.parse().unwrap_or(0);
+            ControlKind::Progress | ControlKind::Slider | ControlKind::Updown => {
+                // The control's own value; `ProgressOn`/`ProgressSet` is a
+                // separate popup window, not this control.
+                if let Some(control) = self.model.control_mut(id) {
+                    control.text = data;
+                }
             }
             _ => {
                 if let Some(control) = self.model.control_mut(id) {

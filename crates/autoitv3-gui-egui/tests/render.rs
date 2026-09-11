@@ -30,12 +30,18 @@ fn renders_a_window_and_writes_a_png() {
     assert_eq!((image.width, image.height), (320, 200));
     assert_eq!(image.rgba.len(), 320 * 200 * 4);
     let opaque = image.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
-    assert!(opaque > 200, "expected a visible window, got {opaque} opaque px");
+    assert!(
+        opaque > 200,
+        "expected a visible window, got {opaque} opaque px"
+    );
 
     let path = std::env::temp_dir().join(format!("au3-gui-egui-{}.png", std::process::id()));
     backend.screenshot(&path).unwrap();
     let bytes = std::fs::read(&path).unwrap();
-    assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    assert_eq!(
+        &bytes[..8],
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -53,5 +59,8 @@ fn hidden_windows_render_nothing_and_output_is_deterministic() {
     window.visible = false;
     hidden.on_window(&window);
     let image = hidden.snapshot().unwrap();
-    assert!(image.rgba.chunks_exact(4).all(|p| p[3] == 0), "hidden window drew something");
+    assert!(
+        image.rgba.chunks_exact(4).all(|p| p[3] == 0),
+        "hidden window drew something"
+    );
 }
