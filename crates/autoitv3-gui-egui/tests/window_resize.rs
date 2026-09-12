@@ -54,8 +54,11 @@ struct Harness {
     last: LastWindow,
     /// What the last frame drew; `None` when the window was not on screen.
     drawn: Option<Vec2>,
-    /// A state change the user asked for (double-clicking the title bar).
+    /// A state change the user asked for (double-clicking the title bar, or a
+    /// title-bar control).
     requested: Option<autoitv3_gui::WindowState>,
+    /// Where the title-bar controls were drawn.
+    controls: Option<Rect>,
     minimize: MinimizeStyle,
     /// Seconds; egui tells a double-click from a triple one by how long ago the
     /// previous click was, so a frozen clock turns the second gesture into a
@@ -74,6 +77,7 @@ impl Harness {
             last: LastWindow::default(),
             drawn: None,
             requested: None,
+            controls: None,
             minimize: MinimizeStyle::Hidden,
             time: 0.0,
         }
@@ -101,6 +105,7 @@ impl Harness {
         output.textures_delta.clear();
         let client = drawn.client;
         self.requested = drawn.state_request;
+        self.controls = drawn.controls;
         self.drawn = client;
         self.last = LastWindow {
             client: client.or(last.client),
@@ -185,6 +190,38 @@ fn every_edge_resizes_the_window() {
             expected.y
         );
     }
+}
+
+#[test]
+fn restoring_a_maximised_window_brings_back_both_axes() {
+    let mut harness = Harness::new();
+    let (normal, _) = harness.frame(vec![]);
+    harness.frame(vec![]);
+
+    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    let (maximized, _) = harness.frame(vec![]);
+    assert!(
+        maximized.width() > normal.width() && maximized.height() > normal.height(),
+        "maximised should be bigger: {normal:?} -> {maximized:?}"
+    );
+
+    // @SW_RESTORE: the width has to come back too. It follows egui's stored
+    // desired size, which only `Window::max_size` can shrink.
+    harness.time += 1.0;
+    harness.window.state = autoitv3_gui::WindowState::Normal;
+    let (restored, client) = harness.frame(vec![]);
+    assert!(
+        (restored.width() - normal.width()).abs() < 0.5,
+        "the width did not come back: {normal:?} -> {restored:?}"
+    );
+    assert!(
+        (restored.height() - normal.height()).abs() < 0.5,
+        "the height did not come back: {normal:?} -> {restored:?}"
+    );
+    assert!(
+        (client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 1.0,
+        "the restored client is {client:?}"
+    );
 }
 
 #[test]
@@ -384,4 +421,82 @@ fn a_collapsed_window_still_reports_the_real_client_size() {
     harness.window.state = autoitv3_gui::WindowState::Minimized;
     let (_, collapsed) = harness.frame(vec![]);
     assert_eq!(collapsed.y, 0.0);
+}
+
+/// Click once at `pos` and report what the window asked for.
+fn click_at(harness: &mut Harness, pos: Pos2) -> Option<autoitv3_gui::WindowState> {
+    harness.frame(vec![Event::PointerMoved(pos)]);
+    harness.frame(vec![press(pos, true)]);
+    harness.frame(vec![press(pos, false)]);
+    harness.requested
+}
+
+/// The two window controls, (minimise, maximise), as `DrawnWindow` laid them out.
+///
+/// They only appear from the second frame: egui reports a widget's response on
+/// the frame after it was created.
+fn window_controls(harness: &Harness) -> (Pos2, Pos2) {
+    let rect = harness.controls.expect("the window controls were drawn");
+    let side = rect.height();
+    let maximise =
+        Rect::from_min_size(Pos2::new(rect.right() - side, rect.top()), vec2(side, side));
+    let minimise = Rect::from_min_size(
+        Pos2::new(rect.right() - 2.0 * side, rect.top()),
+        vec2(side, side),
+    );
+    (minimise.center(), maximise.center())
+}
+
+#[test]
+fn the_title_bar_has_minimise_and_maximise_buttons() {
+    let mut harness = Harness::new();
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    let (_, maximise) = window_controls(&harness);
+
+    assert_eq!(
+        click_at(&mut harness, maximise),
+        Some(autoitv3_gui::WindowState::Maximized),
+        "the maximise button should ask to maximise"
+    );
+
+    // Obey it the way the semantics layer would: the same button restores.
+    harness.time += 1.0;
+    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    let (_, restore) = window_controls(&harness);
+    assert_ne!(restore, maximise, "the maximised window moved its controls");
+    assert_eq!(
+        click_at(&mut harness, restore),
+        Some(autoitv3_gui::WindowState::Normal),
+        "the same button restores a maximised window"
+    );
+
+    harness.time += 1.0;
+    harness.window.state = autoitv3_gui::WindowState::Normal;
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    let (minimise, _) = window_controls(&harness);
+    assert_eq!(
+        click_at(&mut harness, minimise),
+        Some(autoitv3_gui::WindowState::Minimized),
+        "the minimise button should ask to minimise"
+    );
+}
+
+#[test]
+fn clicking_a_window_control_is_not_a_title_double_click() {
+    // A double-click on the minimise button must not minimise and then
+    // immediately restore it.
+    let mut harness = Harness::new();
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    let (minimise, _) = window_controls(&harness);
+    double_click(&mut harness, minimise);
+    assert_eq!(
+        harness.requested,
+        Some(autoitv3_gui::WindowState::Minimized),
+        "the button wins over the title-bar double-click"
+    );
 }
