@@ -28,7 +28,7 @@ use windows_sys::Win32::System::Registry::{
     REG_MULTI_SZ, REG_OPTION_NON_VOLATILE, REG_QWORD, REG_SZ, REG_VALUE_TYPE,
 };
 
-use super::writes_allowed;
+use autoitv3_runtime::profile::EffectKind;
 
 /// AutoIt's registry type-code constants.
 const REG_SZ_CODE: i64 = 1;
@@ -283,7 +283,7 @@ pub(crate) fn reg_write(
     args: &[Value],
     ctx: &mut dyn HostContext,
 ) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::RegistryWrite) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }
@@ -334,7 +334,7 @@ pub(crate) fn reg_write(
 /// deleted; with one (even an empty name) only that value is removed, the
 /// empty name addressing the `(Default)` value.
 pub(crate) fn reg_delete(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::RegistryWrite) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }

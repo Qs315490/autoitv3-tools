@@ -49,7 +49,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use autoitv3_runtime::host::HostContext;
-use autoitv3_runtime::profile::EffectPolicy;
+use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::value::Value;
 
 /// Every function this service implements.
@@ -157,7 +157,7 @@ impl ProcessService {
     }
 
     fn run(&mut self, args: &[Value], wait: bool, ctx: &mut dyn HostContext) -> Value {
-        if !writes_allowed(ctx) {
+        if !ctx.effect_allowed(EffectKind::Spawn) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -239,7 +239,7 @@ impl ProcessService {
     fn process_wait(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
         // A blocking wait could hang an analysis run, so the deterministic
         // profile answers immediately.
-        if !writes_allowed(ctx) {
+        if !ctx.effect_allowed(EffectKind::Spawn) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -260,7 +260,7 @@ impl ProcessService {
     }
 
     fn process_wait_close(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
-        if !writes_allowed(ctx) {
+        if !ctx.effect_allowed(EffectKind::Spawn) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -415,10 +415,6 @@ impl ProcessService {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-fn writes_allowed(ctx: &dyn HostContext) -> bool {
-    matches!(ctx.profile().effects, EffectPolicy::Allow)
-}
 
 fn arg_str(args: &[Value], i: usize) -> String {
     args.get(i).map(|v| v.to_autoit_string()).unwrap_or_default()

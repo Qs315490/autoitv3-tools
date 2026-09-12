@@ -44,7 +44,7 @@ use autoitv3_runtime::RuntimeError;
 use autoitv3_runtime::{ExecutionProfile, Runtime};
 use clap::Args;
 
-use crate::args::{load_program, CliError, CliResult, WinEmuArgs};
+use crate::args::{load_program, CliError, CliResult, EffectArgs, WinEmuArgs};
 use crate::output::format_value;
 use std::path::Path;
 
@@ -94,6 +94,10 @@ pub struct DebugArgs {
     /// reproducible and refuses writes (see `ExecutionProfile`).
     #[arg(long)]
     pub faithful: bool,
+
+    /// Per-effect allow/deny overrides (see `EffectArgs`).
+    #[command(flatten)]
+    pub effects: EffectArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -158,11 +162,15 @@ fn build_runtime(prog: &Program, args: &DebugArgs, shell: Rc<RefCell<Shell>>) ->
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
     }
-    rt.set_profile(if args.faithful {
+    let base = if args.faithful {
         ExecutionProfile::faithful()
     } else {
         ExecutionProfile::deterministic()
-    });
+    };
+    match args.effects.apply(base) {
+        Ok(p) => rt.set_profile(p),
+        Err(e) => eprintln!("warning: {}", e.message),
+    }
     rt.set_debugger(Box::new(SharedShell(shell)));
     rt
 }

@@ -9,7 +9,7 @@ use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 use clap::Args;
 
-use crate::args::{load_program, parse_arg_value, CliError, CliResult, WinEmuArgs};
+use crate::args::{load_program, parse_arg_value, CliError, CliResult, EffectArgs, WinEmuArgs};
 use crate::output::format_value;
 use std::path::Path;
 
@@ -46,6 +46,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub faithful: bool,
 
+    /// Per-effect allow/deny overrides (see `EffectArgs`).
+    #[command(flatten)]
+    pub effects: EffectArgs,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 }
@@ -59,12 +63,14 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
     let mut rt = Runtime::with_program(&prog);
     rt.set_platform(args.win.platform(Some(Path::new(&args.input)))?);
     // Probing a script wants reproducibility and no side effects; `--faithful`
-    // switches to AutoIt's own semantics instead.
-    rt.set_profile(if args.faithful {
+    // switches to AutoIt's own semantics instead. `--allow`/`--deny` then
+    // fine-tune individual effects on top of either preset.
+    let base = if args.faithful {
         ExecutionProfile::faithful()
     } else {
         ExecutionProfile::deterministic()
-    });
+    };
+    rt.set_profile(args.effects.apply(base)?);
 
     if args.trace {
         rt.set_debugger(Box::new(TracePrinter::new()));

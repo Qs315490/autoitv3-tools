@@ -395,6 +395,27 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 | `--resource-module <FILE>` | `AU3_RESOURCE_MODULE` | 自动查找脚本旁的 PE 镜像 |
 | （无开关） | `AU3_WIN_REGISTRY` | `./.au3_registry` |
 | `--no-win-emu` | `AU3_WIN_EMU=0` | 启用（非 Windows 主机） |
+| `--emulate <AREA>` | — | 不启用；`AREA`=`registry`（Reg*）/`clipboard`（Clip*）/具体函数名，可重复 |
+
+**细粒度行为控制**。两个预设（`--faithful` / 确定性）保持不变，
+`--allow <KIND>` / `--deny <KIND>`（可重复）在其上叠加**按效果类型**的开关：
+
+| KIND | 覆盖的效果 |
+| ---- | ---------- |
+| `file` | 文件/目录/INI 写入、属性与时间戳 |
+| `env` | `EnvSet`/`EnvUpdate` |
+| `registry` | `RegWrite`/`RegDelete`（真实或仿真注册表） |
+| `clipboard` | `ClipPut`（真实或仿真剪贴板） |
+| `spawn` | `Run`/`ShellExecute*`/`RunAs*`/`ProcessWait*` |
+| `shutdown` | `Shutdown`（可在 `--faithful` 下单独禁用） |
+| `net` | `TCP*`/`UDP*`/`Inet*`/`Ping`/`DriveMap*` |
+| `process` | `ProcessClose`/`ProcessSetPriority` |
+
+`--allow registry` 让确定性的反混淆运行写它要探测的注册表而不放开其它副作用；
+`--deny shutdown` 让一次忠实运行永远到不了 `ExitWindowsEx`。
+`--emulate registry` 则在 Windows 宿主上把 Reg* 路由到仿真层（文件/内存注册表），
+其余函数仍走原生。编程接口：`ExecutionProfile::with_effect(EffectKind, bool)`、
+`HostContext::effect_allowed(kind)`、`host_platform_with_options(PlatformOptions)`。
 
 | 子命令 | 别名 | 说明 |
 | ------ | ---- | ---- |

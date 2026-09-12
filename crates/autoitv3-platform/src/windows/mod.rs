@@ -68,7 +68,7 @@ pub(crate) mod registry;
 use autoitv3_runtime::error::RuntimeError;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::platform::Platform;
-use autoitv3_runtime::profile::EffectPolicy;
+use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::value::Value;
 
 use crate::winfmt::DllStruct;
@@ -182,10 +182,6 @@ impl WindowsPlatform {
 }
 
 /// Whether the current profile allows side effects.
-pub(crate) fn writes_allowed(ctx: &dyn HostContext) -> bool {
-    matches!(ctx.profile().effects, EffectPolicy::Allow)
-}
-
 impl Platform for WindowsPlatform {
     fn name(&self) -> &'static str {
         "windows"
@@ -331,7 +327,7 @@ impl Platform for WindowsPlatform {
                 }
             }
             "filesetattrib" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }

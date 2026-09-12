@@ -53,5 +53,5 @@ pub use error::{Flow, RuntimeError};
 pub use host::{Host, HostContext, NativeFn, NativeHost};
 pub use interp::{is_constant_expr, Runtime};
 pub use platform::Platform;
-pub use profile::{EffectPolicy, ExecutionProfile, RandomPolicy, SleepPolicy};
+pub use profile::{EffectKind, EffectOverrides, EffectPolicy, ExecutionProfile, RandomPolicy, SleepPolicy};
 pub use value::{ArrayRef, MapRef, Value};

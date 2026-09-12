@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, TerminateProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
 };
 
-use super::writes_allowed;
+use autoitv3_runtime::profile::EffectKind;
 
 /// `(pid, exe name)` for every process on the system, pid-ordered.
 pub(crate) fn system_processes() -> Vec<(i64, String)> {
@@ -118,7 +118,7 @@ pub(crate) fn process_exists(args: &[Value]) -> Value {
 
 /// `ProcessClose` — terminate by name or PID; effect-gated.
 pub(crate) fn process_close(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::ProcessControl) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }

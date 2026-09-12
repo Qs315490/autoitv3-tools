@@ -7,7 +7,10 @@
 #![cfg(windows)]
 
 use autoitv3_ast::parse;
-use autoitv3_platform::{host_platform, host_platform_with, WindowsEmulation};
+use autoitv3_platform::{
+    host_platform, host_platform_with, host_platform_with_options, PlatformOptions,
+    WindowsEmulation,
+};
 use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 
 /// Run `F()` on the default stack (native + common + emulation fallback).
@@ -835,6 +838,113 @@ EndFunc
 "#
         ),
         1
+    );
+}
+
+// ---------------------------------------------------------------------------
+// fine-grained behaviour control (per-effect overrides, forced emulation)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_effect_override_lets_a_deterministic_run_write_the_registry() {
+    let src = r#"
+Func F()
+    Local $k = "HKEY_CURRENT_USER\Software\au3-native-override"
+    RegWrite($k, "V", "REG_SZ", "probed")
+    Local $v = RegRead($k, "V")
+    RegDelete($k)
+    Return ($v = "probed") + 0
+EndFunc
+"#;
+    let prog = parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(WindowsEmulation::new().disabled()));
+    // Deterministic everywhere except the registry the run probes.
+    rt.set_profile(
+        autoitv3_runtime::ExecutionProfile::deterministic()
+            .with_effect(autoitv3_runtime::profile::EffectKind::RegistryWrite, true),
+    );
+    let v = rt.call_function("F", vec![]).expect("runs");
+    assert_eq!(v.to_int(), 1);
+    // The same run still refuses everything else: FileDelete stays gated.
+    assert_eq!(
+        call_with_profile(
+            r#"
+Func F()
+    Local $r = FileDelete("C:\Windows\nonexistent-au3-probe.txt")
+    Return @error
+EndFunc
+"#,
+            autoitv3_runtime::ExecutionProfile::deterministic()
+                .with_effect(autoitv3_runtime::profile::EffectKind::RegistryWrite, true),
+        )
+        .to_int(),
+        1
+    );
+}
+
+#[test]
+fn a_denied_shutdown_refuses_even_in_a_faithful_run() {
+    let src = r#"
+Func F()
+    Local $r = Shutdown(1)
+    Return $r & ":" & @error
+EndFunc
+"#;
+    let prog = parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(WindowsEmulation::new().disabled()));
+    rt.set_profile(
+        autoitv3_runtime::ExecutionProfile::faithful()
+            .with_effect(autoitv3_runtime::profile::EffectKind::Shutdown, false),
+    );
+    // The gate refuses before ExitWindowsEx is ever reached.
+    assert_eq!(rt.call_function("F", vec![]).expect("runs").to_autoit_string(), "0:1");
+}
+
+#[test]
+fn forced_emulation_routes_registry_to_the_emulation_layer() {
+    let key = format!("HKEY_CURRENT_USER\\Software\\au3-emu-force-{}", std::process::id());
+    let src = format!(
+        r#"
+Func F()
+    RegWrite("{k}", "V", "REG_SZ", "emulated")
+    Return RegRead("{k}", "V")
+EndFunc
+"#,
+        k = key
+    );
+    let prog = parse(&src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    let mut emu = WindowsEmulation::new();
+    emu = emu.with_memory_registry();
+    rt.set_platform(host_platform_with_options(PlatformOptions {
+        emulation: emu,
+        force_emulated: vec!["RegRead".into(), "RegWrite".into(), "RegDelete".into()],
+    }));
+    rt.set_profile(autoitv3_runtime::ExecutionProfile::faithful());
+    // The emulated (in-memory) registry answers the round trip.
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "emulated"
+    );
+    // ...and the real registry never saw the key.
+    let probe = format!(
+        r#"
+Func G()
+    RegRead("{k}", "V")
+    Return @error
+EndFunc
+"#,
+        k = key
+    );
+    let prog = parse(&probe).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(WindowsEmulation::new().disabled()));
+    assert_ne!(
+        rt.call_function("G", vec![]).expect("runs").to_int(),
+        0,
+        "key leaked into the real registry"
     );
 }
 

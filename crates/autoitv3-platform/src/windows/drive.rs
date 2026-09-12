@@ -11,7 +11,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     SetVolumeLabelW,
 };
 
-use super::writes_allowed;
+use autoitv3_runtime::profile::EffectKind;
 
 /// Which `DriveGet*` field a call wants.
 #[derive(Clone, Copy)]
@@ -222,7 +222,7 @@ pub(crate) fn drive_get_field(
 
 /// `DriveSetLabel(drive, label)` — effect-gated.
 pub(crate) fn drive_set_label(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::FileWrite) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }
