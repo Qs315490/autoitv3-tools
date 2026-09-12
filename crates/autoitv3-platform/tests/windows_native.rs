@@ -959,3 +959,97 @@ EndFunc
     let mut rt = autoitv3_platform::runtime_with_platform(&prog);
     assert!(rt.call_function("F", vec![]).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// extended emulated DllCall targets (the emulation layer answering alone, so
+// these run on the Windows host too)
+// ---------------------------------------------------------------------------
+
+/// Run `F()` with the *emulation layer as the only platform*, so emulated
+/// DllCall semantics are exercised even where the native layer exists.
+fn emu_only(emu: WindowsEmulation, body: &str) -> Value {
+    let src = format!("Func F()\n{body}\nEndFunc\n");
+    let prog = parse(&src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.call_function("F", vec![]).expect("runs")
+}
+
+#[test]
+fn emulated_modules_round_trip() {
+    let body = r#"
+Local $h = DllCall("kernel32.dll", "ptr", "LoadLibraryW", "wstr", "kernel32.dll")
+Local $p = DllCall("kernel32.dll", "ptr", "GetProcAddress", "ptr", $h[0], "wstr", "GetCurrentProcessId")
+Local $t = DllStructCreate("wchar buf[260]")
+DllCall("kernel32.dll", "dword", "GetModuleFileNameW", "ptr", $h[0], "ptr", DllStructGetPtr($t), "dword", 260)
+Local $bad = DllCall("kernel32.dll", "ptr", "GetProcAddress", "ptr", 9999, "wstr", "Nope")
+Local $e = @error
+Return $h[0] & ":" & ($p[0] > 0) & ":" & DllStructGetData($t, 1) & ":" & $bad & ":" & $e
+"#;
+    let got = emu_only(WindowsEmulation::new(), body).to_autoit_string();
+    assert!(
+        got.starts_with(r"1:True:C:\Windows\kernel32.dll:0:1"),
+        "got {got}"
+    );
+}
+
+#[test]
+fn emulated_memory_apis_allocate_and_round_trip() {
+    let body = r#"
+Local $mem = DllCall("kernel32.dll", "ptr", "VirtualAlloc", "ptr", 0, "ulong_ptr", 16, "dword", 0x3000, "dword", 4)
+Local $src = DllStructCreate("byte buf[4]")
+DllStructSetData($src, 1, Binary("0x01020304"))
+DllCall("kernel32.dll", "none", "RtlMoveMemory", "ptr", $mem[0], "ptr", DllStructGetPtr($src), "ulong_ptr", 4)
+Local $out = DllStructCreate("byte out[4]", $mem[0])
+Return DllStructGetData($out, 1) = Binary("0x01020304")
+"#;
+    assert_eq!(
+        emu_only(WindowsEmulation::new(), body).to_autoit_string(),
+        "True"
+    );
+}
+
+#[test]
+fn emulated_file_apis_read_a_seeded_sandbox_file() {
+    let emu = WindowsEmulation::new().with_file(r"C:\probe\data.txt", b"payload".to_vec());
+    let body = r#"
+Local $h = DllCall("kernel32.dll", "ptr", "CreateFileW", "wstr", "C:\probe\data.txt", "dword", 0x80000000, "dword", 0, "ptr", 0)
+Local $buf = DllStructCreate("byte buf[16]")
+Local $got = DllStructCreate("dword read")
+Local $r = DllCall("kernel32.dll", "bool", "ReadFile", "ptr", $h[0], "ptr", DllStructGetPtr($buf), "dword", 16, "ptr", DllStructGetPtr($got), "ptr", 0)
+DllCall("kernel32.dll", "bool", "CloseHandle", "ptr", $h[0])
+Return ($r[0] = 1) & ":" & DllStructGetData($got, 1) & ":" & BinaryMid(DllStructGetData($buf, 1), 1, 7)
+"#;
+    assert_eq!(emu_only(emu, body).to_autoit_string(), "True:7:0x7061796C6F6164");
+}
+
+#[test]
+fn emulated_file_apis_write_and_read_back() {
+    let body = r#"
+Local $h = DllCall("kernel32.dll", "ptr", "CreateFileW", "wstr", "C:\probe\out.txt", "dword", 0x40000000, "dword", 0, "ptr", 0)
+Local $buf = DllStructCreate("char buf[5]")
+DllStructSetData($buf, 1, "hello")
+Local $w = DllCall("kernel32.dll", "bool", "WriteFile", "ptr", $h[0], "ptr", DllStructGetPtr($buf), "dword", 5, "ptr", 0, "ptr", 0)
+DllCall("kernel32.dll", "bool", "CloseHandle", "ptr", $h[0])
+Local $h2 = DllCall("kernel32.dll", "ptr", "CreateFileW", "wstr", "C:\probe\out.txt", "dword", 0x80000000, "dword", 0, "ptr", 0)
+Local $size = DllCall("kernel32.dll", "dword", "GetFileSize", "ptr", $h2[0], "ptr", 0)
+Local $buf2 = DllStructCreate("char buf[5]")
+DllCall("kernel32.dll", "bool", "ReadFile", "ptr", $h2[0], "ptr", DllStructGetPtr($buf2), "dword", 5, "ptr", 0, "ptr", 0)
+DllCall("kernel32.dll", "bool", "CloseHandle", "ptr", $h2[0])
+Return ($w[0] = 1) & ":" & $size[0] & ":" & DllStructGetData($buf2, 1)
+"#;
+    assert_eq!(emu_only(WindowsEmulation::new(), body).to_autoit_string(), "True:5:hello");
+}
+
+#[test]
+fn emulated_crt_strings_work_over_struct_memory() {
+    let body = r#"
+Local $t = DllStructCreate("wchar s[8]")
+DllStructSetData($t, 1, "abc")
+Local $n = DllCall("kernel32.dll", "int", "lstrlenW", "ptr", DllStructGetPtr($t))
+Local $d = DllStructCreate("wchar s[8]")
+DllCall("kernel32.dll", "ptr", "lstrcpyW", "ptr", DllStructGetPtr($d), "ptr", DllStructGetPtr($t))
+Return $n[0] & ":" & DllStructGetData($d, 1)
+"#;
+    assert_eq!(emu_only(WindowsEmulation::new(), body).to_autoit_string(), "3:abc");
+}
