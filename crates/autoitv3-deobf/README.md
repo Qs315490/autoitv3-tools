@@ -1,4 +1,4 @@
-# autoitv3-tools (workspace)
+# autoitv3-deobf — 反混淆 pass 库
 
 **反混淆 pass 库**：常量折叠、函数表解析、间接调用简化、确定性重命名，以及唯一能解开字符串表的运行时求值（`evaluate`）。
 
@@ -22,8 +22,9 @@
         orchestrator.rs 按序执行 pass 流水线，产出 Deobfuscator/Report
         lib.rs
       tests/
-        deobf.rs      反混淆 pass 单元测试（30 项）
+        deobf.rs      反混淆 pass 单元测试（35 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
+        evaluate_test.rs 运行时求值测试（22 项，含可选 AU3_SAMPLE 集成测试）
         unit/rename.rs `#forceref` 重写的单元测试（`#[path]` 回挂）
 ```
 

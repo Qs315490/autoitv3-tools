@@ -162,10 +162,6 @@ backend.run(move |backend| {                    // 主线程；阻塞到窗口�
 > （`ctx.request_repaint()`），所以 `WinMove`、控件文本、以及拖动回声都是当帧上屏；50 ms 的
 > 周期重绘只是兜底。
 
-> **脚本 → 屏幕不走轮询**：后端每次 `on_window`/`on_control`/`GUISetState` 都会唤醒一帧
-> （`ctx.request_repaint()`），所以 `WinMove`、控件文本、以及拖动回声都是当帧上屏；50 ms 的
-> 周期重绘只是兜底。
-
 **拖动最大化窗口的标题栏 = 立即还原**（Windows 的手势）：指针一拖标题栏，窗口就取
 `Window::restore` 里的尺寸，并按光标在最大化矩形里的**相对位置**摆好——光标抓住标题栏的那一点
 仍然在光标下面——随后跟着指针 1:1 移动；松开后停在原地，`WinGetPos` 与屏幕一致。这几帧的拖动由

@@ -21,8 +21,9 @@
           evaluate.rs   au3 evaluate（EvaluateArgs + run）
           run.rs        au3 run（RunArgs + run，含 --trace 用的 Debugger 示例实现）
           debug.rs      au3 debug（DebugArgs + 交互式 shell：命令解析、步进策略、提示符）
+          unpack.rs     au3 unpack（UnpackArgs + run：--script/--raw/--table/--at）
       tests/
-        debug.rs     端到端驱动真实二进制：断点/单步/条件/求值/重启/stdin（13 项）
+        debug.rs     端到端驱动真实二进制：断点/单步/条件/求值/重启/stdin（21 项）
 ```
 
 ## 使用
@@ -80,7 +81,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 ```
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
-`deobfuscate --evaluate` 与 `run`；省略时读环境变量，再回落到默认值：
+`deobfuscate --evaluate`、`run` 与 `debug`；省略时读环境变量，再回落到默认值：
 
 | 开关 | 环境变量 | 默认 |
 | ---- | -------- | ---- |
@@ -135,7 +136,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 
 ```bash
 # 运行库的单元测试
-cargo test                     # 全部（420 项，含 doctest）
+cargo test                     # 全部（513 项 #[test]，平台/feature 门控下全量约 465）
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
 cargo test -p autoitv3-platform

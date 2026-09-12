@@ -18,15 +18,17 @@ AutoIt v3 **AST 分析核心**：手写词法器 + 递归下降分析器，产�
         parser.rs 递归下降分析器：语句按行/冒号分隔，表达式用优先级爬升
         lib.rs    库入口，统一导出
       tests/
-        integration.rs     库集成单元测试（25 项）
-        syntax_coverage.rs 语法覆盖回归集（14 项，见下文「语法覆盖」）
+        integration.rs     库集成单元测试（29 项）
+        syntax_coverage.rs 语法覆盖回归集（15 项，见下文「语法覆盖」）
         unit/vocab.rs      vocab 的单元测试（4 项，`#[path]` 回挂，见[根 README](../../README.md) 的「测试」）
 ```
 
 ## 作为库调用
 
 ```rust
-use autoitv3_ast::{parse, pretty::PrettyPrinter};
+// 打印器在 autoitv3-format crate（`au3 pretty` 的实现库）
+use autoitv3_ast::parse;
+use autoitv3_format::PrettyPrinter;
 
 let prog = parse(src)?;               // 得到 span-aware AST
 let funcs = prog.items.iter()
