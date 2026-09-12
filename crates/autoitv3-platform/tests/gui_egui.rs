@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use autoitv3_gui::{Control, GuiBackend, GuiImage, Window};
+use autoitv3_gui_model::{Control, GuiBackend, GuiImage, Window};
 use autoitv3_gui_egui::EguiBackend;
 use autoitv3_platform::host_platform_with;
 use autoitv3_platform::winemu::WindowsEmulation;

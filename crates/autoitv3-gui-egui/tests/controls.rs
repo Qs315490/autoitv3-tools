@@ -7,7 +7,7 @@
 
 #![cfg(feature = "egui")]
 
-use autoitv3_gui::{Control, ControlKind, DrawCmd, GuiBackend, Window};
+use autoitv3_gui_model::{Control, ControlKind, DrawCmd, GuiBackend, Window};
 use autoitv3_gui_egui::EguiBackend;
 
 const WINDOW: i64 = 0x1_0000;
@@ -63,7 +63,7 @@ fn sample(id: i64, kind: ControlKind) -> Control {
     control.bk_color = Some(0x20_20_20);
     control.limit = Some((0, 10));
     control.image = Some("splash.bmp".to_string());
-    control.state = autoitv3_gui::GUI_CHECKED;
+    control.state = autoitv3_gui_model::GUI_CHECKED;
     control.draw = vec![
         DrawCmd::SetColor(0x00_FF_00),
         DrawCmd::SetWidth(2),
@@ -95,12 +95,12 @@ fn sample(id: i64, kind: ControlKind) -> Control {
     control
 }
 
-fn ink(image: &autoitv3_gui::GuiImage) -> usize {
+fn ink(image: &autoitv3_gui_model::GuiImage) -> usize {
     image.rgba.chunks_exact(4).filter(|p| p[3] > 0).count()
 }
 
 /// Pixels that differ from a baseline render (deterministic, so this is exact).
-fn differences(image: &autoitv3_gui::GuiImage, baseline: &autoitv3_gui::GuiImage) -> usize {
+fn differences(image: &autoitv3_gui_model::GuiImage, baseline: &autoitv3_gui_model::GuiImage) -> usize {
     image
         .rgba
         .chunks_exact(4)
@@ -109,7 +109,7 @@ fn differences(image: &autoitv3_gui::GuiImage, baseline: &autoitv3_gui::GuiImage
         .count()
 }
 
-fn render_one(control: &Control) -> autoitv3_gui::GuiImage {
+fn render_one(control: &Control) -> autoitv3_gui_model::GuiImage {
     let mut backend = EguiBackend::new().with_size(320, 200);
     let mut window = Window::new(WINDOW, "One", 0, 0);
     window.width = 300;
@@ -180,7 +180,7 @@ fn a_window_with_every_control_renders_and_is_deterministic() {
 
 #[test]
 fn window_state_decides_what_offscreen_renders() {
-    let render = |state: autoitv3_gui::WindowState| {
+    let render = |state: autoitv3_gui_model::WindowState| {
         let mut backend = EguiBackend::new().with_size(400, 300);
         let mut window = Window::new(WINDOW, "State", 40, 30);
         window.width = 200;
@@ -195,9 +195,9 @@ fn window_state_decides_what_offscreen_renders() {
         backend.snapshot().expect("renders")
     };
 
-    let normal = ink(&render(autoitv3_gui::WindowState::Normal));
-    let maximized = ink(&render(autoitv3_gui::WindowState::Maximized));
-    let minimized = ink(&render(autoitv3_gui::WindowState::Minimized));
+    let normal = ink(&render(autoitv3_gui_model::WindowState::Normal));
+    let maximized = ink(&render(autoitv3_gui_model::WindowState::Maximized));
+    let minimized = ink(&render(autoitv3_gui_model::WindowState::Minimized));
 
     assert!(
         maximized > normal,

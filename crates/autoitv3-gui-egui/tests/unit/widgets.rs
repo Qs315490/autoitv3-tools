@@ -5,7 +5,7 @@
 //! reach private state the module does not expose.
 
 use super::*;
-use autoitv3_gui::{Control, ControlKind};
+use autoitv3_gui_model::{Control, ControlKind};
 use egui::{vec2, Context, Event, Modifiers, PointerButton, RawInput};
 
 fn frame() -> RawInput {
@@ -142,11 +142,11 @@ fn a_hidden_or_disabled_control_reports_nothing() {
     button.text = "Click".to_string();
     let rect = probe(&ctx, &button);
 
-    button.state = autoitv3_gui::GUI_HIDE;
+    button.state = autoitv3_gui_model::GUI_HIDE;
     let hidden = click(&ctx, &button, rect.center());
     assert!(hidden.is_empty(), "a hidden control produced {hidden:?}");
 
-    button.state = autoitv3_gui::GUI_DISABLE;
+    button.state = autoitv3_gui_model::GUI_DISABLE;
     let disabled = click(&ctx, &button, rect.center());
     assert!(
         disabled.is_empty(),

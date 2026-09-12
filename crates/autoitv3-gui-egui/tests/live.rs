@@ -3,7 +3,7 @@
 
 #![cfg(feature = "window")]
 
-use autoitv3_gui::{Control, ControlKind, GuiBackend, GuiEvent, GuiUpdate, Window};
+use autoitv3_gui_model::{Control, ControlKind, GuiBackend, GuiEvent, GuiUpdate, Window};
 use autoitv3_gui_egui::{Action, Interaction, LiveBackend};
 
 #[test]

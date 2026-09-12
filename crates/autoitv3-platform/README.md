@@ -43,7 +43,7 @@
           shell.rs      ShellExecute*/RunAs*
           gui/          GUI 无头语义：messages.rs（$EM_*/$LVM_* 默认）、
                         mod.rs（165 个 GUI 函数的 AutoIt 语义；控件模型与
-                        GuiBackend 接缝在 autoitv3-gui crate）
+                        GuiBackend 接缝在 autoitv3-gui-model crate）
         winfmt/       机制层（纯字节解析/布局，不碰 OS API；winemu 与 windows
                       共同复用）：dllstruct.rs（DllStruct 布局引擎）、pe.rs（PE
                       资源）、verinfo.rs（RT_VERSION）、shortcut.rs（.lnk）、
@@ -142,7 +142,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`EnumWindows`/`EnumChildWindows`/`EnumThreadWindows` 按 `with_scripted_windows()` 的句柄表把回调排入队列，运行时在 DllCall 返回后真实执行脚本函数（不重入解释器）；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
 | COM | **伪 COM**：`ObjCreate` 对内建 ProgID 表返回真实行为对象——`Scripting.Dictionary`（Add/Exists/Item/Count/Keys/Items/Remove/RemoveAll）、`WScript.Shell`（RegRead/RegWrite/RegDelete 桥接仿真注册表、ExpandEnvironmentStrings、Run）、`Scripting.FileSystemObject`（FileExists/DriveExists/路径运算/GetSpecialFolder）；表外 ProgID 与 `ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 维持 `@error = 1` |
-| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*`/`$TVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
+| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*`/`$TVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui-model`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
 
 **选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
 `Win10`/`Win11`，**默认 Win10**：

@@ -511,15 +511,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "autoitv3-gui"
-version = "0.1.0"
-
-[[package]]
 name = "autoitv3-gui-egui"
 version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
- "autoitv3-gui",
+ "autoitv3-gui-model",
  "autoitv3-platform",
  "autoitv3-runtime",
  "eframe",
@@ -527,13 +523,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "autoitv3-gui-model"
+version = "0.1.0"
+
+[[package]]
 name = "autoitv3-platform"
 version = "0.1.0"
 dependencies = [
  "autoitv3-ast",
  "autoitv3-deobf",
- "autoitv3-gui",
  "autoitv3-gui-egui",
+ "autoitv3-gui-model",
  "autoitv3-runtime",
  "windows-sys 0.61.2",
 ]

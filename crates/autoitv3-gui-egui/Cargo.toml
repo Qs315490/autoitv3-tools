@@ -5,7 +5,7 @@ edition.workspace = true
 description = "Offscreen egui renderer for the autoitv3 GUI backend"
 
 [dependencies]
-autoitv3-gui = { path = "../autoitv3-gui" }
+autoitv3-gui-model = { path = "../autoitv3-gui-model" }
 egui = { version = "0.36", optional = true }
 eframe = { version = "0.36", optional = true }
 

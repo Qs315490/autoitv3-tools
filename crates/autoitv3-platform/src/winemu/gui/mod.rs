@@ -23,9 +23,9 @@
 mod messages;
 
 /// The widget model and backend seam live in the dependency-free
-/// `autoitv3-gui` crate, so a renderer only has to depend on that.
-pub use autoitv3_gui as model;
-pub use autoitv3_gui::{
+/// `autoitv3-gui-model` crate, so a renderer only has to depend on that.
+pub use autoitv3_gui_model as model;
+pub use autoitv3_gui_model::{
     Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiModel, GuiUpdate,
     HeadlessBackend, TrayItem, Window, WindowState, GUI_EVENT_CLOSE, GUI_EVENT_DROPPED,
     GUI_EVENT_MAXIMIZE, GUI_EVENT_MINIMIZE, GUI_EVENT_MOUSEMOVE, GUI_EVENT_PRIMARYDOWN,
@@ -38,7 +38,7 @@ use std::collections::VecDeque;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::value::Value;
 
-use autoitv3_gui::{GUI_DISABLE, GUI_HIDE};
+use autoitv3_gui_model::{GUI_DISABLE, GUI_HIDE};
 
 /// Every GUI function this layer answers.
 pub const FUNCTIONS: &[&str] = &[
@@ -181,7 +181,7 @@ impl GuiState {
     pub fn desktop_size(&self) -> (i32, i32) {
         self.backend
             .desktop_size()
-            .unwrap_or(autoitv3_gui::DEFAULT_DESKTOP_SIZE)
+            .unwrap_or(autoitv3_gui_model::DEFAULT_DESKTOP_SIZE)
     }
 
     /// Put a window into the state a `@SW_*` flag asks for, and return whether

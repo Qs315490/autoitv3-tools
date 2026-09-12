@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use autoitv3_gui::GuiImage;
+use autoitv3_gui_model::GuiImage;
 use egui::epaint::{ClippedPrimitive, Primitive};
 use egui::{Color32, TextureId};
 

@@ -1,6 +1,6 @@
 # autoitv3-gui-egui — egui 渲染后端（离屏 / 真窗口）
 
-**egui 渲染后端**：把 [`autoitv3-gui`](../autoitv3-gui/README.md) 的控件模型画出来——feature `egui` 离屏渲染出 PNG，feature `window` 开真窗口。
+**egui 渲染后端**：把 [`autoitv3-gui-model`](../autoitv3-gui-model/README.md) 的控件模型画出来——feature `egui` 离屏渲染出 PNG，feature `window` 开真窗口。
 
 > 组件地图与工作区总览见[根 README](../../README.md)。
 
@@ -21,7 +21,7 @@
 
 ### GUI 渲染后端（可选 `egui`）——离屏 + 截图
 
-控件模型与 `GuiBackend` 接缝在零依赖的 `autoitv3-gui`；`autoitv3-gui-egui` 用 egui 把模型
+控件模型与 `GuiBackend` 接缝在零依赖的 `autoitv3-gui-model`；`autoitv3-gui-egui` 用 egui 把模型
 布局成帧，再用自带的 **CPU 光栅器**渲染成 RGBA。**不依赖 GPU、不依赖显示服务器**，
 因此可复现、可在 CI 里断言像素。
 

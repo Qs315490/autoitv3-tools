@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use autoitv3_gui::{Control, GuiBackend, GuiImage, Window, WindowState};
+use autoitv3_gui_model::{Control, GuiBackend, GuiImage, Window, WindowState};
 use egui::{vec2, Pos2, Rect, TextureId};
 
 use crate::raster::{apply_textures, rasterize, Texture};

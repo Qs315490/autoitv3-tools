@@ -44,7 +44,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window, WindowState};
+use autoitv3_gui_model::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window, WindowState};
 
 use crate::widgets::{
     effective_window, fold_user_update, record_drawn, show_autoit_window, Action, Interaction,
@@ -131,7 +131,7 @@ impl LiveBackend {
                 events_rx: Mutex::new(events_rx),
                 updates: Mutex::new(Vec::new()),
                 finished: AtomicBool::new(false),
-                desktop: Mutex::new(autoitv3_gui::DEFAULT_DESKTOP_SIZE),
+                desktop: Mutex::new(autoitv3_gui_model::DEFAULT_DESKTOP_SIZE),
                 ctx: Mutex::new(None),
             }),
             title: title.into(),
@@ -175,7 +175,7 @@ impl LiveBackend {
         // The native window *is* the emulated desktop, so ask for the display
         // mode up front: that way `@DesktopWidth` is already right before the
         // first frame, instead of falling back and then jumping.
-        let (width, height) = autoitv3_gui::DEFAULT_DESKTOP_SIZE;
+        let (width, height) = autoitv3_gui_model::DEFAULT_DESKTOP_SIZE;
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([width as f32, height as f32]),

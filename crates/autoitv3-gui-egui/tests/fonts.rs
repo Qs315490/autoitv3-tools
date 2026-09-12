@@ -5,7 +5,7 @@
 
 #![cfg(feature = "egui")]
 
-use autoitv3_gui::{Control, ControlKind, GuiBackend, Window};
+use autoitv3_gui_model::{Control, ControlKind, GuiBackend, Window};
 use autoitv3_gui_egui::{fonts, EguiBackend};
 use egui::{Context, RawInput};
 
@@ -15,11 +15,11 @@ fn draw_a_frame(ctx: &Context) {
     output.textures_delta.clear();
 }
 
-fn ink(image: &autoitv3_gui::GuiImage) -> usize {
+fn ink(image: &autoitv3_gui_model::GuiImage) -> usize {
     image.rgba.chunks_exact(4).filter(|p| p[3] > 0).count()
 }
 
-fn render(label: &str) -> autoitv3_gui::GuiImage {
+fn render(label: &str) -> autoitv3_gui_model::GuiImage {
     let mut backend = EguiBackend::new().with_size(240, 120);
     let mut window = Window::new(1, "Fonts", 0, 0);
     window.width = 220;
