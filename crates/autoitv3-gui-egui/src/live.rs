@@ -68,6 +68,10 @@ struct Shared {
     /// Set by the script thread when it returns, so the window can close itself
     /// instead of leaving the process stuck in the event loop.
     finished: AtomicBool,
+    /// The native viewport's size, in pixels: the desktop the emulated machine
+    /// sees. Seeded with the size the viewport is asked to open at, then
+    /// corrected from what it actually drew.
+    desktop: Mutex<(i32, i32)>,
 }
 
 /// A windowed egui backend.
@@ -99,6 +103,7 @@ impl LiveBackend {
                 events_rx: Mutex::new(events_rx),
                 updates: Mutex::new(Vec::new()),
                 finished: AtomicBool::new(false),
+                desktop: Mutex::new(autoitv3_gui::DEFAULT_DESKTOP_SIZE),
             }),
             title: title.into(),
         }
@@ -137,11 +142,16 @@ impl LiveBackend {
             ever_had_window: false,
             empty_frames: 0,
         };
-        eframe::run_native(
-            &self.title,
-            eframe::NativeOptions::default(),
-            Box::new(|_cc| Ok(Box::new(app))),
-        )
+        // The native window *is* the emulated desktop, so ask for the display
+        // mode up front: that way `@DesktopWidth` is already right before the
+        // first frame, instead of falling back and then jumping.
+        let (width, height) = autoitv3_gui::DEFAULT_DESKTOP_SIZE;
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([width as f32, height as f32]),
+            ..Default::default()
+        };
+        eframe::run_native(&self.title, options, Box::new(|_cc| Ok(Box::new(app))))
     }
 
     /// How a minimised window is shown; see [`MinimizeStyle`].
@@ -231,6 +241,12 @@ impl GuiBackend for LiveBackend {
     fn snapshot(&mut self) -> Option<GuiImage> {
         None
     }
+
+    /// The live window's viewport is the emulated desktop.
+    fn desktop_size(&self) -> Option<(i32, i32)> {
+        let desktop = *self.shared.desktop.lock().unwrap();
+        (desktop.0 > 0 && desktop.1 > 0).then_some(desktop)
+    }
 }
 
 /// Marks the script as finished, on the normal path *and* on a panic.
@@ -239,6 +255,19 @@ struct FinishGuard(Arc<Shared>);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
         self.0.finished.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Shared {
+    /// Publish the viewport size the window just drew at.
+    fn set_desktop(&self, size: egui::Vec2) {
+        let size = (size.x.round() as i32, size.y.round() as i32);
+        if size.0 > 0 && size.1 > 0 {
+            let mut desktop = self.desktop.lock().unwrap();
+            if *desktop != size {
+                *desktop = size;
+            }
+        }
     }
 }
 
@@ -310,6 +339,8 @@ struct LiveApp {
 impl eframe::App for LiveApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // The native window is the emulated desktop.
+        self.shared.set_desktop(ctx.content_rect().size());
         let (windows, controls) = {
             let mirror = self.shared.mirror.lock().unwrap();
             (mirror.windows.clone(), mirror.controls.clone())
@@ -429,9 +460,9 @@ impl eframe::App for LiveApp {
             match drawn.client {
                 Some(drawn) => {
                     // A minimised window drawn as a title bar has a body of
-                    // height zero; that is not a resize, so keep the real size
-                    // for the restore.
-                    if geometry.state == WindowState::Minimized {
+                    // height zero, and a maximised one is sized by the desktop:
+                    // neither is a user resize, so keep the real size.
+                    if geometry.state != WindowState::Normal {
                         seen_windows.insert(
                             window.handle,
                             LastWindow {
@@ -535,6 +566,24 @@ mod tests {
         controls.insert(1, input(1, "world!"));
         expire_pending(&mut pending, &controls);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn the_viewport_is_the_desktop() {
+        let backend = LiveBackend::new("W");
+        // Before the first frame it reports the size the viewport was asked to
+        // open at, so a script that reads the desktop early sees no change.
+        assert_eq!(
+            backend.desktop_size(),
+            Some(autoitv3_gui::DEFAULT_DESKTOP_SIZE)
+        );
+
+        backend.shared.set_desktop(egui::vec2(1024.0, 640.0));
+        assert_eq!(backend.desktop_size(), Some((1024, 640)));
+
+        // A degenerate size is not a desktop.
+        backend.shared.set_desktop(egui::vec2(0.0, 0.0));
+        assert_eq!(backend.desktop_size(), Some((1024, 640)));
     }
 
     #[test]

@@ -38,6 +38,9 @@ impl GuiBackend for Shared {
     fn snapshot(&mut self) -> Option<GuiImage> {
         self.0.borrow_mut().snapshot()
     }
+    fn desktop_size(&self) -> Option<(i32, i32)> {
+        self.0.borrow().desktop_size()
+    }
 }
 
 /// One call per control kind the emulation implements, plus a menu.
@@ -154,4 +157,36 @@ GUISetState()
     let moved = render(&format!("{OPEN}\nWinMove(\"State\", \"\", 300, 200)"));
     assert_eq!(ink(&moved), normal, "moving does not change how much is drawn");
     assert_ne!(moved.rgba, render(OPEN).rgba, "WinMove changed nothing");
+}
+
+/// Run a script body and read back what it returns.
+fn value(body: &str) -> String {
+    let source = format!("Func F()\n{body}\nEndFunc\n");
+    let program = autoitv3_ast::parse(&source).expect("script parses");
+    let mut runtime = Runtime::with_program(&program);
+    let backend = Shared(Rc::new(RefCell::new(
+        EguiBackend::new().with_size(640, 480),
+    )));
+    let emulation = WindowsEmulation::new().with_gui_backend(Box::new(backend));
+    runtime.set_platform(host_platform_with(emulation));
+    runtime
+        .call_function("F", vec![])
+        .expect("script runs")
+        .to_autoit_string()
+}
+
+#[test]
+fn the_offscreen_canvas_is_the_desktop() {
+    // The canvas stands in for the desktop here, exactly as the native viewport
+    // does in a live window, so a maximised window takes the whole canvas.
+    let answer = value(
+        r#"
+GUICreate("T", 200, 120)
+GUISetState()
+WinSetState("T", "", @SW_MAXIMIZE)
+Local $p = WinGetPos("T")
+Return $p[0] & "," & $p[1] & " " & $p[2] & "x" & $p[3] & " desktop " & @DesktopWidth & "x" & @DesktopHeight
+"#,
+    );
+    assert_eq!(answer, "0,0 640x480 desktop 640x480");
 }

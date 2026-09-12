@@ -20,7 +20,9 @@
 //!
 //! `--states` runs a tour of the geometry and state a *script* can drive:
 //! `WinMove` and `WinSetState(@SW_MAXIMIZE/@SW_RESTORE/@SW_MINIMIZE)`, printing
-//! what `WinGetPos`/`WinGetState` report at each step. It then stays open so the
+//! what `WinGetPos`/`WinGetState` report at each step. Maximising takes the
+//! desktop's rectangle — the native window is the emulated desktop, so
+//! `WinGetPos` then reports its size and `@SW_RESTORE` gives the window back. It then stays open so the
 //! window controls and the double-click can be tried; the console prints what
 //! the script hears when the user does that.
 //!
@@ -77,8 +79,8 @@ Func Report($step)
     ConsoleWrite($step & ": pos " & $p[0] & "," & $p[1] & " size " & $p[2] & "x" & $p[3] & " state " & WinGetState($title) & @CRLF)
 EndFunc
 
-ConsoleWrite("Watch the window while the script drives it. WinGetPos keeps" & @CRLF)
-ConsoleWrite("reporting the restore geometry while a window is maximised." & @CRLF)
+; The native window is the emulated desktop, so this is its size.
+ConsoleWrite("desktop (the parent window): " & @DesktopWidth & "x" & @DesktopHeight & @CRLF)
 
 GUICreate($title, 380, 170)
 GUICtrlCreateLabel("The script is driving this window.", 12, 12)

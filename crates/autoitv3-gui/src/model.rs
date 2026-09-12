@@ -130,6 +130,15 @@ pub struct Control {
     pub draw: Vec<DrawCmd>,
 }
 
+/// The display mode the emulation assumes when no backend has reported a
+/// desktop: `(width, height)` in pixels.
+///
+/// A live window's viewport and an offscreen renderer's canvas are real
+/// desktops and take precedence; this is what a headless run answers for
+/// `@DesktopWidth`/`@DesktopHeight` and what the live window asks its native
+/// viewport to be, so the size is the same before and after the first frame.
+pub const DEFAULT_DESKTOP_SIZE: (i32, i32) = (1024, 768);
+
 /// `$GUI_HIDE`.
 pub const GUI_HIDE: i64 = 0x20;
 /// `$GUI_DISABLE`.
@@ -201,6 +210,9 @@ pub struct Window {
     pub enabled: bool,
     pub active: bool,
     pub state: WindowState,
+    /// The rectangle to go back to when a maximised window is restored, the way
+    /// Windows keeps a window's normal placement. `None` unless maximised.
+    pub restore: Option<(i32, i32, i32, i32)>,
     pub bk_color: Option<i64>,
     pub font: Option<Font>,
     pub cursor: Option<i64>,
@@ -502,6 +514,7 @@ impl Window {
             enabled: true,
             active: true,
             state: WindowState::Normal,
+            restore: None,
             bk_color: None,
             font: None,
             cursor: None,
