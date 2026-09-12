@@ -145,7 +145,7 @@ impl Harness {
         }
         // Exactly what LiveBackend does with a frame, so the two cannot drift.
         let geometry = WindowGeometry::of(&effective);
-        let user_state = asked_last_frame || drawn.pointer_owns;
+        let user_state = asked_last_frame || drawn.pointer_owns || drawn.title_drag;
         let (next, updates) = record_drawn(&effective, geometry, last, drawn, user_state);
         self.reported = updates.first().cloned();
         // Fold the user's own change into the model at once, exactly like
@@ -790,6 +790,7 @@ fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
         chrome: Some(vec2(14.0, 48.0)),
         pos: Some(Pos2::new(0.0, 0.0)),
         pointer_owns: false,
+        title_drag: false,
     };
     let drawn = autoitv3_gui_egui::DrawnWindow {
         client: Some(vec2(700.0, 500.0)),
@@ -851,6 +852,7 @@ fn a_window_that_did_not_move_is_not_reported_as_moved() {
         // The window is still drawn at the maximised place on this frame.
         pos: Some(Pos2::new(0.0, 0.0)),
         pointer_owns: false,
+        title_drag: false,
     };
     let drawn = autoitv3_gui_egui::DrawnWindow {
         client: Some(vec2(700.0, 500.0)),
@@ -986,4 +988,77 @@ fn restoring_a_maximised_window_puts_it_back_where_it_came_from() {
             );
         }
     }
+}
+
+#[test]
+fn dragging_a_maximised_title_bar_restores_the_window_under_the_pointer() {
+    // Windows restores a maximised window the moment its title bar is dragged:
+    // the size it was maximised from, and under the pointer — the spot grabbed
+    // on the title bar stays under it, so the drag carries on from there.
+    let mut harness = Harness::new();
+    harness.frame(vec![]);
+    harness.window.restore = Some((20, 20, WIDTH, HEIGHT));
+    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.x = 0;
+    harness.window.y = 0;
+    harness.window.width = 900;
+    harness.window.height = 700;
+    harness.frame(vec![]);
+    let maximised = harness.frame(vec![]).0;
+    assert!(
+        maximised.width() > 800.0,
+        "the viewport is 900 wide, so maximised fills it: {maximised:?}"
+    );
+
+    let from = Pos2::new(maximised.left() + 700.0, maximised.top() + 8.0);
+    harness.frame(vec![Event::PointerMoved(from)]);
+    harness.frame(vec![press(from, true)]);
+    let grabbed = (from.x - maximised.left()) / maximised.width();
+
+    let delta = vec2(-240.0, 150.0);
+    let step = delta / 6.0;
+    let mut previous = maximised;
+    for step_index in 1..=6 {
+        let pointer = from + step * step_index as f32;
+        let (rect, client) = harness.frame(vec![Event::PointerMoved(pointer)]);
+        assert!(
+            (client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 4.0,
+            "step {step_index}: the drag should restore the size the window was \
+             maximised from, got {client:?}"
+        );
+        let held = (pointer.x - rect.left()) / rect.width();
+        assert!(
+            (held - grabbed).abs() < 0.05,
+            "step {step_index}: the pointer is at {held:.3} of the window but \
+             grabbed it at {grabbed:.3}: {rect:?}"
+        );
+        let moved = rect.min - previous.min;
+        if step_index > 1 {
+            assert!(
+                (moved - step).length() < 6.0,
+                "step {step_index}: the window moved {moved:?} while the pointer \
+                 moved {step:?} — the drag must carry it from there"
+            );
+        }
+        previous = rect;
+    }
+    assert_eq!(
+        harness.requests,
+        vec![autoitv3_gui::WindowState::Normal],
+        "dragging the title bar asks the script to restore"
+    );
+
+    // Let go: the window stays where the drag left it, and so does the model.
+    harness.frame(vec![press(from + delta, false)]);
+    let (rested, _) = harness.frame(vec![]);
+    assert!(
+        rested.min.distance(previous.min) < 2.0,
+        "the window moved on release: {previous:?} -> {rested:?}"
+    );
+    assert!(
+        (harness.window.x as f32 - rested.left()).abs() < 2.0
+            && (harness.window.y as f32 - rested.top()).abs() < 2.0,
+        "WinGetPos should agree with the window, model {:?} vs {rested:?}",
+        (harness.window.x, harness.window.y)
+    );
 }

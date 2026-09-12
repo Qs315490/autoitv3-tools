@@ -949,6 +949,14 @@ backend.run(move |backend| {                    // 主线程；阻塞到窗口�
 > （`ctx.request_repaint()`），所以 `WinMove`、控件文本、以及拖动回声都是当帧上屏；50 ms 的
 > 周期重绘只是兜底。
 
+**拖动最大化窗口的标题栏 = 立即还原**（Windows 的手势）：指针一拖标题栏，窗口就取
+`Window::restore` 里的尺寸，并按光标在最大化矩形里的**相对位置**摆好——光标抓住标题栏的那一点
+仍然在光标下面——随后跟着指针 1:1 移动；松开后停在原地，`WinGetPos` 与屏幕一致。这几帧的拖动由
+我们接管：egui 会把拖拽中的窗口夹回视口，而"和视口一样大"的最大化窗口根本推不动，所以摆放用
+`current_pos` + 关掉该帧的 `constrain`，并把 egui 记录"拖拽起点"的临时数据一起改写（这是 egui
+的内部约定，由测试守着；换 egui 版本时它会先失败）。
+`dragging_a_maximised_title_bar_restores_the_window_under_the_pointer` 守这条行为。
+
 **标题栏控件**：窗口标题栏右侧有 **最小化** 和 **最大化/还原** 两个按钮（最大化后同一个按钮变成还原），
 点一下即可操作，脚本相应收到 `$GUI_EVENT_MINIMIZE`/`RESTORE`/`MAXIMIZE`。egui 只自带关闭按钮，
 所以这两个是我们自己画的，但**样式与 egui 关闭按钮完全一致**：同样的 `spacing.icon_width` 方形尺寸、
