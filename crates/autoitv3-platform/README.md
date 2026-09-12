@@ -1,0 +1,208 @@
+# autoitv3-platform — 平台层（原生 Windows + 通用 + winemu 仿真）
+
+**平台层**：解释器之外的"操作系统"。分层组合——Windows 原生层 + 通用层 + Windows 仿真层（winemu），由 [`CompositePlatform`](src/lib.rs) 按序应答。
+
+> 组件地图与工作区总览见[根 README](../../README.md)。
+
+## 目录
+
+```text
+    autoitv3-platform/       # 库 crate——平台层（分层：仿真 + 通用 + 系统）
+      src/
+        lib.rs        Platform 分层组合（CompositePlatform）、host_platform() /
+                      host_platform_with() 工厂、runtime_with_platform() 便捷构造
+        common/       通用层：文件/目录 I/O、INI、环境变量、数学、计时器、控制台
+                      + 进程执行与网络 —— Linux 与 Windows 都安装
+          mod.rs        CommonPlatform：直接分发 + 委托给下面两个服务
+          proc.rs       Run 家族统一接口（std::process 机制）；平台差异的探测点
+                        （进程表/存活/内存）在各系统模块实现，这里按平台调用
+          net.rs        Inet*/TCP*/UDP*/Ping/代理设置（std::net）
+        linux/        系统层（Linux）：/proc 进程查询、OS 标识宏
+          mod.rs
+          proc_support.rs  /proc 探针（进程表/存活/内存，供 common 进程服务使用）
+        windows/      系统层（Windows）：原生 Win32 后端（DllCall/DllStruct/剪贴板/
+                      进程/驱动器/系统宏）；注册表、COM、GUI 由仿真层兜底
+          mod.rs
+          files.rs    真实文件属性（RASH）、8.3 短名、EnvUpdate 广播
+        winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
+          mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
+          version.rs    WindowsVersion：选定仿真系统版本（默认 win10）
+          paths.rs      WindowsPaths：C:\ 目录布局（@WindowsDir、@AppDataDir…）
+          registry.rs   RegistryStore 接口 + FileRegistry（默认，落盘 .au3_registry）
+                        + MemoryRegistry（可选，不落盘）
+          compress.rs / crypto.rs  LZNT1 解压、CryptoAPI 仿真
+          shell.rs      ShellExecute*/RunAs*
+          gui/          GUI 无头语义：messages.rs（$EM_*/$LVM_* 默认）、
+                        mod.rs（165 个 GUI 函数的 AutoIt 语义；控件模型与
+                        GuiBackend 接缝在 autoitv3-gui crate）
+        winfmt/       机制层（纯字节解析/布局，不碰 OS API；winemu 与 windows
+                      共同复用）：dllstruct.rs（DllStruct 布局引擎）、pe.rs（PE
+                      资源）、verinfo.rs（RT_VERSION）、shortcut.rs（.lnk）、
+                      mod.rs（WindowsArch 指针宽度）
+      tests/
+        platform.rs   分层、选择、注入、通用函数与宏（33 项）
+        profile.rs    执行配置（忠实 / 确定性）（14 项）
+        winemu.rs     Windows 仿真层：DllStruct / 注册表 / 快捷方式 / GUI …
+        unit/         winfmt/winemu 各模块的单元测试（`#[path]` 回挂）
+          winemu_compress.rs  LZNT1 解压
+          winemu_crypto.rs    CryptoAPI 仿真
+          winemu_pe.rs        PE 资源读取
+          winemu_verinfo.rs   RT_VERSION
+```
+
+## 平台层
+
+解释器核心、值模型与语言级内置函数都与平台无关。AutoIt 的函数库分成**通用**与
+**系统相关**两部分，因此平台层是**分层**的（crate `autoitv3-platform`）：
+
+| 层 | 模块 | 安装于 | 内容 |
+| -- | ---- | ------ | ---- |
+| 仿真 | `winemu/` | 非 Windows 时在**最前**；Windows 上在**最后兜底** | Windows 身份、路径、`DllStruct*`/`DllCall`、注册表、剪贴板、驱动器——让 Windows 目标脚本能在 Linux 上继续跑（见下文「Windows 仿真」）；`AU3_WIN_EMU=0` / `--no-win-emu` 可整体关闭 |
+| 通用 | `common/`（`mod.rs` + `proc.rs` + `net.rs`） | **所有**平台 | 文件与目录 I/O（含 `FileFind*`、`FileGetPos`/`FileSetPos`/`FileSetEnd`、`FileGetEncoding`、`FileReadToArray`、`FileSetTime`）、INI（`Ini*` 7 个）、环境变量、数学、计时器、控制台，以及进程（`Run`/`ProcessWait*`/`StdoutRead`…）与网络（`Inet*`/`TCP*`/`UDP*`/`Ping`）——AutoIt 在各系统上行为一致的部分 |
+| 系统 | `linux/` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
+| 系统 | `windows/` | 仅 Windows | **原生 Win32 后端**：`DllCall`/`DllCallAddress`/`DllOpen`/`DllClose`（`LoadLibraryW`/`GetProcAddress` + 变参调用桥）、`DllStruct*`（复用 winemu 布局引擎，但缓冲是**真实堆内存**，被调方直接写穿）、剪贴板（`ClipGet`/`ClipPut`，`CF_UNICODETEXT`）、进程（`ProcessList`/`ProcessExists`/`ProcessClose`，Toolhelp 快照）、驱动器（`DriveGet*`/`DriveMap*` 真实卷与网络映射）、注册表（`Reg*`，64 位视图 + AutoIt 类型码）、COM（`ObjCreate`/`IsObj`/`ObjName` 与 `.$member`/`.Method()` 经手写 `IDispatch` vtable 晚绑定）、系统/Shell（`MemGetStats`/`IsAdmin`/`ShellExecute*`/`RunAs*`/`Shutdown`）以及 Windows 身份宏（`@WindowsDir`/`@OSVersion`/`@ComputerName`…）；`files.rs` 以真实 Win32 语义覆盖 common 的近似实现（`FileGetAttrib`/`FileSetAttrib` 的 RASH 位、`FileGetShortName` 的真实 8.3 名、`EnvUpdate` 的 `WM_SETTINGCHANGE` 广播）。GUI 仍由仿真层兜底；`ObjGet`（文件名字对象）与 `ObjEvent`（事件接收器）报告 `@error = 1` |
+
+`host_platform()` 按目标平台组装成 `CompositePlatform`：Windows 为
+`windows+common+winemu`（原生层最前应答真实语义，通用层居中，仿真层最后只接住
+原生未实现的 Windows 专有名），其余平台为 `winemu+common+linux`（仿真层在最前，
+因此它的宏会**有意覆盖**通用层的同名宏）。逐层查找；通用层在 Windows 上同样生效。
+`AU3_WIN_EMU=0`（或 `--no-win-emu`）去掉兜底后，原生未实现的名字回归"未定义函数"。
+需要显式指定仿真配置时用 `host_platform_with(WindowsEmulation::new()...)`。
+
+`Platform` **trait** 留在 `autoitv3-runtime`（解释器调用的接缝），**实现**在此 crate。
+依赖方向单向——运行时不知道任何具体操作系统——因此 `Runtime::new()` 默认**没有**平台层，
+需要时用 `autoitv3_platform::runtime_with_platform(&prog)` 或 `rt.set_platform(...)` 安装。
+
+查找顺序为 **内置函数 → Host → Platform**，嵌入方可用 `Host` 覆盖任何平台实现。
+
+### 通用层已实现
+
+| 类别 | 函数 |
+| ---- | ---- |
+| 文件 | `FileOpen`/`FileClose`/`FileFlush`/`FileRead`/`FileReadLine`/`FileWrite`/`FileWriteLine`（句柄表、模式标志 `$FO_READ`/`APPEND`/`OVERWRITE`/`CREATEPATH`）、`FileExists`、`FileGetSize`、`FileGetTime`、`FileGetAttrib`、`FileGetLongName`/`FileGetShortName`、`FileGetPos`/`FileSetPos`/`FileSetEnd`、`FileGetEncoding`、`FileReadToArray`、`FileFindFirstFile`/`FileFindNextFile`（搜索句柄与 `FileClose` 共用句柄表）、`FileSetTime`、`FileChangeDir`、`FileDelete`、`FileCopy`、`FileMove`、`FileSetAttrib` |
+| 目录 | `DirCreate`、`DirRemove`、`DirGetSize`、`DirCopy`、`DirMove` |
+| INI | `IniRead`、`IniWrite`、`IniDelete`、`IniReadSection`、`IniReadSectionNames`、`IniRenameSection`、`IniWriteSection`（行式解析，保留注释；写入走 `ExecutionProfile` 门控） |
+| 环境 | `EnvGet`、`EnvSet`、`EnvUpdate` |
+| 数学 | `Round`（半数远离零）、`Sqrt`、`Sin`/`Cos`/`Tan`/`ASin`/`ACos`/`ATan`（**弧度**）、`Log`、`Exp`、`Floor`、`Ceiling`、`Random`、`RandomSeed` |
+| 计时 | `TimerInit`、`TimerDiff` |
+| 控制台 | `ConsoleWrite`、`ConsoleWriteError`、`ConsoleRead` |
+| 宏 | `@TempDir`、`@AutoItPID`、`@AutoItEXE`、`@WorkingDir`/`@ScriptDir`、`@UserName`、`@HomePath`/`@UserProfileDir`、`@AppDataDir`/`@LocalAppDataDir`（XDG）、`@DesktopDir`、`@MyDocumentsDir` |
+
+### 通用层的进程与网络（`common/proc.rs` + `common/net.rs`）
+
+`CommonPlatform` 除了直接分发上面的文件/环境/数学函数，还把进程与网络委托给
+`common/proc.rs`、`common/net.rs` 两个子服务，因此它们是**同一个通用层**的一部分。
+其中 `proc.rs` 的语义是**统一接口**：`Run` 家族的接口与 `std::process` 机制在
+common 定义；平台差异（进程表、存活探测、内存）在各平台模块实现——Linux 在
+`linux/proc_support.rs` 走 `/proc`，Windows 在 `windows/process.rs` 走
+Toolhelp/`K32GetProcessMemoryInfo`——由 common 的三个按平台分派的钩子调用。
+新增宿主只需在其系统模块实现这三个钩子，不动家族接口：
+
+| 类别 | 函数 | 说明 |
+| ---- | ---- | ---- |
+| 执行 | `Run`、`RunWait` | `std::process`；`$STDIO_*` 标志决定是否接管标准流 |
+| 标准 IO | `StdoutRead`、`StderrRead`、`StdinWrite`、`StdioClose` | 每条流一个后台读取线程，读操作永不阻塞；进程结束后 join，缓冲完整 |
+| 进程 | `ProcessWait`、`ProcessWaitClose`、`ProcessGetStats`、`ProcessSetPriority` | `ProcessWait*` 超时为**秒**、0 表示无限（与 AutoIt 一致）；`ProcessGetStats` 在 Linux 读 `/proc/<pid>/status`，在 Windows 走 `K32GetProcessMemoryInfo` |
+| 网络 | `InetGet`、`InetGetInfo`、`InetGetSize`、`InetRead`、`InetClose`、`Ping`、`FtpSetProxy`、`HttpSetProxy`、`HttpSetUserAgent`、`TCP*`（9）、`UDP*`（7） | `Inet*` 仅明文 `http://`（无 TLS）；`TCP*`/`UDP*` 用 `std::net`，句柄放进各自的套接字表 |
+
+> **执行配置门控**：启动进程、打开套接字、联网下载都属于外部副作用，在
+> `ExecutionProfile::deterministic()` 下一律失败并置 `@error = 1`，也不会阻塞
+> （`ProcessWait*` 立即返回）。只有 `faithful()` 才真正执行。
+
+宏由**平台**提供（解释器只负责 `@error`/`@extended`/`@ScriptLineNumber`/`@NumParams`/
+`@CRLF` 等纯状态与常量），因此 `@TempDir` 之类不再是空串。
+
+### Windows 仿真（`winemu`）——非 Windows 主机上的 Windows 机器
+
+AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解。但在 Linux/macOS
+上分析 Windows 样本时，"如实报 `undefined function`"会让求值卡在第一个 Win32 调用上。
+`winemu` 用一台**仿真机器**回答这些调用，让脚本继续跑：
+
+| 区域 | 行为 |
+| ---- | ---- |
+| OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`、`@AutoItX64` |
+| 目录 | `WindowsPaths` 给出传统 `C:` 布局：`@WindowsDir`、`@SystemDir`、`@ProgramFilesDir`、`@HomeDrive`、`@TempDir`、`@AppDataDir`、`@LocalAppDataDir`、`@UserProfileDir`、`@StartMenuDir`、`@StartupDir`…… |
+| 原生结构 | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`/`IsDllStruct`——定义解析器支持 `struct;…;endstruct`、常见整型/浮点/指针、`char`/`wchar` 数组、无名段、`align N`；句柄指向一块本层持有的字节缓冲 |
+| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`，已实现 `GetVersionExW`/`A`、`RtlGetVersion`、`GetVersion`、`GetSystemInfo`/`GetNativeSystemInfo` 以及几个无副作用的查询。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
+| 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存、写立刻回写文件；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
+| 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
+| 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFileSystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配）；网络映射 `DriveMapAdd`/`DriveMapDel`/`DriveMapGet` 与 `DriveSetLabel` 维护本层的映射/卷标状态 |
+| Windows 文件 | `FileGetVersion`（解析 PE `RT_VERSION`）、`FileCreateShortcut`/`FileGetShortcut`（读写真实 `.lnk` Shell Link）、`FileCreateNTFSLink`、`FileRecycle`/`FileRecycleEmpty`（落到 `.au3_recycle`，可用 `with_recycle_dir()` 改名）、`FileInstall`（磁盘文件或已加载模块的 `RT_RCDATA` 资源） |
+| 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`DllCallAddress` 无加载器，按边界失败 |
+| 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
+| COM | 无 COM 运行时：`ObjCreate`/`ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 返回 `0`/`""` 并置 `@error = 1`，`IsObj` 恒为 `0`（不编造对象） |
+| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
+
+**选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
+`Win10`/`Win11`，**默认 Win10**：
+
+```rust
+use autoitv3_platform::winemu::{WindowsEmulation, WindowsVersion};
+
+let emu = WindowsEmulation::new().with_version(WindowsVersion::Win11);
+let rt  = /* Runtime::with_program(&prog) */;
+rt.set_platform(autoitv3_platform::host_platform_with(emu));
+```
+
+选择版本的三种方式（优先级由低到高）：代码里 `with_version()` → 环境变量
+`AU3_WIN_VERSION` → CLI `--win-version`。同族的还有 `AU3_WIN_ARCH`/`--win-arch`
+（`x86`/`x64`/`arm64`，影响指针宽度与结构体布局），以及
+`AU3_RESOURCE_MODULE`/`--resource-module`（`FindResourceW` 从哪个 PE 镜像取资源，
+不给就自动查找，见上文）。
+
+#### 注册表落盘（`FileRegistry`）
+
+注册表操作**重定向到文件**：默认路径 `./.au3_registry`（可用 `AU3_WIN_REGISTRY`
+或 `with_registry_file()` 改）。行式 UTF-8，四个制表符分隔字段
+（键 / 值名 / 类型 / 载荷），`KEY` 记录只有键没有值：
+
+```text
+# au3-registry v1
+HKLM\SOFTWARE\Vendor            KEY
+HKLM\SOFTWARE\Vendor    Name    REG_SZ      hello
+HKLM\SOFTWARE\Vendor    Count   REG_DWORD   7
+```
+
+- **文件是记录，不是种子快照**：先铺按版本生成的种子（`CurrentVersion`、`Shell Folders`、
+  会话管理器环境……），再把文件记录覆盖上去；回写时只写文件自己的记录与新写入，
+  所以换 `--win-version` 后未被文件提及的键仍随版本更新。
+  把真实机器抓下来的注册表放进这个文件，就是给仿真一台特定机器。
+- **没写就不建文件**：`evaluate` 的确定性配置会拒绝 `RegWrite`，因此分析样本不会在
+  工作目录留下文件；`--faithful` 真跑时才会落盘。
+- `MemoryRegistry`（纯内存、不落盘）用 `WindowsEmulation::with_memory_registry()`
+  选回；任何自定义 `RegistryStore` 仍可用 `with_registry()` 注入。
+- 写入走"同目录临时文件 + rename"，写到一半崩溃不会留下半个注册表；`\`、`|`、
+  制表符、CR/LF、NUL 都会被转义，`REG_MULTI_SZ` 用 `|` 连接（项内的 `|` 转义），
+  因此任意文本都不会破坏记录边界。已知取舍：删除**种子里的**值不会跨运行记住
+  （格式里没有墓碑记录）。
+
+#### CryptoAPI 的密钥派生
+
+`CryptDeriveKey` 不是"取摘要前 n 字节"那么简单。MSDN 写明：**当 hash 不属于 SHA-2 家族、
+且目标算法是 3DES 或 AES** 时，CSP 会把摘要混进 64 字节 `0x36` 和 64 字节 `0x5c`，各自
+用同一算法再 hash 一次，然后**拼接**两个摘要，取前 n 字节做密钥。正因如此，16 字节的
+MD5 口令摘要才能填满 256 位的 AES 密钥 —— 真实脚本里那个 `0x6610`（AES-256）
+走的正是这条。块密码沿用 CryptoAPI 的默认 CBC + 全零 IV；RC4 按"摘要前 n 字节"处理。
+回归测试 `an_aes_key_wider_than_the_hash_uses_the_documented_expansion` 用样本里真实的
+口令钉住了整条派生（MD5 → 32 字节密钥）。
+
+S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节块都重算，一份 700 KB
+的载荷要 8 秒，现在是 0.03 秒）。这同时把真实脚本的 `--evaluate` 从 8.3 秒降到 0.2 秒。
+
+`DllStruct` 的内存是 `Rc<RefCell<Vec<u8>>>`：`DllStructCreate($def, $ptr)` 会**映射**到
+已存在的地址而不是另开一块，于是 `_Crypt_DecryptData` 那套"交给 `DllCall` 解密、
+再用第二个 struct 从同一地址按实际长度读回明文"的写法才成立。写入经过 `write_at()`
+（内部可变），所以经 `struct*` 参数回写的字节对两个视图都可见。
+
+**边界仍然存在，而且是有意的**：仿真层不是 PE 加载器，没有 COM、没有窗口管理器、
+不调用真实 DLL。因此
+- 未列举的 `DllCall` 置 `@error = 1`、返回 `0`，把决定权交回脚本；`DllCallAddress` 同理；
+- COM 内建函数存在但**可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
+- GUI 已由 `winemu/gui/` 的**无头语义**回答（不再是 `undefined function`）；默认后端
+  **不渲染**。可选 crate `autoitv3-gui-egui`（feature `gui-egui`）提供**离屏渲染 + PNG
+  截图**；`window` feature 另有**实时窗口**后端，点击/输入会回灌 `GUIGetMsg`/`GUICtrlRead`；
+- 写文件、回收站、驱动器映射、启动进程同样遵循 `ExecutionProfile`：确定性分析配置下被拒绝
+  （`@error = 1`），也就不会生成 `.au3_registry` / `.au3_clipboard` / `.au3_recycle`；
+- 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，
+  回到"停在第一个 Windows 调用"的诚实行为；`with_host_paths()` 则只让**目录**宏回落到
+  主机路径（`@TempDir` 等仍可用于真实文件 I/O），Windows 专有宏照旧仿真。
