@@ -133,10 +133,13 @@ pub enum MinimizeStyle {
 pub struct DrawnWindow {
     /// Client area drawn, or `None` when the window is not on screen.
     pub client: Option<egui::Vec2>,
-    /// The user asked for a state change (double-clicked the title bar, the
-    /// Windows gesture for maximise/restore). The caller passes it to the
-    /// semantics layer so the script hears about it.
+    /// The user asked for a state change (double-clicked the title bar, a
+    /// window control, ...). The caller passes it to the semantics layer so the
+    /// script hears about it.
     pub state_request: Option<WindowState>,
+    /// Where the minimise/maximise controls ended up, the maximise one on the
+    /// right. `None` when the window was not drawn.
+    pub controls: Option<egui::Rect>,
 }
 
 /// What the previous frame drew for one window; the caller keeps one per handle.
@@ -209,20 +212,22 @@ pub fn show_autoit_window(
     let wanted = geometry.client();
     let script_moved = last.geometry != Some(geometry);
 
+    // Title bar + frame, measured as outer minus client on an earlier frame.
+    let chrome = last
+        .client
+        .and_then(|client| {
+            ctx.memory(|memory| memory.area_rect(window_area_id(window.handle)))
+                .map(|rect| rect.size() - client)
+        })
+        .unwrap_or(DEFAULT_CHROME);
+
     // How big the client area should be this frame, and where the window goes.
     let (decided, pos) = if minimized {
         // Title-bar style: keep the window where it is, with no body.
         (vec2(wanted.x, 0.0), None)
     } else if geometry.state == WindowState::Maximized {
         // A floating egui window cannot really be maximised, so fill the
-        // viewport less the title bar and frame measured on an earlier frame.
-        let chrome = last
-            .client
-            .and_then(|client| {
-                ctx.memory(|memory| memory.area_rect(window_area_id(window.handle)))
-                    .map(|rect| rect.size() - client)
-            })
-            .unwrap_or(DEFAULT_CHROME);
+        // viewport less the title bar and frame.
         let screen = ctx.content_rect();
         (
             (screen.size() - chrome).max(vec2(80.0, 80.0)),
@@ -243,9 +248,29 @@ pub fn show_autoit_window(
         (last.client.unwrap_or(wanted), None)
     };
 
+    // The release frame still belongs to the drag: egui only writes the final
+    // size into its own state then, so clamping on that frame would drop the
+    // last stretch of the drag.
+    let dragging = ctx.input(|input| input.pointer.any_down() || input.pointer.any_released());
+    let area_id = window_area_id(window.handle);
+    // Where the window controls end up; a click there is theirs, not the title
+    // bar's (which would read it as a double-click).
+    let mut controls_rect = None;
+    let mut state_request = None;
+    // `Window::max_size` is the one lever that shrinks the size egui keeps for
+    // the window: `Resize` clamps its `desired_size` to it and the body fills
+    // that, so without this a window that was maximised once keeps the width
+    // even after the script restores it. It is in *outer* coordinates, hence
+    // adding the chrome we measured.
+    let max_size = if dragging {
+        egui::Vec2::splat(f32::INFINITY)
+    } else {
+        decided + chrome
+    };
     let mut drawn = None;
     let mut frame = egui::Window::new(title)
         .id(window_area_id(window.handle))
+        .max_size(max_size)
         // egui collapses a window when its title is double-clicked. Windows
         // maximises instead, so turn the collapse off and handle the
         // double-click below (the title-bar widget stays: it is also what
@@ -262,12 +287,6 @@ pub fn show_autoit_window(
         frame = frame.current_pos(pos).drag_area(egui::WindowDrag::Anywhere);
     }
     frame.open(open).show(ctx, |ui| {
-        // The release frame still belongs to the drag: egui only writes the
-        // final size into its own state then, so clamping on that frame would
-        // drop the last stretch of the drag.
-        let dragging = ui
-            .ctx()
-            .input(|input| input.pointer.any_down() || input.pointer.any_released());
         // Pin the content to the intended client size in *both* directions: the
         // minimum stops a drag from snapping back, and the maximum stops the
         // content from stretching the window — AutoIt clips what does not fit,
@@ -283,22 +302,104 @@ pub fn show_autoit_window(
         if !minimized {
             actions.append(&mut draw_window_body(ui, controls));
         }
+        // The client area is what the body took, measured before the window
+        // controls (which live outside it, in the title bar).
         drawn = Some(ui.min_rect().size());
+
+        // Minimise / maximise buttons in the title bar. egui only offers a
+        // close button there, so draw ours in the window's own layer, created
+        // after the title bar is built (later widgets win the click).
+        if let Some(title) = ui.ctx().read_response(area_id.with("__title_click")) {
+            let rect = title_controls_rect(title.rect);
+            controls_rect = Some(rect);
+            let side = rect.height();
+            // Drawn and interacted with by hand: `ui.interact` does not take
+            // part in the layout, so the body keeps its measured size. The
+            // picture belongs to the same layer as the title bar, so a set
+            // clip rect is what lets it paint above the body.
+            let painter = ui.painter().clone().with_clip_rect(rect.expand(2.0));
+            let restore = geometry.state != WindowState::Normal;
+            let control = |rect: egui::Rect, glyph: &str, hover: &str| {
+                let response =
+                    ui.interact(rect, area_id.with(("control", glyph)), egui::Sense::click());
+                let visuals = ui.style().interact(&response);
+                painter.rect(
+                    rect.shrink(1.0),
+                    egui::CornerRadius::same(2),
+                    visuals.bg_fill,
+                    visuals.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    egui::FontId::proportional(side * 0.6),
+                    visuals.text_color(),
+                );
+                response.on_hover_text(hover).clicked()
+            };
+            // Right to left, the way Windows orders them.
+            let maximise = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - side, rect.top()),
+                egui::vec2(side, side),
+            );
+            let minimise = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 2.0 * side, rect.top()),
+                egui::vec2(side, side),
+            );
+            if control(
+                maximise,
+                if restore { "\u{1F5D7}" } else { "\u{1F5D6}" },
+                if restore { "Restore" } else { "Maximise" },
+            ) {
+                state_request = Some(if restore {
+                    WindowState::Normal
+                } else {
+                    WindowState::Maximized
+                });
+            }
+            if control(minimise, "\u{1F5D5}", "Minimise") {
+                state_request = Some(WindowState::Minimized);
+            }
+        }
     });
 
     // Windows maximises a window when its title bar is double-clicked, and
-    // restores it when it is already maximised or minimised.
-    let state_request = ctx
-        .read_response(window_area_id(window.handle).with("__title_click"))
-        .filter(|response| response.double_clicked())
-        .map(|_| match geometry.state {
-            WindowState::Normal => WindowState::Maximized,
-            WindowState::Maximized | WindowState::Minimized => WindowState::Normal,
-        });
+    // restores it when it is already maximised or minimised. A click that went
+    // to the window controls is not a title-bar double-click.
+    if state_request.is_none() && !pointer_over(ctx, controls_rect) {
+        state_request = ctx
+            .read_response(area_id.with("__title_click"))
+            .filter(|response| response.double_clicked())
+            .map(|_| match geometry.state {
+                WindowState::Normal => WindowState::Maximized,
+                WindowState::Maximized | WindowState::Minimized => WindowState::Normal,
+            });
+    }
 
     DrawnWindow {
         client: drawn,
         state_request,
+        controls: controls_rect,
+    }
+}
+
+/// The strip at the right of a title bar that the window controls occupy.
+fn title_controls_rect(title: egui::Rect) -> egui::Rect {
+    let side = title.height().min(28.0);
+    let width = (2.0 * side).min(title.width());
+    egui::Rect::from_min_max(
+        egui::pos2(title.right() - width, title.top()),
+        title.right_bottom(),
+    )
+}
+
+/// Whether the pointer is inside `rect` right now.
+fn pointer_over(ctx: &egui::Context, rect: Option<egui::Rect>) -> bool {
+    match (rect, ctx.input(|input| input.pointer.latest_pos())) {
+        (Some(rect), Some(pos)) => rect.contains(pos),
+        _ => false,
     }
 }
 
