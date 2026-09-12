@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use autoitv3_gui::{Control, GuiBackend, GuiImage, Window, WindowState};
 use egui::{vec2, Pos2, Rect, TextureId};
 
-use crate::raster::{rasterize, Texture};
+use crate::raster::{apply_textures, rasterize, Texture};
 use crate::widgets::MinimizeStyle;
 
 /// An offscreen egui renderer for the AutoIt GUI model.
@@ -218,28 +218,6 @@ impl GuiBackend for EguiBackend {
     fn present(&mut self) {
         if let Some(path) = self.screenshot_path.clone() {
             let _ = self.screenshot(&path);
-        }
-    }
-}
-
-#[allow(irrefutable_let_patterns)]
-fn apply_textures(textures: &mut HashMap<TextureId, Texture>, delta: &egui::TexturesDelta) {
-    for (id, deltas) in &delta.set {
-        for image_delta in deltas {
-            // Whole-texture updates only; offscreen frames never patch the atlas.
-            if image_delta.pos.is_some() {
-                continue;
-            }
-            if let egui::ImageData::Color(image) = &image_delta.image {
-                textures.insert(
-                    *id,
-                    Texture {
-                        width: image.size[0],
-                        height: image.size[1],
-                        pixels: image.pixels.clone(),
-                    },
-                );
-            }
         }
     }
 }
