@@ -21,8 +21,60 @@ use std::rc::Rc;
 /// A shared, mutable AutoIt array. AutoIt arrays are 0-based.
 pub type ArrayRef = Rc<RefCell<Vec<Value>>>;
 
+/// A map key. AutoIt map keys are strings or integers, and an integer key is
+/// **not** the same entry as its string spelling (`$m[3]` and `$m["3"]` are
+/// distinct). String keys are case sensitive.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MapKey {
+    Int(i64),
+    Str(String),
+}
+
+impl MapKey {
+    /// The key a value denotes when used as a map subscript: integers keep
+    /// their integer identity, everything else becomes its string form.
+    pub fn from_value(v: &Value) -> MapKey {
+        match v {
+            Value::Int(i) => MapKey::Int(*i),
+            other => MapKey::Str(other.to_autoit_string()),
+        }
+    }
+}
+
 /// A shared, mutable AutoIt `Map`.
-pub type MapRef = Rc<RefCell<BTreeMap<String, Value>>>;
+pub type MapRef = Rc<RefCell<BTreeMap<MapKey, Value>>>;
+
+/// An opaque object created by a platform layer (`ObjCreate`, …).
+///
+/// The runtime only knows its name and an opaque handle; every member access
+/// is delegated back to the [`crate::platform::Platform`] that made it.
+/// `release`, when set, is invoked on drop so the platform can free the
+/// underlying resource.
+pub struct NativeObject {
+    /// The name the object was created under (a ProgID, typically).
+    pub name: String,
+    /// Opaque platform handle (an interface pointer, a key, …).
+    pub handle: usize,
+    /// Platform-installed destructor.
+    pub release: Option<Box<dyn Fn()>>,
+}
+
+impl fmt::Debug for NativeObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Obj({})", self.name)
+    }
+}
+
+impl Drop for NativeObject {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
+}
+
+/// A shared reference to a platform object.
+pub type ObjRef = Rc<NativeObject>;
 
 /// A runtime AutoIt value.
 #[derive(Clone)]

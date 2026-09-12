@@ -22,7 +22,7 @@ use crate::profile::SleepPolicy;
 
 use crate::error::RuntimeError;
 use crate::interp::Runtime;
-use crate::value::{format_float, Value};
+use crate::value::{format_float, MapKey, Value};
 
 /// Dispatch a builtin call. `Ok(None)` means "not a builtin I know".
 pub(crate) fn call(
@@ -458,10 +458,10 @@ pub(crate) fn call(
         "isarray" => Value::Bool(matches!(args.first(), Some(Value::Array(_)))),
         "ismap" => Value::Bool(matches!(args.first(), Some(Value::Map(_)))),
         "map" => {
-            let mut m: BTreeMap<String, Value> = BTreeMap::new();
+            let mut m: BTreeMap<MapKey, Value> = BTreeMap::new();
             let mut i = 0;
             while i + 1 < args.len() {
-                m.insert(args[i].to_autoit_string(), args[i + 1].clone());
+                m.insert(MapKey::from_value(&args[i]), args[i + 1].clone());
                 i += 2;
             }
             Value::Map(Rc::new(std::cell::RefCell::new(m)))
@@ -470,7 +470,7 @@ pub(crate) fn call(
             let (m, k) = (args.first().cloned(), args.get(1).cloned());
             match (m, k) {
                 (Some(Value::Map(m)), Some(k)) => {
-                    Value::Bool(m.borrow().contains_key(&k.to_autoit_string()))
+                    Value::Bool(m.borrow().contains_key(&MapKey::from_value(&k)))
                 }
                 _ => Value::Bool(false),
             }
@@ -479,8 +479,14 @@ pub(crate) fn call(
             let a = args.first().cloned().unwrap_or(Value::Null);
             match a {
                 Value::Map(m) => {
-                    let keys: Vec<Value> =
-                        m.borrow().keys().map(|k| Value::Str(k.clone())).collect();
+                    let keys: Vec<Value> = m
+                        .borrow()
+                        .keys()
+                        .map(|k| match k {
+                            MapKey::Int(i) => Value::Int(*i),
+                            MapKey::Str(s) => Value::Str(s.clone()),
+                        })
+                        .collect();
                     let mut out = vec![Value::Int(keys.len() as i64)];
                     out.extend(keys);
                     Value::array(out)
@@ -491,7 +497,7 @@ pub(crate) fn call(
         "mapremove" => {
             let (m, k) = (args.first().cloned(), args.get(1).cloned());
             if let (Some(Value::Map(m)), Some(k)) = (m, k) {
-                m.borrow_mut().remove(&k.to_autoit_string());
+                m.borrow_mut().remove(&MapKey::from_value(&k));
             }
             Value::Int(1)
         }
@@ -744,10 +750,10 @@ pub(crate) fn call(
                     let mut map = m.borrow_mut();
                     // The next unused positive integer key, as AutoIt does.
                     let mut key = 1i64;
-                    while map.contains_key(&key.to_string()) {
+                    while map.contains_key(&MapKey::Int(key)) {
                         key += 1;
                     }
-                    map.insert(key.to_string(), value);
+                    map.insert(MapKey::Int(key), value);
                     Some(key)
                 }
                 _ => None,
