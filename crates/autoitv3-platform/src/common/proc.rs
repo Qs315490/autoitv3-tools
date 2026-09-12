@@ -1,8 +1,20 @@
 //! Process / execution service — the `Run` family of AutoIt builtins.
 //!
-//! These functions are not Windows-specific (AutoIt documents them as the way a
-//! script starts another program), so they live in the common [`crate::common`]
-//! layer rather than in [`crate::winemu`]. They are backed by `std::process`:
+//! This module is the **unified interface** for the family on every operating
+//! system; the parts that differ per OS are implemented in the system modules
+//! and *called from here*:
+//!
+//! * the portable `std::process` machinery (spawn, stream capture, waits)
+//!   lives in this module and is shared by every host;
+//! * the platform-divergent observation points — process tables, liveness,
+//!   memory — are implemented in the system modules
+//!   ([`crate::linux::proc_support`] on Linux, [`crate::windows::process`] on
+//!   Windows) behind three per-host hooks (`system_processes`, `pid_alive`,
+//!   `read_memory`) that this module dispatches to. Adding a new host means
+//!   implementing those hooks in its system module, not touching the family's
+//!   interface here.
+//!
+//! The functions answered through this unified interface:
 //!
 //! * `Run` / `RunWait` — spawn a child and return its PID / exit code.
 //! * `StdoutRead` / `StderrRead` / `StdinWrite` / `StdioClose` — the redirected

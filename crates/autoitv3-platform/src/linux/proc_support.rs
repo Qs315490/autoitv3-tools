@@ -1,9 +1,10 @@
-//! Linux process probes backing the cross-platform `Run` family.
+//! Linux process probes backing the unified `Run` family interface
+//! ([`crate::common::proc`]).
 //!
-//! The common process service ([`crate::common::proc`]) is portable
-//! `std::process` code; the parts that need to look at *other* processes go
-//! through `/proc` here, mirroring how the Windows layer backs the same
-//! helpers with `Toolhelp32` and `K32GetProcessMemoryInfo`.
+//! The common process service keeps the portable `std::process` machinery and
+//! calls into this module for the parts that need to look at *other*
+//! processes, mirroring how the Windows layer backs the same hooks with
+//! `Toolhelp32` and `K32GetProcessMemoryInfo`.
 
 // The `linux` module compiles on every host, but on non-Linux builds these
 // probes have no caller (the Windows layer answers through its own APIs).
