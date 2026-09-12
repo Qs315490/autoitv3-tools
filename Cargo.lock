@@ -535,6 +535,7 @@ dependencies = [
  "autoitv3-gui",
  "autoitv3-gui-egui",
  "autoitv3-runtime",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -136,6 +136,15 @@ impl DllStruct {
         self.address = address;
     }
 
+    /// The real heap address of this struct's own backing buffer.
+    ///
+    /// The buffer is allocated at exactly its final size and never reallocated,
+    /// so the pointer stays valid for as long as the struct lives — the native
+    /// Windows layer hands it to real `DllCall` targets.
+    pub fn real_address(&self) -> u64 {
+        self.data.borrow().as_ptr() as u64
+    }
+
     /// The backing bytes and this struct's offset into them, for mapping
     /// another struct over the same memory.
     pub fn storage(&self) -> (Rc<RefCell<Vec<u8>>>, usize) {

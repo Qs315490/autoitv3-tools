@@ -9,7 +9,7 @@
 //! |---|---|---|---|
 //! | common | [`common`] | **every** platform | file/directory I/O, INI, environment, math, timers, console, **and** process execution (`Run`/`StdoutRead`/…) plus networking (`TCP*`/`UDP*`/`Inet*`) — the parts AutoIt does the same way everywhere |
 //! | emulation | [`winemu`] | non-Windows | Windows-flavoured identity, paths, `DllStruct*`/`DllCall`, registry, clipboard and drives, so a Windows-targeted script keeps running off Windows |
-//! | system | [`linux`] / [`windows`] | one OS each | what genuinely differs: process queries on Linux; registry, COM, `DllCall`, GUI on Windows |
+//! | system | [`linux`] / [`windows`] | one OS each | what genuinely differs: process queries on Linux; native `DllCall`/`DllStruct`, clipboard, process and drive queries plus OS-identity macros on Windows |
 //!
 //! [`host_platform`] builds the right stack for the target at compile time; a
 //! build only ever compiles its own system layer. The layers are tried in order
@@ -19,9 +19,12 @@
 //! On non-Windows targets the stack is **emulation → common → linux**: the
 //! [`WindowsEmulation`] layer answers first (it deliberately shadows the
 //! common directory macros), and anything it does not know falls through to
-//! the host. Set `AU3_WIN_EMU=0` — or install a disabled [`WindowsEmulation`]
-//! with [`host_platform_with`] — for the plain `common+linux` stack, where
-//! Windows-only calls stay undefined functions.
+//! the host. On Windows targets it is **windows → common → emulation**: the
+//! native layer answers with real Win32 semantics, and the emulation sits at
+//! the end as a fallback for the Windows-only names it does not implement.
+//! Set `AU3_WIN_EMU=0` — or install a disabled [`WindowsEmulation`] with
+//! [`host_platform_with`] — for the plain native stacks, where the emulated
+//! semantics are skipped.
 //!
 //! # Layering with the runtime
 //!
@@ -117,11 +120,73 @@ impl Platform for CompositePlatform {
         }
         Ok(None)
     }
+
+    /// Forward object creation to the first layer that answers.
+    fn obj_create(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        for layer in &mut self.layers {
+            if let Some(v) = layer.obj_create(name, args, ctx)? {
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
+    }
+
+    fn obj_get(
+        &mut self,
+        obj: &autoitv3_runtime::value::ObjRef,
+        member: &str,
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        for layer in &mut self.layers {
+            if let Some(v) = layer.obj_get(obj, member, ctx)? {
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
+    }
+
+    fn obj_set(
+        &mut self,
+        obj: &autoitv3_runtime::value::ObjRef,
+        member: &str,
+        value: &Value,
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        for layer in &mut self.layers {
+            if let Some(v) = layer.obj_set(obj, member, value, ctx)? {
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
+    }
+
+    fn obj_call(
+        &mut self,
+        obj: &autoitv3_runtime::value::ObjRef,
+        member: &str,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        for layer in &mut self.layers {
+            if let Some(v) = layer.obj_call(obj, member, args, ctx)? {
+                return Ok(Some(v));
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// The platform stack for the operating system this build targets.
 ///
-/// On a Windows build this is `common+windows`. On every other target it is
+/// On a Windows build this is `windows+common+winemu`: the native
+/// [`WindowsPlatform`] answers first, the common layer carries the portable
+/// functions, and the [`WindowsEmulation`] fallback covers the Windows-only
+/// names the native layer does not implement. On every other target it is
 /// `winemu+common+linux`: the [`WindowsEmulation`] layer is configured from
 /// the environment (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`) and
 /// defaults to emulating **Windows 10 x64**.
@@ -134,24 +199,38 @@ pub fn host_platform() -> Box<dyn Platform> {
 
 /// Like [`host_platform`], but with an explicit [`WindowsEmulation`] layer.
 ///
-/// The layer is installed first so its macros win over the common ones; a
-/// disabled emulation is left out entirely. Windows builds ignore `emulation`
-/// and use the real [`WindowsPlatform`].
+/// On every target the layer is configured by the caller (the CLI's
+/// `--win-version`, a test, an embedding application) and a disabled
+/// emulation is left out entirely.
+///
+/// On non-Windows targets the emulation is installed **first** so its macros
+/// win over the common ones. On Windows targets it is installed **last** as a
+/// fallback: the native [`WindowsPlatform`] and the common layer answer with
+/// real semantics first, and the emulation only catches the Windows-only
+/// names neither implements (registry, GUI, `DriveMap*`, …) — the same names
+/// that stay undefined functions with `AU3_WIN_EMU=0` / `--no-win-emu`. The
+/// emulation's directory macros therefore stay dormant on Windows: the common
+/// layer's real paths win.
 pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
+    let emulated = emulation.is_enabled();
     #[cfg(windows)]
     {
-        let _ = emulation;
-        Box::new(CompositePlatform::new(
-            "common+windows",
-            vec![
-                Box::new(CommonPlatform::new()),
-                Box::new(WindowsPlatform::new()),
-            ],
-        ))
+        let mut layers: Vec<Box<dyn Platform>> = vec![
+            Box::new(windows::WindowsPlatform::new()),
+            Box::new(CommonPlatform::new()),
+        ];
+        if emulated {
+            layers.push(Box::new(emulation));
+        }
+        let name = if emulated {
+            "windows+common+winemu"
+        } else {
+            "windows+common"
+        };
+        Box::new(CompositePlatform::new(name, layers))
     }
     #[cfg(not(windows))]
     {
-        let emulated = emulation.is_enabled();
         let mut layers: Vec<Box<dyn Platform>> = Vec::new();
         if emulated {
             layers.push(Box::new(emulation));
