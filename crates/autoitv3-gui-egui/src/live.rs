@@ -73,6 +73,33 @@ struct Shared {
     /// sees. Seeded with the size the viewport is asked to open at, then
     /// corrected from what it actually drew.
     desktop: Mutex<(i32, i32)>,
+    /// The running window's context, once there is one. Script-side changes are
+    /// announced with a repaint so the screen never waits for the periodic poll.
+    ctx: Mutex<Option<egui::Context>>,
+}
+
+impl Shared {
+    /// Draw a frame now.
+    ///
+    /// Every script → screen change goes through the backend, so this is what
+    /// keeps a `WinMove`, an edited control or the model's echo of the user's
+    /// own drag from waiting for the next repaint deadline.
+    fn wake(&self) {
+        // Clone first: the context's own lock must not be taken while ours is
+        // held, and a `Context` clone is cheap.
+        let ctx = self.ctx.lock().unwrap().clone();
+        if let Some(ctx) = ctx {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Remember the context the window draws with (once; a clone is cheap).
+    fn set_context(&self, ctx: &egui::Context) {
+        let mut slot = self.ctx.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(ctx.clone());
+        }
+    }
 }
 
 /// A windowed egui backend.
@@ -105,6 +132,7 @@ impl LiveBackend {
                 updates: Mutex::new(Vec::new()),
                 finished: AtomicBool::new(false),
                 desktop: Mutex::new(autoitv3_gui::DEFAULT_DESKTOP_SIZE),
+                ctx: Mutex::new(None),
             }),
             title: title.into(),
         }
@@ -215,6 +243,7 @@ impl GuiBackend for LiveBackend {
             .unwrap()
             .windows
             .insert(window.handle, window.clone());
+        self.shared.wake();
     }
 
     fn on_window_removed(&mut self, handle: i64) {
@@ -223,6 +252,8 @@ impl GuiBackend for LiveBackend {
         mirror
             .controls
             .retain(|_, control| control.window != handle);
+        drop(mirror);
+        self.shared.wake();
     }
 
     fn on_control(&mut self, control: &Control) {
@@ -232,15 +263,20 @@ impl GuiBackend for LiveBackend {
             .unwrap()
             .controls
             .insert(control.id, control.clone());
+        self.shared.wake();
     }
 
     fn on_control_removed(&mut self, id: i64) {
         self.shared.mirror.lock().unwrap().controls.remove(&id);
+        self.shared.wake();
     }
 
     /// `GUISetState` calls this. The event loop started by [`run`](Self::run)
-    /// re-reads the mirror ~20×/s, so there is nothing to flush here.
-    fn present(&mut self) {}
+    /// re-reads the mirror ~20×/s, so there is nothing to flush here — the
+    /// frame is only woken, so the change is on screen now.
+    fn present(&mut self) {
+        self.shared.wake();
+    }
 
     fn poll(&mut self) -> Vec<GuiEvent> {
         self.shared.events_rx.lock().unwrap().try_iter().collect()
@@ -382,6 +418,9 @@ struct LiveApp {
 impl eframe::App for LiveApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Let the script thread wake this loop; script → screen changes would
+        // otherwise wait for the poll below (up to 50 ms of visible lag).
+        self.shared.set_context(&ctx);
         // The native window is the emulated desktop.
         self.shared.set_desktop(ctx.content_rect().size());
         let (windows, controls) = {
@@ -523,9 +562,10 @@ impl eframe::App for LiveApp {
 
             // One place decides what to remember and what the user changed; the
             // same function is what the tests drive.
-            // A state the user asked for makes the frame's geometry theirs to
-            // report, even though the model has not caught up yet.
-            let user_state = requested_states.contains_key(&window.handle);
+            // A state the user asked for — or a window they are dragging right
+            // now — makes the frame's geometry theirs to report, even though
+            // the model has not caught up (a drag's echo is not a script move).
+            let user_state = requested_states.contains_key(&window.handle) || drawn.pointer_owns;
             let geometry = WindowGeometry::of(&effective);
             let (next, updates) = record_drawn(&effective, geometry, last, drawn, user_state);
             if !updates.is_empty() {
@@ -534,6 +574,10 @@ impl eframe::App for LiveApp {
             seen_windows.insert(window.handle, next);
         }
 
+        // A drag must track the pointer, not the poll deadline.
+        if ctx.input(|input| input.pointer.any_down()) {
+            ctx.request_repaint();
+        }
         // Re-read the mirror a few times a second so script-side updates show.
         ctx.request_repaint_after(Duration::from_millis(50));
     }
@@ -606,6 +650,31 @@ mod tests {
         // A degenerate size is not a desktop.
         backend.shared.set_desktop(egui::vec2(0.0, 0.0));
         assert_eq!(backend.desktop_size(), Some((1024, 640)));
+    }
+
+    #[test]
+    fn the_window_keeps_its_context_so_the_script_can_wake_it() {
+        let backend = LiveBackend::new("W");
+        // Before the first frame there is nothing to wake: a no-op on the
+        // script thread, not a panic.
+        backend.shared.wake();
+        assert!(backend.shared.ctx.lock().unwrap().is_none());
+
+        let ctx = egui::Context::default();
+        backend.shared.set_context(&ctx);
+        assert!(
+            backend.shared.ctx.lock().unwrap().is_some(),
+            "the frame must hand the script thread a context to wake"
+        );
+        // Every script → screen change goes through `on_window`, and waking a
+        // stored context is what puts it on screen without waiting for the poll.
+        backend.shared.wake();
+        let mut script = backend.clone();
+        script.on_window(&Window::new(1, "T", 100, 80));
+        assert!(
+            ctx.has_requested_repaint(),
+            "the change should ask for a frame"
+        );
     }
 
     #[test]

@@ -62,6 +62,13 @@ struct Harness {
     controls: Option<Rect>,
     /// A resize the frame asked to report to the model.
     reported: Option<autoitv3_gui::GuiUpdate>,
+    /// Everything the last frame reported, to apply on the next one.
+    pending_echo: Vec<autoitv3_gui::GuiUpdate>,
+    /// Whether the "script" applies what a frame reported, one frame later —
+    /// what the live window's script thread does. Leaving it off would drag a
+    /// window the model never hears about, hiding the fight between the drag
+    /// and the model's echo of it.
+    echo: bool,
     /// The font atlas, kept across frames the way the offscreen renderer keeps
     /// it (egui patches the atlas as new glyphs appear).
     textures: std::collections::HashMap<egui::TextureId, Texture>,
@@ -85,6 +92,8 @@ impl Harness {
             requested: None,
             controls: None,
             reported: None,
+            pending_echo: Vec::new(),
+            echo: false,
             textures: std::collections::HashMap::new(),
             minimize: MinimizeStyle::Hidden,
             time: 0.0,
@@ -93,6 +102,26 @@ impl Harness {
 
     /// One frame: returns the window's outer rect and the client size.
     fn frame(&mut self, events: Vec<Event>) -> (Rect, Vec2) {
+        // This frame's script read happens before it is drawn, so last frame's
+        // report is in the model by now — one round trip behind the pointer.
+        if self.echo {
+            for update in std::mem::take(&mut self.pending_echo) {
+                match update {
+                    autoitv3_gui::GuiUpdate::Move { x, y, .. } => {
+                        self.window.x = x;
+                        self.window.y = y;
+                    }
+                    autoitv3_gui::GuiUpdate::Resize { width, height, .. } => {
+                        self.window.width = width;
+                        self.window.height = height;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // A state the user asked for last frame and the script has not applied
+        // yet — the live window only records the request *after* it draws.
+        let asked_last_frame = self.requested.is_some();
         let last = self.last;
         let minimize = self.minimize;
         self.time += 0.05;
@@ -117,8 +146,10 @@ impl Harness {
         self.drawn = client;
         // Exactly what LiveBackend does with a frame, so the two cannot drift.
         let geometry = WindowGeometry::of(&self.window);
-        let (next, updates) = record_drawn(&self.window, geometry, last, drawn, false);
-        self.reported = updates.into_iter().next();
+        let user_state = asked_last_frame || drawn.pointer_owns;
+        let (next, updates) = record_drawn(&self.window, geometry, last, drawn, user_state);
+        self.reported = updates.first().cloned();
+        self.pending_echo = updates;
         self.last = next;
         let rect = self
             .ctx
@@ -753,6 +784,7 @@ fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
         }),
         chrome: Some(vec2(14.0, 48.0)),
         pos: Some(Pos2::new(0.0, 0.0)),
+        pointer_owns: false,
     };
     let drawn = autoitv3_gui_egui::DrawnWindow {
         client: Some(vec2(700.0, 500.0)),
@@ -813,6 +845,7 @@ fn a_window_that_did_not_move_is_not_reported_as_moved() {
         chrome: Some(vec2(14.0, 48.0)),
         // The window is still drawn at the maximised place on this frame.
         pos: Some(Pos2::new(0.0, 0.0)),
+        pointer_owns: false,
     };
     let drawn = autoitv3_gui_egui::DrawnWindow {
         client: Some(vec2(700.0, 500.0)),
@@ -835,4 +868,46 @@ fn a_window_that_did_not_move_is_not_reported_as_moved() {
         }],
         "a border drag resizes the window; it does not move it"
     );
+}
+
+#[test]
+fn a_dragged_window_tracks_the_pointer_while_the_script_echoes_it() {
+    // The live window's script thread applies every reported place one frame
+    // later, so during a drag the model is always one round trip behind the
+    // pointer. The window must still sit under the pointer: taking the model's
+    // place on those frames is what made the drag lag and stutter.
+    let mut harness = Harness::new();
+    harness.echo = true;
+    let start = harness.frame(vec![]).0;
+    let from = Pos2::new(start.center().x, start.top() + 8.0);
+    harness.frame(vec![Event::PointerMoved(from)]);
+    harness.frame(vec![press(from, true)]);
+
+    let delta = vec2(200.0, 160.0);
+    let mut previous = start;
+    for step in 1..=8 {
+        let pointer = from + delta * (step as f32 / 8.0);
+        let (rect, _) = harness.frame(vec![Event::PointerMoved(pointer)]);
+        let moved = rect.min - previous.min;
+        let wanted = delta / 8.0;
+        assert!(
+            (moved - wanted).length() < 6.0,
+            "step {step}: the window moved {moved:?} while the pointer moved {wanted:?} \
+             — the script's echo of the drag pulled it back"
+        );
+        previous = rect;
+
+        // Every frame of the drag is reported, so the model stays one round
+        // trip behind — not two: a skipped report would leave `WinGetPos` a
+        // step further behind for the rest of the drag.
+        let behind = vec2(
+            harness.window.x as f32 - rect.min.x,
+            harness.window.y as f32 - rect.min.y,
+        );
+        assert!(
+            behind.length() < wanted.length() * 1.6,
+            "step {step}: the model is {behind:?} behind the window, more than the one \
+             frame the script takes to apply a report"
+        );
+    }
 }
