@@ -864,11 +864,21 @@ cargo run -p autoitv3-gui-egui --features window --example live
 # 窗口里：Label + Input + Button；点 Greet 打印 "Hello, <输入>!"，关窗结束脚本
 
 cargo run -p autoitv3-gui-egui --features window --example live -- --titlebar
-# 最小化时保留标题栏（双击标题栏恢复），而不是让窗口离开屏幕
+# 最小化时保留标题栏（双击标题栏 / 点标题栏按钮恢复），而不是让窗口离开屏幕
+
+cargo run -p autoitv3-gui-egui --features window --example live -- --states
+# 脚本自己驱动窗口的演示：WinMove → @SW_MAXIMIZE → @SW_RESTORE →
+# @SW_MINIMIZE → @SW_RESTORE，每步打印 WinGetPos/WinGetState 看到的值；
+# 之后停在消息循环里，等你点标题栏按钮或双击标题栏，控制台会打印脚本收到的事件
 
 cargo run -p autoitv3-gui-egui --features window --example live -- --auto
 # 不用人操作：脚本建完控件就返回，窗口自动关闭（验证接线用）
 ```
+
+> `--states` 的输出里能看到一个**已知偏差**：窗口最大化时 `WinGetPos` 仍返回还原尺寸
+> （模型只保存一份几何，没有"还原矩形 + 最大化矩形"两套）。真实 Windows 返回的是最大化后的
+> 屏幕尺寸，不少脚本靠它反推分辨率；要补需要给模型一个仿真桌面尺寸
+> （`@DesktopWidth`/`@DesktopHeight`），最大化时用还原矩形换桌面矩形。
 
 示例里的 **Minimise** 按钮会 `WinSetState(@SW_MINIMIZE)`：默认模式下窗口消失、底部出现
 恢复按钮；`--titlebar` 模式下窗口收成标题栏、双击恢复。
