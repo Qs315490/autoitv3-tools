@@ -18,7 +18,7 @@ AutoIt v3 词法/语法分析工具集：产出**带源码位置（Span）的 AS
 | `autoitv3-runtime` | 值模型 + 解释器 + 宿主/平台/调试器接缝 | [README](crates/autoitv3-runtime/README.md) |
 | `autoitv3-platform` | 平台层：Windows 原生 + 通用层 + winemu 仿真 | [README](crates/autoitv3-platform/README.md) |
 | `autoitv3-deobf` | 反混淆 pass（折叠/函数表/简化/重命名/求值） | [README](crates/autoitv3-deobf/README.md) |
-| `autoitv3-gui` | GUI 控件模型 + `GuiBackend` 接缝（零依赖） | [README](crates/autoitv3-gui/README.md) |
+| `autoitv3-gui-model` | GUI 控件模型 + `GuiBackend` 接缝（零依赖） | [README](crates/autoitv3-gui-model/README.md) |
 | `autoitv3-gui-egui` | GUI 渲染后端：离屏 PNG / 真窗口 | [README](crates/autoitv3-gui-egui/README.md) |
 | `autoitv3-unpack` | 编译脚本与资源载荷解包 | [README](crates/autoitv3-unpack/README.md) |
 | `au3-cli` | `au3` 命令行（parse/pretty/deobfuscate/evaluate/run/debug/unpack） | [README](crates/au3-cli/README.md) |

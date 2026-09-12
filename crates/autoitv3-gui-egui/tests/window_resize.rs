@@ -7,7 +7,7 @@
 
 #![cfg(feature = "egui")]
 
-use autoitv3_gui::{Control, ControlKind, Window};
+use autoitv3_gui_model::{Control, ControlKind, Window};
 use autoitv3_gui_egui::{
     apply_textures, effective_window, rasterize, record_drawn, show_autoit_window, window_area_id,
     LastWindow, MinimizeStyle, Texture, WindowGeometry,
@@ -57,17 +57,17 @@ struct Harness {
     drawn: Option<Vec2>,
     /// A state change the user asked for (double-clicking the title bar, or a
     /// title-bar control), this frame.
-    requested: Option<autoitv3_gui::WindowState>,
+    requested: Option<autoitv3_gui_model::WindowState>,
     /// The state the user asked for that the script has not applied yet, with
     /// the frame budget the live window keeps — the frames in between are drawn
     /// from `Window::restore`, the way `LiveBackend` does it.
-    pending: Option<(autoitv3_gui::WindowState, u8)>,
+    pending: Option<(autoitv3_gui_model::WindowState, u8)>,
     /// Every state the user asked for, in order: what `GUIGetMsg` would hear.
-    requests: Vec<autoitv3_gui::WindowState>,
+    requests: Vec<autoitv3_gui_model::WindowState>,
     /// Where the title-bar controls were drawn.
     controls: Option<Rect>,
     /// A resize the frame asked to report to the model.
-    reported: Option<autoitv3_gui::GuiUpdate>,
+    reported: Option<autoitv3_gui_model::GuiUpdate>,
 
     /// The font atlas, kept across frames the way the offscreen renderer keeps
     /// it (egui patches the atlas as new glyphs appear).
@@ -243,7 +243,7 @@ fn restoring_a_maximised_window_brings_back_both_axes() {
     let (normal, _) = harness.frame(vec![]);
     harness.frame(vec![]);
 
-    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.state = autoitv3_gui_model::WindowState::Maximized;
     let (maximized, _) = harness.frame(vec![]);
     assert!(
         maximized.width() > normal.width() && maximized.height() > normal.height(),
@@ -253,7 +253,7 @@ fn restoring_a_maximised_window_brings_back_both_axes() {
     // @SW_RESTORE: the width has to come back too. It follows egui's stored
     // desired size, which only `Window::max_size` can shrink.
     harness.time += 1.0;
-    harness.window.state = autoitv3_gui::WindowState::Normal;
+    harness.window.state = autoitv3_gui_model::WindowState::Normal;
     let (restored, client) = harness.frame(vec![]);
     assert!(
         (restored.width() - normal.width()).abs() < 0.5,
@@ -354,7 +354,7 @@ fn a_minimised_window_is_not_drawn_and_comes_back_where_it_was() {
     let (before, _) = harness.frame(vec![]);
 
     // The faithful style: @SW_MINIMIZE takes the window off screen.
-    harness.window.state = autoitv3_gui::WindowState::Minimized;
+    harness.window.state = autoitv3_gui_model::WindowState::Minimized;
     let _ = harness.frame(vec![]);
     assert!(
         harness.drawn.is_none(),
@@ -363,7 +363,7 @@ fn a_minimised_window_is_not_drawn_and_comes_back_where_it_was() {
     );
 
     // @SW_RESTORE: it comes back at the size it had, not at a default.
-    harness.window.state = autoitv3_gui::WindowState::Normal;
+    harness.window.state = autoitv3_gui_model::WindowState::Normal;
     let (after, client) = harness.frame(vec![]);
     assert!(
         (after.size() - before.size()).length() < 0.5,
@@ -381,7 +381,7 @@ fn the_title_bar_style_keeps_the_title_and_hides_the_body() {
     harness.minimize = MinimizeStyle::TitleBar;
     let (normal, _) = harness.frame(vec![]);
 
-    harness.window.state = autoitv3_gui::WindowState::Minimized;
+    harness.window.state = autoitv3_gui_model::WindowState::Minimized;
     let (collapsed, client) = harness.frame(vec![]);
     assert_eq!(
         client,
@@ -402,7 +402,7 @@ fn the_title_bar_style_keeps_the_title_and_hides_the_body() {
     double_click(&mut harness, title);
     assert_eq!(
         harness.requested,
-        Some(autoitv3_gui::WindowState::Normal),
+        Some(autoitv3_gui_model::WindowState::Normal),
         "double-clicking a minimised title bar should restore"
     );
 }
@@ -421,7 +421,7 @@ fn a_maximised_window_fills_the_viewport() {
     let mut harness = Harness::new();
     let (normal, _) = harness.frame(vec![]);
 
-    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.state = autoitv3_gui_model::WindowState::Maximized;
     let (maximized, _) = harness.frame(vec![]);
     let screen = harness.ctx.content_rect();
     assert!(
@@ -449,7 +449,7 @@ fn double_clicking_the_title_bar_maximises_and_restores() {
     double_click(&mut harness, title);
     assert_eq!(
         harness.requested,
-        Some(autoitv3_gui::WindowState::Maximized),
+        Some(autoitv3_gui_model::WindowState::Maximized),
         "the first double-click should ask to maximise"
     );
     let (after, _) = harness.frame(vec![]);
@@ -461,14 +461,14 @@ fn double_clicking_the_title_bar_maximises_and_restores() {
     // Obey it the way the semantics layer would, then double-click again —
     // after a gap, so egui counts a fresh double-click rather than a triple.
     harness.time += 1.0;
-    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.state = autoitv3_gui_model::WindowState::Maximized;
     let (maximized, _) = harness.frame(vec![]);
     assert!(maximized.height() > start.height(), "maximised is taller");
     let title = Pos2::new(maximized.center().x, maximized.top() + 8.0);
     double_click(&mut harness, title);
     assert_eq!(
         harness.requested,
-        Some(autoitv3_gui::WindowState::Normal),
+        Some(autoitv3_gui_model::WindowState::Normal),
         "double-clicking a maximised title bar should restore"
     );
 }
@@ -481,13 +481,13 @@ fn a_collapsed_window_still_reports_the_real_client_size() {
     let (_, client) = harness.frame(vec![]);
     assert!((client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 1.0);
 
-    harness.window.state = autoitv3_gui::WindowState::Minimized;
+    harness.window.state = autoitv3_gui_model::WindowState::Minimized;
     let (_, collapsed) = harness.frame(vec![]);
     assert_eq!(collapsed.y, 0.0);
 }
 
 /// Click once at `pos` and report what the window asked for.
-fn click_at(harness: &mut Harness, pos: Pos2) -> Option<autoitv3_gui::WindowState> {
+fn click_at(harness: &mut Harness, pos: Pos2) -> Option<autoitv3_gui_model::WindowState> {
     harness.frame(vec![Event::PointerMoved(pos)]);
     harness.frame(vec![press(pos, true)]);
     harness.frame(vec![press(pos, false)]);
@@ -517,31 +517,31 @@ fn the_title_bar_has_minimise_and_maximise_buttons() {
 
     assert_eq!(
         click_at(&mut harness, maximise),
-        Some(autoitv3_gui::WindowState::Maximized),
+        Some(autoitv3_gui_model::WindowState::Maximized),
         "the maximise button should ask to maximise"
     );
 
     // Obey it the way the semantics layer would: the same button restores.
     harness.time += 1.0;
-    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.state = autoitv3_gui_model::WindowState::Maximized;
     harness.frame(vec![]);
     harness.frame(vec![]);
     let (_, restore) = window_controls(&harness);
     assert_ne!(restore, maximise, "the maximised window moved its controls");
     assert_eq!(
         click_at(&mut harness, restore),
-        Some(autoitv3_gui::WindowState::Normal),
+        Some(autoitv3_gui_model::WindowState::Normal),
         "the same button restores a maximised window"
     );
 
     harness.time += 1.0;
-    harness.window.state = autoitv3_gui::WindowState::Normal;
+    harness.window.state = autoitv3_gui_model::WindowState::Normal;
     harness.frame(vec![]);
     harness.frame(vec![]);
     let (minimise, _) = window_controls(&harness);
     assert_eq!(
         click_at(&mut harness, minimise),
-        Some(autoitv3_gui::WindowState::Minimized),
+        Some(autoitv3_gui_model::WindowState::Minimized),
         "the minimise button should ask to minimise"
     );
 }
@@ -557,7 +557,7 @@ fn clicking_a_window_control_is_not_a_title_double_click() {
     double_click(&mut harness, minimise);
     assert_eq!(
         harness.requests,
-        vec![autoitv3_gui::WindowState::Minimized],
+        vec![autoitv3_gui_model::WindowState::Minimized],
         "the button wins over the title-bar double-click"
     );
 }
@@ -570,7 +570,7 @@ fn a_maximised_window_does_not_oscillate() {
     let mut harness = Harness::new();
     harness.frame(vec![]);
     harness.frame(vec![]);
-    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.state = autoitv3_gui_model::WindowState::Maximized;
 
     let (first, _) = harness.frame(vec![]);
     for frame in 0..6 {
@@ -689,7 +689,7 @@ fn dragging_a_maximised_window_leaves_the_maximised_state() {
     let mut harness = Harness::new();
     harness.frame(vec![]);
     harness.frame(vec![]);
-    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.state = autoitv3_gui_model::WindowState::Maximized;
     let (maximized, _) = harness.frame(vec![]);
     assert!(
         maximized.width() > 800.0,
@@ -713,13 +713,13 @@ fn dragging_a_maximised_window_leaves_the_maximised_state() {
     }
     assert_eq!(
         harness.requests,
-        vec![autoitv3_gui::WindowState::Normal],
+        vec![autoitv3_gui_model::WindowState::Normal],
         "the drag should ask to leave the maximised state"
     );
 
     // Once the script applies it (the model says Normal), the new size stays.
     harness.time += 1.0;
-    harness.window.state = autoitv3_gui::WindowState::Normal;
+    harness.window.state = autoitv3_gui_model::WindowState::Normal;
     harness.window.width = (start.width() - 160.0) as i32;
     let (after, client) = harness.frame(vec![]);
     assert!(
@@ -754,7 +754,7 @@ fn dragging_the_title_bar_moves_the_window_and_tells_the_model() {
         "the window followed the pointer: {start:?} -> {moved:?}"
     );
     match reported {
-        Some(autoitv3_gui::GuiUpdate::Move { x, y, .. }) => {
+        Some(autoitv3_gui_model::GuiUpdate::Move { x, y, .. }) => {
             assert!(
                 (x as f32 - moved.left()).abs() < 2.0 && (y as f32 - moved.top()).abs() < 2.0,
                 "the reported place {x},{y} should be where it was drawn: {moved:?}"
@@ -776,7 +776,7 @@ fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
     window.width = 900;
     window.height = 700;
     let mut effective = window.clone();
-    effective.state = autoitv3_gui::WindowState::Normal;
+    effective.state = autoitv3_gui_model::WindowState::Normal;
 
     let last = LastWindow {
         client: Some(vec2(900.0, 700.0)),
@@ -785,7 +785,7 @@ fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
             y: 0,
             width: 900,
             height: 700,
-            state: autoitv3_gui::WindowState::Maximized,
+            state: autoitv3_gui_model::WindowState::Maximized,
         }),
         chrome: Some(vec2(14.0, 48.0)),
         pos: Some(Pos2::new(0.0, 0.0)),
@@ -807,12 +807,12 @@ fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
     assert_eq!(
         updates,
         vec![
-            autoitv3_gui::GuiUpdate::Resize {
+            autoitv3_gui_model::GuiUpdate::Resize {
                 handle: 1,
                 width: 700,
                 height: 500
             },
-            autoitv3_gui::GuiUpdate::Move {
+            autoitv3_gui_model::GuiUpdate::Move {
                 handle: 1,
                 x: 20,
                 y: 30
@@ -833,7 +833,7 @@ fn a_window_that_did_not_move_is_not_reported_as_moved() {
     window.height = 700;
     window.restore = Some((220, 140, 520, 300));
     let mut effective = window.clone();
-    effective.state = autoitv3_gui::WindowState::Normal;
+    effective.state = autoitv3_gui_model::WindowState::Normal;
     effective.x = 220;
     effective.y = 140;
     effective.width = 520;
@@ -846,7 +846,7 @@ fn a_window_that_did_not_move_is_not_reported_as_moved() {
             y: 0,
             width: 900,
             height: 700,
-            state: autoitv3_gui::WindowState::Maximized,
+            state: autoitv3_gui_model::WindowState::Maximized,
         }),
         chrome: Some(vec2(14.0, 48.0)),
         // The window is still drawn at the maximised place on this frame.
@@ -868,7 +868,7 @@ fn a_window_that_did_not_move_is_not_reported_as_moved() {
     );
     assert_eq!(
         updates,
-        vec![autoitv3_gui::GuiUpdate::Resize {
+        vec![autoitv3_gui_model::GuiUpdate::Resize {
             handle: 1,
             width: 700,
             height: 500
@@ -928,7 +928,7 @@ fn restoring_a_maximised_window_puts_it_back_where_it_came_from() {
         let mut harness = Harness::new();
         harness.frame(vec![]);
         harness.window.restore = Some((20, 20, WIDTH, HEIGHT));
-        harness.window.state = autoitv3_gui::WindowState::Maximized;
+        harness.window.state = autoitv3_gui_model::WindowState::Maximized;
         // One frame to take the maximised rectangle, one for egui to report the
         // window controls the restore case clicks.
         harness.frame(vec![]);
@@ -942,7 +942,7 @@ fn restoring_a_maximised_window_puts_it_back_where_it_came_from() {
             let (_, restore) = window_controls(&harness);
             assert_eq!(
                 click_at(&mut harness, restore),
-                Some(autoitv3_gui::WindowState::Normal),
+                Some(autoitv3_gui_model::WindowState::Normal),
                 "{how} asks to restore"
             );
         } else {
@@ -951,7 +951,7 @@ fn restoring_a_maximised_window_puts_it_back_where_it_came_from() {
         }
         assert_eq!(
             harness.pending.map(|(state, _)| state),
-            Some(autoitv3_gui::WindowState::Normal),
+            Some(autoitv3_gui_model::WindowState::Normal),
             "{how} leaves the restore pending until the script applies it"
         );
 
@@ -974,7 +974,7 @@ fn restoring_a_maximised_window_puts_it_back_where_it_came_from() {
         }
 
         // `@SW_RESTORE` reaches the model: the window stays where it came from.
-        harness.window.state = autoitv3_gui::WindowState::Normal;
+        harness.window.state = autoitv3_gui_model::WindowState::Normal;
         harness.window.x = 20;
         harness.window.y = 20;
         harness.window.width = WIDTH;
@@ -998,7 +998,7 @@ fn dragging_a_maximised_title_bar_restores_the_window_under_the_pointer() {
     let mut harness = Harness::new();
     harness.frame(vec![]);
     harness.window.restore = Some((20, 20, WIDTH, HEIGHT));
-    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    harness.window.state = autoitv3_gui_model::WindowState::Maximized;
     harness.window.x = 0;
     harness.window.y = 0;
     harness.window.width = 900;
@@ -1044,7 +1044,7 @@ fn dragging_a_maximised_title_bar_restores_the_window_under_the_pointer() {
     }
     assert_eq!(
         harness.requests,
-        vec![autoitv3_gui::WindowState::Normal],
+        vec![autoitv3_gui_model::WindowState::Normal],
         "dragging the title bar asks the script to restore"
     );
 

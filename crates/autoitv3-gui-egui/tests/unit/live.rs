@@ -5,7 +5,7 @@
 //! reach private state the module does not expose.
 
 use super::*;
-use autoitv3_gui::ControlKind;
+use autoitv3_gui_model::ControlKind;
 
 fn input(id: i64, text: &str) -> Control {
     let mut control = Control::new(id, 1, ControlKind::Input);
@@ -43,7 +43,7 @@ fn the_viewport_is_the_desktop() {
     // open at, so a script that reads the desktop early sees no change.
     assert_eq!(
         backend.desktop_size(),
-        Some(autoitv3_gui::DEFAULT_DESKTOP_SIZE)
+        Some(autoitv3_gui_model::DEFAULT_DESKTOP_SIZE)
     );
 
     backend.shared.set_desktop(egui::vec2(1024.0, 640.0));

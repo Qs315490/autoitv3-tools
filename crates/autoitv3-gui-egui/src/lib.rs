@@ -1,8 +1,8 @@
 //! Offscreen egui renderer for the AutoIt GUI model.
 //!
 //! The AutoIt GUI *semantics* live in `autoitv3-platform`'s `winemu::gui` and
-//! the widget model plus [`autoitv3_gui::GuiBackend`] seam live in
-//! `autoitv3-gui`. This crate implements that seam with egui, rendering the
+//! the widget model plus [`autoitv3_gui_model::GuiBackend`] seam live in
+//! `autoitv3-gui-model`. This crate implements that seam with egui, rendering the
 //! model to an offscreen RGBA buffer (and PNG), so a run can be *seen* without
 //! a display server.
 //!

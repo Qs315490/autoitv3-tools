@@ -2,7 +2,7 @@
 
 #![cfg(feature = "egui")]
 
-use autoitv3_gui::{Control, ControlKind, GuiBackend, Window};
+use autoitv3_gui_model::{Control, ControlKind, GuiBackend, Window};
 use autoitv3_gui_egui::EguiBackend;
 
 fn demo(backend: &mut EguiBackend) {

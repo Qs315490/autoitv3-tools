@@ -1,11 +1,11 @@
 [package]
-name = "autoitv3-gui"
+name = "autoitv3-gui-model"
 version.workspace = true
 edition.workspace = true
 description = "Widget model and backend seam for AutoIt v3 GUI emulation"
 
 [lib]
-name = "autoitv3_gui"
+name = "autoitv3_gui_model"
 path = "src/lib.rs"
 
 [lints.rust]

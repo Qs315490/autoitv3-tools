@@ -6,7 +6,7 @@ description.workspace = true
 
 [dependencies]
 autoitv3-ast = { path = "../autoitv3-ast" }
-autoitv3-gui = { path = "../autoitv3-gui" }
+autoitv3-gui-model = { path = "../autoitv3-gui-model" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
 # Optional GUI renderer: `gui-egui` pulls it (and egui) in.
 autoitv3-gui-egui = { path = "../autoitv3-gui-egui", optional = true }

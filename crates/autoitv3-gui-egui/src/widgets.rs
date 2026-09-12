@@ -17,7 +17,7 @@
 //!   shows every item. Tab items are drawn as a row of tabs.
 //! * Colors are read as AutoIt documents them, `0xRRGGBB`.
 
-use autoitv3_gui::{Control, ControlKind, DrawCmd, GuiUpdate, Window, WindowState};
+use autoitv3_gui_model::{Control, ControlKind, DrawCmd, GuiUpdate, Window, WindowState};
 use egui::{
     vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
     TextStyle, Vec2,
