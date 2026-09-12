@@ -1,1 +1,4 @@
 /target
+.au3_registry
+.au3_clipboard
+.au3_recycle/
