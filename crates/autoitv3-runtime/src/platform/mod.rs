@@ -70,4 +70,53 @@ pub trait Platform {
         let _ = (name, args, ctx);
         Ok(None)
     }
+
+    // ----- object (COM) seams -----
+
+    /// Create an object for `name` (a ProgID, typically) with `args`.
+    /// `Ok(None)` means this platform does not create objects.
+    fn obj_create(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let _ = (name, args, ctx);
+        Ok(None)
+    }
+
+    /// Read a property `member` of a platform object.
+    fn obj_get(
+        &mut self,
+        obj: &crate::value::ObjRef,
+        member: &str,
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let _ = (obj, member, ctx);
+        Ok(None)
+    }
+
+    /// Assign `value` to property `member` of a platform object.
+    fn obj_set(
+        &mut self,
+        obj: &crate::value::ObjRef,
+        member: &str,
+        value: &Value,
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let _ = (obj, member, value, ctx);
+        Ok(None)
+    }
+
+    /// Call method `member` of a platform object with `args`.
+    fn obj_call(
+        &mut self,
+        obj: &crate::value::ObjRef,
+        member: &str,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let _ = (obj, member, args, ctx);
+        Ok(None)
+    }
 }

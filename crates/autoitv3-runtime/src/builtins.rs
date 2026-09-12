@@ -1017,6 +1017,7 @@ fn var_get_type(v: Option<&Value>) -> &'static str {
         Some(Value::Array(_)) => "Array",
         Some(Value::Map(_)) => "Map",
         Some(Value::FuncRef(_)) => "Function",
+        Some(Value::Obj(_)) => "Object",
         Some(Value::Null) | Some(Value::Default) => "Keyword",
     }
 }
