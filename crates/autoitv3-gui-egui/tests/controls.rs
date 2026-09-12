@@ -177,3 +177,31 @@ fn a_window_with_every_control_renders_and_is_deterministic() {
         "offscreen output must be deterministic"
     );
 }
+
+#[test]
+fn window_state_decides_what_offscreen_renders() {
+    let render = |state: autoitv3_gui::WindowState| {
+        let mut backend = EguiBackend::new().with_size(400, 300);
+        let mut window = Window::new(WINDOW, "State", 40, 30);
+        window.width = 200;
+        window.height = 120;
+        window.state = state;
+        window.visible = true;
+        window.controls.push(1);
+        backend.on_window(&window);
+        let mut label = Control::new(1, WINDOW, ControlKind::Label);
+        label.text = "hello".to_string();
+        backend.on_control(&label);
+        backend.snapshot().expect("renders")
+    };
+
+    let normal = ink(&render(autoitv3_gui::WindowState::Normal));
+    let maximized = ink(&render(autoitv3_gui::WindowState::Maximized));
+    let minimized = ink(&render(autoitv3_gui::WindowState::Minimized));
+
+    assert!(
+        maximized > normal,
+        "maximised should cover more: {normal} -> {maximized}"
+    );
+    assert_eq!(minimized, 0, "a minimised window is not on screen");
+}

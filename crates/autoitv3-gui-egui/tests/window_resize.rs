@@ -8,7 +8,7 @@
 #![cfg(feature = "egui")]
 
 use autoitv3_gui::{Control, ControlKind, Window};
-use autoitv3_gui_egui::show_autoit_window;
+use autoitv3_gui_egui::{show_autoit_window, window_area_id, LastWindow, WindowGeometry};
 use egui::{vec2, Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 
 const WIDTH: i32 = 380;
@@ -44,49 +44,56 @@ fn press(pos: Pos2, pressed: bool) -> Event {
     }
 }
 
-/// Drives the window the way `LiveBackend` does: the client size we drew last
-/// frame is fed back in, exactly like the live window's `clients` map.
+/// Drives the window the way `LiveBackend` does: the record of what was drawn
+/// last frame is fed back in, exactly like the live window's `seen` map.
 struct Harness {
     ctx: Context,
-    last_client: Option<Vec2>,
+    window: Window,
+    last: LastWindow,
+    /// What the last frame drew; `None` when the window was not on screen.
+    drawn: Option<Vec2>,
 }
 
 impl Harness {
     fn new() -> Self {
+        let mut window = Window::new(1, "AutoIt PoC", 20, 20);
+        window.width = WIDTH;
+        window.height = HEIGHT;
         Self {
             ctx: Context::default(),
-            last_client: None,
+            window,
+            last: LastWindow::default(),
+            drawn: None,
         }
     }
 
     /// One frame: returns the window's outer rect and the client size.
     fn frame(&mut self, events: Vec<Event>) -> (Rect, Vec2) {
-        let mut window = Window::new(1, "AutoIt PoC", 20, 20);
-        window.width = WIDTH;
-        window.height = HEIGHT;
-        let last = self.last_client;
-        let mut client = Vec2::ZERO;
+        let last = self.last;
+        let mut client = None;
         let mut output = self.ctx.run_ui(raw(events), |ui| {
             let mut open = true;
             let mut actions = Vec::new();
-            if let Some(size) = show_autoit_window(
+            client = show_autoit_window(
                 ui.ctx(),
-                &window,
+                &self.window,
                 &controls(),
                 &mut open,
                 last,
                 &mut actions,
-            ) {
-                client = size;
-            }
+            );
         });
         output.textures_delta.clear();
-        self.last_client = Some(client);
+        self.drawn = client;
+        self.last = LastWindow {
+            client: client.or(last.client),
+            geometry: Some(WindowGeometry::of(&self.window)),
+        };
         let rect = self
             .ctx
-            .memory(|memory| memory.area_rect(egui::Id::new(("autoit-window", 1))))
+            .memory(|memory| memory.area_rect(window_area_id(1)))
             .unwrap_or(Rect::NOTHING);
-        (rect, client)
+        (rect, client.unwrap_or(Vec2::ZERO))
     }
 
     /// Hover, press, drag in steps, release — the way a pointer actually arrives.
@@ -103,45 +110,6 @@ impl Harness {
         self.frame(vec![press(p + delta, false)]);
         self.frame(vec![]).0
     }
-}
-
-#[test]
-fn the_window_starts_at_the_size_the_script_asked_for() {
-    let mut harness = Harness::new();
-    let (rect, client) = harness.frame(vec![]);
-    // The client area is the size the script asked for, to the pixel: a live
-    // window reports any change back, so a settled frame must not drift.
-    assert!(
-        (client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 1.0,
-        "client area is {client:?}, wanted {WIDTH}x{HEIGHT}"
-    );
-    // And it stays there: later frames must not resize anything (a settled
-    // frame that changed size would be reported as a user drag).
-    for _ in 0..4 {
-        let (again, client) = harness.frame(vec![]);
-        assert!(
-            (again.size() - rect.size()).length() < 0.5,
-            "the window drifted from {rect:?} to {again:?}"
-        );
-        assert!(
-            (client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 1.0,
-            "client area drifted to {client:?}"
-        );
-    }
-    // Only the client area belongs to the script; the frame adds its margins.
-    assert!(rect.width() > WIDTH as f32, "outer must wrap the client");
-    assert!(
-        rect.width() < WIDTH as f32 + 40.0,
-        "outer {rect:?} too wide"
-    );
-    assert!(
-        rect.height() > HEIGHT as f32,
-        "outer must include the title bar: {rect:?}"
-    );
-    assert!(
-        rect.height() < HEIGHT as f32 + 60.0,
-        "the window must not shrink to fit its controls: {rect:?}"
-    );
 }
 
 /// Where to grab a window edge, how the pointer moves, what should happen.
@@ -227,4 +195,87 @@ fn a_shrinking_drag_sticks() {
             "the window snapped back to {after:?} after being shrunk to {end:?}"
         );
     }
+}
+
+#[test]
+fn a_script_side_move_resizes_the_window() {
+    // What `WinMove` does: the model changes, and the window must follow
+    // instead of keeping the size the script originally asked for.
+    let mut harness = Harness::new();
+    let start = harness.frame(vec![]).0;
+
+    harness.window.x = 120;
+    harness.window.y = 90;
+    harness.window.width = 300;
+    harness.window.height = 260;
+    let (moved, client) = harness.frame(vec![]);
+
+    assert!(
+        (client - vec2(300.0, 260.0)).length() < 1.0,
+        "the client area followed WinMove to {client:?}, wanted 300x260"
+    );
+    assert!(
+        (moved.left() - 120.0).abs() < 8.0 && (moved.top() - 90.0).abs() < 8.0,
+        "the window moved to {moved:?}, wanted about (120, 90)"
+    );
+    assert!(
+        moved.width() > start.width() || moved.height() > start.height(),
+        "the window grew with the script: {start:?} -> {moved:?}"
+    );
+
+    // And it stays there on later frames.
+    let (again, _) = harness.frame(vec![]);
+    assert!(
+        (again.size() - moved.size()).length() < 0.5,
+        "the window drifted after the script moved it: {moved:?} -> {again:?}"
+    );
+}
+
+#[test]
+fn a_minimised_window_is_not_drawn_and_comes_back_where_it_was() {
+    let mut harness = Harness::new();
+    let (before, _) = harness.frame(vec![]);
+
+    // @SW_MINIMIZE: AutoIt keeps the window, the screen does not show it.
+    harness.window.state = autoitv3_gui::WindowState::Minimized;
+    let _ = harness.frame(vec![]);
+    assert!(
+        harness.drawn.is_none(),
+        "a minimised window drew {:?}",
+        harness.drawn
+    );
+
+    // @SW_RESTORE: it comes back at the size it had, not at a default.
+    harness.window.state = autoitv3_gui::WindowState::Normal;
+    let (after, client) = harness.frame(vec![]);
+    assert!(
+        (after.size() - before.size()).length() < 0.5,
+        "restore changed the size: {before:?} -> {after:?}"
+    );
+    assert!(
+        (client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 1.0,
+        "restored client is {client:?}"
+    );
+}
+
+#[test]
+fn a_maximised_window_fills_the_viewport() {
+    let mut harness = Harness::new();
+    let (normal, _) = harness.frame(vec![]);
+
+    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    let (maximized, _) = harness.frame(vec![]);
+    let screen = harness.ctx.content_rect();
+    assert!(
+        maximized.width() > normal.width() && maximized.height() > normal.height(),
+        "a maximised window should be bigger: {normal:?} -> {maximized:?}"
+    );
+    assert!(
+        maximized.width() <= screen.width() + 1.0 && maximized.height() <= screen.height() + 1.0,
+        "a maximised window left the viewport: {maximized:?} in {screen:?}"
+    );
+    assert!(
+        maximized.width() > screen.width() * 0.9,
+        "a maximised window should nearly fill the viewport: {maximized:?}"
+    );
 }

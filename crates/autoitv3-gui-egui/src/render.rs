@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use autoitv3_gui::{Control, GuiBackend, GuiImage, Window};
+use autoitv3_gui::{Control, GuiBackend, GuiImage, Window, WindowState};
 use egui::{vec2, Pos2, Rect, TextureId};
 
 use crate::raster::{rasterize, Texture};
@@ -86,8 +86,9 @@ impl EguiBackend {
         let frames: Vec<(Window, Vec<Control>)> = self
             .windows
             .values()
-            // AutoIt windows start hidden and only appear on `GUISetState`.
-            .filter(|window| window.visible)
+            // AutoIt windows start hidden and only appear on `GUISetState`;
+            // a minimised one is not on screen either.
+            .filter(|window| window.visible && window.state != WindowState::Minimized)
             .map(|window| {
                 let controls = window
                     .controls
@@ -104,11 +105,20 @@ impl EguiBackend {
         // come back as no-op shapes in this headless pass, while a scoped Ui at
         // an explicit rect tessellates normally.)
         let output = self.ctx.run_ui(raw, |ui| {
+            let canvas =
+                Rect::from_min_size(Pos2::ZERO, vec2(self.width as f32, self.height as f32));
             for (window, controls) in &frames {
-                let rect = Rect::from_min_size(
-                    Pos2::new(window.x as f32, window.y as f32),
-                    vec2(window.width.max(1) as f32, window.height.max(1) as f32),
-                );
+                // A maximised window has no viewport to fill offscreen, so it
+                // fills the canvas — the closest thing this backend has to a
+                // desktop.
+                let rect = if window.state == WindowState::Maximized {
+                    canvas.shrink(8.0)
+                } else {
+                    Rect::from_min_size(
+                        Pos2::new(window.x as f32, window.y as f32),
+                        vec2(window.width.max(1) as f32, window.height.max(1) as f32),
+                    )
+                };
                 ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                     egui::Frame::window(ui.style()).show(ui, |ui| {
                         ui.set_min_size(rect.size());

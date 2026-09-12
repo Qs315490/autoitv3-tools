@@ -109,3 +109,49 @@ fn a_scripts_whole_control_set_reaches_the_renderer() {
         "the rendered window is nearly empty: {painted} opaque px"
     );
 }
+
+/// Render the frame a script leaves behind.
+fn render(script: &str) -> GuiImage {
+    let backend = Shared(Rc::new(RefCell::new(
+        EguiBackend::new().with_size(640, 480),
+    )));
+    let emulation = WindowsEmulation::new().with_gui_backend(Box::new(backend.clone()));
+    let program = autoitv3_ast::parse(script).expect("script parses");
+    let mut runtime = Runtime::with_program(&program);
+    runtime.set_platform(host_platform_with(emulation));
+    runtime.run_script().expect("script runs");
+    let image = backend.0.borrow_mut().snapshot().expect("renders");
+    image
+}
+
+fn ink(image: &GuiImage) -> usize {
+    image.rgba.chunks_exact(4).filter(|p| p[3] > 0).count()
+}
+
+#[test]
+fn window_state_and_moves_reach_the_pixels() {
+    const OPEN: &str = r#"
+GUICreate("State", 200, 120, 40, 30)
+GUICtrlCreateLabel("hi", 10, 10)
+GUISetState()
+"#;
+
+    let normal = ink(&render(OPEN));
+    assert!(normal > 0, "a shown window draws something");
+
+    // @SW_MINIMIZE: AutoIt keeps the window, the screen does not show it.
+    let minimized = ink(&render(&format!("{OPEN}\nWinSetState(\"State\", \"\", @SW_MINIMIZE)")));
+    assert_eq!(minimized, 0, "a minimised window is off screen");
+
+    // @SW_MAXIMIZE fills the viewport; @SW_RESTORE brings the size back.
+    let maximized = ink(&render(&format!("{OPEN}\nWinSetState(\"State\", \"\", @SW_MAXIMIZE)")));
+    assert!(
+        maximized > normal,
+        "a maximised window covers more: {normal} -> {maximized}"
+    );
+
+    // WinMove moves it, so the same content lands somewhere else.
+    let moved = render(&format!("{OPEN}\nWinMove(\"State\", \"\", 300, 200)"));
+    assert_eq!(ink(&moved), normal, "moving does not change how much is drawn");
+    assert_ne!(moved.rgba, render(OPEN).rgba, "WinMove changed nothing");
+}

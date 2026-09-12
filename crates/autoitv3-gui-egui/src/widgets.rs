@@ -17,7 +17,7 @@
 //!   shows every item. Tab items are drawn as a row of tabs.
 //! * Colors are read as AutoIt documents them, `0xRRGGBB`.
 
-use autoitv3_gui::{Control, ControlKind, DrawCmd, Window};
+use autoitv3_gui::{Control, ControlKind, DrawCmd, Window, WindowState};
 use egui::{
     vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
     TextStyle,
@@ -84,13 +84,61 @@ pub fn draw_control(ui: &mut egui::Ui, control: &Control) -> Vec<Interaction> {
         .collect()
 }
 
+/// The geometry of a window as the script last set it. A change between frames
+/// means `WinMove`/`WinSetState` moved it and the window has to follow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub state: WindowState,
+}
+
+impl WindowGeometry {
+    pub fn of(window: &Window) -> Self {
+        Self {
+            x: window.x,
+            y: window.y,
+            width: window.width,
+            height: window.height,
+            state: window.state,
+        }
+    }
+
+    /// The client area the script asked for.
+    fn client(self) -> egui::Vec2 {
+        vec2(self.width.max(1) as f32, self.height.max(1) as f32)
+    }
+}
+
+/// What the previous frame drew for one window; the caller keeps one per handle.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LastWindow {
+    /// Client size drawn last frame (`None` on the first frame, when the
+    /// `GUICreate` size seeds it).
+    pub client: Option<egui::Vec2>,
+    /// The geometry that frame was drawn from, so a script-side change is
+    /// recognisable.
+    pub geometry: Option<WindowGeometry>,
+}
+
+/// The egui area id of an AutoIt window. Titles are not unique (two windows may
+/// share one), the handle is.
+pub fn window_area_id(handle: i64) -> egui::Id {
+    egui::Id::new(("autoit-window", handle))
+}
+
+/// Title bar + frame, before one has been measured. Only used to maximise.
+const DEFAULT_CHROME: egui::Vec2 = vec2(16.0, 56.0);
+
 /// Draw one AutoIt window as a floating egui window.
 ///
-/// `last_client` is the client size drawn on the previous frame, or `None` on
-/// the first. Returns the client size drawn now — what `WinGetClientSize`
-/// reports — or `None` while the window is hidden.
+/// `last` is what the previous frame drew for this handle. Returns the client
+/// size drawn now — what `WinGetClientSize` reports — or `None` when the window
+/// is hidden or minimised, i.e. when nothing was drawn.
 ///
-/// # Why the sizing is done by hand
+/// # Sizing, and why it is done by hand
 ///
 /// `egui::Window` takes its size from its *content*: `Resize::end` falls back to
 /// the content size for windows, so a window whose body does not fill it snaps
@@ -102,19 +150,22 @@ pub fn draw_control(ui: &mut egui::Ui, control: &Control) -> Vec<Interaction> {
 ///   is exactly what the script asked for instead of shrinking to its controls;
 /// * afterwards: whatever we drew last, which keeps the window stable;
 /// * while the pointer is down: nothing, so a drag — including one that shrinks
-///   the window — is in charge.
+///   the window — is in charge;
+/// * when the script moved or resized it: the script's size, and the script's
+///   position, since `WinMove`/`WinSetState` own the geometry then.
 ///
-/// A drag that changes the result is meant to be reported back to the model; the
-/// caller does that, and the model's size is what the next first frame would use.
+/// The caller reports a changed client size back to the model, which is how a
+/// user drag reaches `WinGetPos`; see `LiveBackend`.
 pub fn show_autoit_window(
     ctx: &egui::Context,
     window: &Window,
     controls: &[Control],
     open: &mut bool,
-    last_client: Option<egui::Vec2>,
+    last: LastWindow,
     actions: &mut Vec<Interaction>,
 ) -> Option<egui::Vec2> {
-    if !window.visible {
+    if !window.visible || window.state == WindowState::Minimized {
+        // Minimised: AutoIt keeps the window, the screen does not show it.
         return None;
     }
     let title = if window.title.is_empty() {
@@ -122,25 +173,73 @@ pub fn show_autoit_window(
     } else {
         window.title.as_str()
     };
-    let wanted = vec2(window.width.max(1) as f32, window.height.max(1) as f32);
+    let geometry = WindowGeometry::of(window);
+    let wanted = geometry.client();
+    let script_moved = last.geometry != Some(geometry);
+
+    // How big the client area should be this frame, and where the window goes.
+    let (decided, pos) = if geometry.state == WindowState::Maximized {
+        // A floating egui window cannot really be maximised, so fill the
+        // viewport less the title bar and frame measured on an earlier frame.
+        let chrome = last
+            .client
+            .and_then(|client| {
+                ctx.memory(|memory| memory.area_rect(window_area_id(window.handle)))
+                    .map(|rect| rect.size() - client)
+            })
+            .unwrap_or(DEFAULT_CHROME);
+        let screen = ctx.content_rect();
+        (
+            (screen.size() - chrome).max(vec2(80.0, 80.0)),
+            Some(screen.min),
+        )
+    } else if script_moved {
+        (
+            wanted,
+            // AutoIt uses a negative coordinate for "leave that axis alone".
+            (geometry.x >= 0 && geometry.y >= 0)
+                .then(|| Pos2::new(geometry.x as f32, geometry.y as f32)),
+        )
+    } else {
+        // What we drew last; the first frame falls back to `GUICreate`.
+        (last.client.unwrap_or(wanted), None)
+    };
+
     let mut drawn = None;
-    egui::Window::new(title)
-        // Titles are not unique (two windows may share one), the handle is.
-        .id(egui::Id::new(("autoit-window", window.handle)))
-        .default_pos([window.x as f32, window.y as f32])
-        .default_size(wanted)
-        .open(open)
-        .show(ctx, |ui| {
-            let dragging = ui.ctx().input(|input| input.pointer.any_down());
-            let floor = if dragging {
-                egui::Vec2::ZERO
-            } else {
-                last_client.unwrap_or(wanted)
-            };
-            ui.set_min_size(ui.available_size().max(floor));
-            actions.append(&mut draw_window_body(ui, controls));
-            drawn = Some(ui.min_rect().size());
-        });
+    let mut frame = egui::Window::new(title)
+        .id(window_area_id(window.handle))
+        .default_pos([geometry.x as f32, geometry.y as f32])
+        .default_size(wanted);
+    if let Some(pos) = pos {
+        // `Window`'s default drag mode (`TitleBar`) restores the *stored*
+        // position every frame, which makes it ignore `current_pos` after the
+        // very first frame — the script could never move a window. Asking for
+        // `Anywhere` on this one frame lets the new position win; the next
+        // frame goes back to title-bar dragging, from the new spot.
+        frame = frame.current_pos(pos).drag_area(egui::WindowDrag::Anywhere);
+    }
+    frame.open(open).show(ctx, |ui| {
+        // The release frame still belongs to the drag: egui only writes the
+        // final size into its own state then, so clamping on that frame would
+        // drop the last stretch of the drag.
+        let dragging = ui
+            .ctx()
+            .input(|input| input.pointer.any_down() || input.pointer.any_released());
+        // Pin the content to the intended client size in *both* directions: the
+        // minimum stops a drag from snapping back, and the maximum stops the
+        // content from stretching the window — AutoIt clips what does not fit,
+        // it does not grow the window. While the pointer is down the drag is in
+        // charge instead, which is what lets the user shrink the window.
+        let target = if dragging {
+            ui.available_size()
+        } else {
+            decided
+        };
+        ui.set_min_size(target);
+        ui.set_max_size(target);
+        actions.append(&mut draw_window_body(ui, controls));
+        drawn = Some(ui.min_rect().size());
+    });
     drawn
 }
 

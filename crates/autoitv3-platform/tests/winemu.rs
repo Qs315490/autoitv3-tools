@@ -938,7 +938,7 @@ Local $before = WinGetState($win)
 GUISetState(5, $win)
 Local $after = WinGetState($win)
 Local $pos = WinGetPos($win)
-WinMove($win, 5, 6, 300, 150)
+WinMove($win, "", 5, 6, 300, 150)
 Local $pos2 = WinGetPos($win)
 Local $title = WinGetTitle($win)
 Local $exists = WinExists("My Window")
@@ -1104,6 +1104,63 @@ impl GuiBackend for ResizingBackend {
         } else {
             Vec::new()
         }
+    }
+}
+
+#[test]
+fn win_set_state_takes_the_show_flags_a_script_uses() {
+    // `@SW_*`, not the `WinGetState` bits: @SW_MINIMIZE is 6.
+    assert_eq!(text(win10(), "Return @SW_MINIMIZE"), "6");
+    assert_eq!(text(win10(), "Return @SW_SHOW"), "5");
+    assert_eq!(text(win10(), "Return @SW_RESTORE"), "9");
+
+    let body = r#"
+GUICreate("T", 380, 170)
+WinSetState("T", "", @SW_MINIMIZE)
+Local $minimized = WinGetState("T")
+WinSetState("T", "", @SW_RESTORE)
+Local $restored = WinGetState("T")
+WinSetState("T", "", @SW_MAXIMIZE)
+Local $maximized = WinGetState("T")
+WinSetState("T", "", @SW_HIDE)
+Local $hidden = WinGetState("T")
+Return $minimized & "/" & $restored & "/" & $maximized & "/" & $hidden
+"#;
+    // visible(2) + enabled(4) + active(8) + exists(1) = 15, plus the state bit.
+    // Hidden: exists(1) + enabled(4) + active(8), the visible bit cleared.
+    assert_eq!(text(win10(), body), "31/15/47/13");
+}
+
+#[test]
+fn a_script_move_reaches_the_backend() {
+    // The live window only learns about `WinMove` through `on_window`, so the
+    // backend has to be told.
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(SizingBackend { seen: seen.clone() }));
+    let body = r#"
+GUICreate("T", 380, 170)
+WinMove("T", "", 120, 90, 300, 260)
+Return WinGetClientSize("T")[0] & "x" & WinGetClientSize("T")[1]
+"#;
+    assert_eq!(text(emu, body), "300x260");
+    assert!(
+        seen.borrow().iter().any(|(_, w, h)| *w == 300 && *h == 260),
+        "WinMove never reached the backend: {:?}",
+        seen.borrow()
+    );
+}
+
+/// A backend that records the size of every window it is shown.
+#[derive(Default)]
+struct SizingBackend {
+    seen: Rc<RefCell<Vec<(i64, i32, i32)>>>,
+}
+
+impl GuiBackend for SizingBackend {
+    fn on_window(&mut self, window: &Window) {
+        self.seen
+            .borrow_mut()
+            .push((window.handle, window.width, window.height));
     }
 }
 
