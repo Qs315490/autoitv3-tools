@@ -39,10 +39,14 @@ impl Default for EguiBackend {
 impl EguiBackend {
     /// A 640×480 offscreen renderer.
     pub fn new() -> Self {
+        let ctx = egui::Context::default();
+        // egui's own fonts have no CJK, so a script's Chinese text would draw as
+        // boxes; a system font covers it when the machine has one.
+        crate::fonts::install_cjk_font(&ctx);
         Self {
             windows: BTreeMap::new(),
             controls: BTreeMap::new(),
-            ctx: egui::Context::default(),
+            ctx,
             textures: HashMap::new(),
             screenshot_path: None,
             minimize: MinimizeStyle::Hidden,

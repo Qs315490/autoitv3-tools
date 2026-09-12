@@ -152,7 +152,17 @@ impl LiveBackend {
                 .with_inner_size([width as f32, height as f32]),
             ..Default::default()
         };
-        eframe::run_native(&self.title, options, Box::new(|_cc| Ok(Box::new(app))))
+        eframe::run_native(
+            &self.title,
+            options,
+            Box::new(|cc| {
+                // Before the first frame: egui's bundled fonts cover Latin and
+                // emoji only, so Chinese in a script's controls needs a font
+                // from the machine.
+                crate::fonts::install_cjk_font(&cc.egui_ctx);
+                Ok(Box::new(app))
+            }),
+        )
     }
 
     /// How a minimised window is shown; see [`MinimizeStyle`].
