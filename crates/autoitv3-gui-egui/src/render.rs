@@ -6,6 +6,7 @@ use autoitv3_gui::{Control, GuiBackend, GuiImage, Window, WindowState};
 use egui::{vec2, Pos2, Rect, TextureId};
 
 use crate::raster::{rasterize, Texture};
+use crate::widgets::MinimizeStyle;
 
 /// An offscreen egui renderer for the AutoIt GUI model.
 ///
@@ -23,6 +24,8 @@ pub struct EguiBackend {
     textures: HashMap<TextureId, Texture>,
     /// When set, every `present()` writes a PNG here.
     screenshot_path: Option<std::path::PathBuf>,
+    /// How a minimised window is shown; see [`MinimizeStyle`].
+    minimize: MinimizeStyle,
     width: u32,
     height: u32,
 }
@@ -42,6 +45,7 @@ impl EguiBackend {
             ctx: egui::Context::default(),
             textures: HashMap::new(),
             screenshot_path: None,
+            minimize: MinimizeStyle::Hidden,
             width: 640,
             height: 480,
         }
@@ -51,6 +55,12 @@ impl EguiBackend {
     pub fn with_size(mut self, width: u32, height: u32) -> Self {
         self.width = width.max(1);
         self.height = height.max(1);
+        self
+    }
+
+    /// How a minimised window is shown; see [`MinimizeStyle`].
+    pub fn with_minimize_style(mut self, minimize: MinimizeStyle) -> Self {
+        self.minimize = minimize;
         self
     }
 
@@ -83,12 +93,17 @@ impl EguiBackend {
             ..Default::default()
         };
         // Snapshot the model first so the closure borrows nothing from `self`.
+        let minimize = self.minimize;
         let frames: Vec<(Window, Vec<Control>)> = self
             .windows
             .values()
-            // AutoIt windows start hidden and only appear on `GUISetState`;
-            // a minimised one is not on screen either.
-            .filter(|window| window.visible && window.state != WindowState::Minimized)
+            // AutoIt windows start hidden and only appear on `GUISetState`.
+            // A minimised one is only drawn when the style keeps its title bar.
+            .filter(|window| {
+                window.visible
+                    && (window.state != WindowState::Minimized
+                        || minimize == MinimizeStyle::TitleBar)
+            })
             .map(|window| {
                 let controls = window
                     .controls
@@ -111,7 +126,14 @@ impl EguiBackend {
                 // A maximised window has no viewport to fill offscreen, so it
                 // fills the canvas — the closest thing this backend has to a
                 // desktop.
-                let rect = if window.state == WindowState::Maximized {
+                let rect = if window.state == WindowState::Minimized {
+                    // Title-bar style: the frame and title stay, the body does
+                    // not (~28 px is what a title bar takes).
+                    Rect::from_min_size(
+                        Pos2::new(window.x as f32, window.y as f32),
+                        vec2(window.width.max(1) as f32, 28.0),
+                    )
+                } else if window.state == WindowState::Maximized {
                     canvas.shrink(8.0)
                 } else {
                     Rect::from_min_size(
@@ -128,12 +150,16 @@ impl EguiBackend {
                             window.title.as_str()
                         };
                         ui.heading(title);
-                        if controls.is_empty() {
+                        if window.state == WindowState::Minimized {
+                            // Collapsed to the title bar; nothing else is drawn.
+                        } else if controls.is_empty() {
                             ui.label("(empty window)");
                         }
-                        // The shared widget layer draws every control kind,
-                        // including the menu bar.
-                        let _ = crate::widgets::draw_window_body(ui, controls);
+                        if window.state != WindowState::Minimized {
+                            // The shared widget layer draws every control kind,
+                            // including the menu bar.
+                            let _ = crate::widgets::draw_window_body(ui, controls);
+                        }
                     });
                 });
             }

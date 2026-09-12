@@ -44,9 +44,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window};
+use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window, WindowState};
 
-use crate::widgets::{show_autoit_window, Action, Interaction, LastWindow, WindowGeometry};
+use crate::widgets::{
+    show_autoit_window, Action, Interaction, LastWindow, MinimizeStyle, WindowGeometry,
+};
 
 /// The model copy the GUI thread reads.
 #[derive(Default)]
@@ -76,6 +78,7 @@ struct Shared {
 pub struct LiveBackend {
     shared: Arc<Shared>,
     title: String,
+    minimize: MinimizeStyle,
 }
 
 impl Default for LiveBackend {
@@ -89,6 +92,7 @@ impl LiveBackend {
     pub fn new(title: impl Into<String>) -> Self {
         let (events_tx, events_rx) = mpsc::channel();
         Self {
+            minimize: MinimizeStyle::Hidden,
             shared: Arc::new(Shared {
                 mirror: Mutex::new(Mirror::default()),
                 events_tx,
@@ -126,6 +130,7 @@ impl LiveBackend {
 
         let app = LiveApp {
             shared: self.shared.clone(),
+            minimize: self.minimize,
             closed: std::collections::HashSet::new(),
             pending: Pending::new(),
             seen: HashMap::new(),
@@ -137,6 +142,16 @@ impl LiveBackend {
             eframe::NativeOptions::default(),
             Box::new(|_cc| Ok(Box::new(app))),
         )
+    }
+
+    /// How a minimised window is shown; see [`MinimizeStyle`].
+    ///
+    /// The default, [`MinimizeStyle::Hidden`], is faithful: the window leaves
+    /// the screen and the window itself draws a "minimised" strip along the
+    /// bottom of the viewport so the user can bring it back.
+    pub fn with_minimize_style(mut self, minimize: MinimizeStyle) -> Self {
+        self.minimize = minimize;
+        self
     }
 
     /// Queue an event as if the user had produced it (used by the window and by
@@ -276,6 +291,7 @@ type Pending = HashMap<i64, (String, u8)>;
 
 struct LiveApp {
     shared: Arc<Shared>,
+    minimize: MinimizeStyle,
     /// Windows the user closed, so they are not drawn again while the script
     /// keeps running (egui's `open` flag is app-owned, not persisted by egui).
     closed: std::collections::HashSet<i64>,
@@ -316,11 +332,49 @@ impl eframe::App for LiveApp {
             return;
         }
 
+        // Faithful minimise: the window is off screen, so the only way back is
+        // here — a strip along the bottom, the way Windows has a taskbar.
+        if self.minimize == MinimizeStyle::Hidden {
+            let minimized: Vec<(i64, String)> = windows
+                .values()
+                .filter(|window| window.visible && window.state == WindowState::Minimized)
+                .map(|window| {
+                    let title = if window.title.is_empty() {
+                        "AutoIt".to_string()
+                    } else {
+                        window.title.clone()
+                    };
+                    (window.handle, title)
+                })
+                .collect();
+            if !minimized.is_empty() {
+                let mut restore = Vec::new();
+                egui::Panel::bottom("autoit-minimized").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Minimised:");
+                        for (handle, title) in &minimized {
+                            if ui.button(title).clicked() {
+                                restore.push(*handle);
+                            }
+                        }
+                    });
+                });
+                let mut updates = self.shared.updates.lock().unwrap();
+                for handle in restore {
+                    updates.push(GuiUpdate::SetWindowState {
+                        handle,
+                        state: WindowState::Normal,
+                    });
+                }
+            }
+        }
+
         // Disjoint field borrows: the widget layer draws with `shared`, the
         // overlay edits live in `pending`, and geometry is in `seen`.
         let shared = &self.shared;
         let pending = &mut self.pending;
         let seen_windows = &mut self.seen;
+        let minimize = self.minimize;
         for window in windows.values() {
             if !window.visible || self.closed.contains(&window.handle) {
                 continue;
@@ -341,7 +395,22 @@ impl eframe::App for LiveApp {
                 .filter_map(|id| controls.get(id).cloned())
                 .collect();
             overlay_pending(&mut body, pending);
-            let drawn = show_autoit_window(&ctx, window, &body, &mut open, last, &mut actions);
+            let drawn =
+                show_autoit_window(&ctx, window, &body, &mut open, last, minimize, &mut actions);
+
+            // A double-click on the title bar is the Windows gesture for
+            // maximise/restore; the script hears about it like any other state
+            // change.
+            if let Some(state) = drawn.state_request {
+                shared
+                    .updates
+                    .lock()
+                    .unwrap()
+                    .push(GuiUpdate::SetWindowState {
+                        handle: window.handle,
+                        state,
+                    });
+            }
 
             for interaction in actions {
                 if let Action::Text(text) = &interaction.action {
@@ -357,8 +426,21 @@ impl eframe::App for LiveApp {
                 let _ = shared.events_tx.send(GuiEvent::Close(window.handle));
             }
 
-            match drawn {
+            match drawn.client {
                 Some(drawn) => {
+                    // A minimised window drawn as a title bar has a body of
+                    // height zero; that is not a resize, so keep the real size
+                    // for the restore.
+                    if geometry.state == WindowState::Minimized {
+                        seen_windows.insert(
+                            window.handle,
+                            LastWindow {
+                                client: last.client,
+                                geometry: Some(geometry),
+                            },
+                        );
+                        continue;
+                    }
                     // Only a drag is worth reporting back: a size the script
                     // chose is already in the model, and echoing it is noise.
                     let dragged = last.geometry == Some(geometry)

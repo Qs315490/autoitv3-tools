@@ -863,9 +863,15 @@ cross-platform compatibility hazard"），所以 `LiveBackend::run` **占用主�
 cargo run -p autoitv3-gui-egui --features window --example live
 # 窗口里：Label + Input + Button；点 Greet 打印 "Hello, <输入>!"，关窗结束脚本
 
+cargo run -p autoitv3-gui-egui --features window --example live -- --titlebar
+# 最小化时保留标题栏（双击标题栏恢复），而不是让窗口离开屏幕
+
 cargo run -p autoitv3-gui-egui --features window --example live -- --auto
 # 不用人操作：脚本建完控件就返回，窗口自动关闭（验证接线用）
 ```
+
+示例里的 **Minimise** 按钮会 `WinSetState(@SW_MINIMIZE)`：默认模式下窗口消失、底部出现
+恢复按钮；`--titlebar` 模式下窗口收成标题栏、双击恢复。
 
 ```rust
 use autoitv3_gui_egui::LiveBackend;
@@ -885,7 +891,21 @@ backend.run(move |backend| {                    // 主线程；阻塞到窗口�
   收到 `$GUI_EVENT_RESIZED`（-12）；
 - **脚本 → 屏幕**：`WinMove`（`WinMove($h, "", x, y [, w [, h]])`，`-1` 表示那一维不动）
   真的会移动/缩放窗口，`WinSetState`/`GUISetState` 的 `@SW_HIDE`/`@SW_MINIMIZE`/
-  `@SW_MAXIMIZE`/`@SW_RESTORE` 也照做——最小化的窗口不画，最大化的窗口铺满视口。
+  `@SW_MAXIMIZE`/`@SW_RESTORE` 也照做——最大化的窗口铺满视口。
+
+**标题栏双击 = 最大化/还原**（Windows 的手势）。egui 默认是"双击折叠"（保留标题、藏掉内容），
+这里特意关掉折叠；再双击一次（窗口已最大化或最小化）则还原。
+
+**最小化的呈现可以选**（`LiveBackend::with_minimize_style`）：
+
+| 取值 | 行为 |
+| ---- | ---- |
+| `MinimizeStyle::Hidden`（默认，**仿真**） | 窗口离开屏幕，和 Windows 一样；viewpor 底部出现一条 "Minimised: <标题>" 的**任务栏**，点一下恢复（脚本收到 `$GUI_EVENT_RESTORE`） |
+| `MinimizeStyle::TitleBar` | 保留标题栏、只藏内容（egui 折叠的观感），窗口仍在屏幕上，**双击标题栏恢复** |
+
+用户的其他状态操作也会告诉脚本：双击标题栏最大化 → `$GUI_EVENT_MAXIMIZE`(-6)，还原 →
+`$GUI_EVENT_RESTORE`(-5)，任务栏恢复 → 同样是 -5；`WinGetState` 的位标志照旧跟着变
+（它和 `@SW_*` 是两套值）。
 
 `@SW_*`（0…11）现在是真正的宏，`WinSetState` 按 AutoIt 的 `@SW_*` 解释（注意它**不是**
 `WinGetState` 的位标志：`@SW_MINIMIZE` 是 6，而 `WIN_MINIMIZED` 位是 16）。

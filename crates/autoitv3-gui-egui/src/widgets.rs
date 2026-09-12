@@ -112,6 +112,33 @@ impl WindowGeometry {
     }
 }
 
+/// How a minimised window is presented.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MinimizeStyle {
+    /// Faithful emulation: a minimised window is off screen, exactly as Windows
+    /// hides it. The way back has to come from somewhere else — a taskbar, a
+    /// script, or `WinSetState(@SW_RESTORE)`.
+    #[default]
+    Hidden,
+    /// Keep the title bar and hide the body, so the window stays on screen as
+    /// something the user can click. Double-clicking the title restores it.
+    ///
+    /// This is *not* what Windows does; it is the friendlier option when the
+    /// backend has no taskbar.
+    TitleBar,
+}
+
+/// What drawing one AutoIt window produced this frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrawnWindow {
+    /// Client area drawn, or `None` when the window is not on screen.
+    pub client: Option<egui::Vec2>,
+    /// The user asked for a state change (double-clicked the title bar, the
+    /// Windows gesture for maximise/restore). The caller passes it to the
+    /// semantics layer so the script hears about it.
+    pub state_request: Option<WindowState>,
+}
+
 /// What the previous frame drew for one window; the caller keeps one per handle.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LastWindow {
@@ -162,11 +189,16 @@ pub fn show_autoit_window(
     controls: &[Control],
     open: &mut bool,
     last: LastWindow,
+    minimize: MinimizeStyle,
     actions: &mut Vec<Interaction>,
-) -> Option<egui::Vec2> {
-    if !window.visible || window.state == WindowState::Minimized {
-        // Minimised: AutoIt keeps the window, the screen does not show it.
-        return None;
+) -> DrawnWindow {
+    if !window.visible {
+        return DrawnWindow::default();
+    }
+    let minimized = window.state == WindowState::Minimized;
+    if minimized && minimize == MinimizeStyle::Hidden {
+        // Off screen: AutoIt keeps the window, the screen does not show it.
+        return DrawnWindow::default();
     }
     let title = if window.title.is_empty() {
         "AutoIt"
@@ -178,7 +210,10 @@ pub fn show_autoit_window(
     let script_moved = last.geometry != Some(geometry);
 
     // How big the client area should be this frame, and where the window goes.
-    let (decided, pos) = if geometry.state == WindowState::Maximized {
+    let (decided, pos) = if minimized {
+        // Title-bar style: keep the window where it is, with no body.
+        (vec2(wanted.x, 0.0), None)
+    } else if geometry.state == WindowState::Maximized {
         // A floating egui window cannot really be maximised, so fill the
         // viewport less the title bar and frame measured on an earlier frame.
         let chrome = last
@@ -191,7 +226,10 @@ pub fn show_autoit_window(
         let screen = ctx.content_rect();
         (
             (screen.size() - chrome).max(vec2(80.0, 80.0)),
-            Some(screen.min),
+            // Only on the frame the state changed: moving it every frame would
+            // mean switching the drag mode every frame, and egui only creates
+            // the title-bar widget (the double-click target) in title-bar mode.
+            script_moved.then_some(screen.min),
         )
     } else if script_moved {
         (
@@ -208,6 +246,11 @@ pub fn show_autoit_window(
     let mut drawn = None;
     let mut frame = egui::Window::new(title)
         .id(window_area_id(window.handle))
+        // egui collapses a window when its title is double-clicked. Windows
+        // maximises instead, so turn the collapse off and handle the
+        // double-click below (the title-bar widget stays: it is also what
+        // drags the window).
+        .collapsible(false)
         .default_pos([geometry.x as f32, geometry.y as f32])
         .default_size(wanted);
     if let Some(pos) = pos {
@@ -237,10 +280,26 @@ pub fn show_autoit_window(
         };
         ui.set_min_size(target);
         ui.set_max_size(target);
-        actions.append(&mut draw_window_body(ui, controls));
+        if !minimized {
+            actions.append(&mut draw_window_body(ui, controls));
+        }
         drawn = Some(ui.min_rect().size());
     });
-    drawn
+
+    // Windows maximises a window when its title bar is double-clicked, and
+    // restores it when it is already maximised or minimised.
+    let state_request = ctx
+        .read_response(window_area_id(window.handle).with("__title_click"))
+        .filter(|response| response.double_clicked())
+        .map(|_| match geometry.state {
+            WindowState::Normal => WindowState::Maximized,
+            WindowState::Maximized | WindowState::Minimized => WindowState::Normal,
+        });
+
+    DrawnWindow {
+        client: drawn,
+        state_request,
+    }
 }
 
 /// Draw an entire window body: the menu bar, then the controls that are not

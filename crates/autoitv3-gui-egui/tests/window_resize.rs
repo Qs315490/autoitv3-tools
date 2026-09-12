@@ -8,7 +8,9 @@
 #![cfg(feature = "egui")]
 
 use autoitv3_gui::{Control, ControlKind, Window};
-use autoitv3_gui_egui::{show_autoit_window, window_area_id, LastWindow, WindowGeometry};
+use autoitv3_gui_egui::{
+    show_autoit_window, window_area_id, LastWindow, MinimizeStyle, WindowGeometry,
+};
 use egui::{vec2, Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 
 const WIDTH: i32 = 380;
@@ -26,10 +28,10 @@ fn controls() -> Vec<Control> {
     vec![label, input, button]
 }
 
-fn raw(events: Vec<Event>) -> RawInput {
+fn raw(time: f64, events: Vec<Event>) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 700.0))),
-        time: Some(0.0),
+        time: Some(time),
         events,
         ..Default::default()
     }
@@ -52,6 +54,13 @@ struct Harness {
     last: LastWindow,
     /// What the last frame drew; `None` when the window was not on screen.
     drawn: Option<Vec2>,
+    /// A state change the user asked for (double-clicking the title bar).
+    requested: Option<autoitv3_gui::WindowState>,
+    minimize: MinimizeStyle,
+    /// Seconds; egui tells a double-click from a triple one by how long ago the
+    /// previous click was, so a frozen clock turns the second gesture into a
+    /// triple click.
+    time: f64,
 }
 
 impl Harness {
@@ -64,26 +73,34 @@ impl Harness {
             window,
             last: LastWindow::default(),
             drawn: None,
+            requested: None,
+            minimize: MinimizeStyle::Hidden,
+            time: 0.0,
         }
     }
 
     /// One frame: returns the window's outer rect and the client size.
     fn frame(&mut self, events: Vec<Event>) -> (Rect, Vec2) {
         let last = self.last;
-        let mut client = None;
-        let mut output = self.ctx.run_ui(raw(events), |ui| {
+        let minimize = self.minimize;
+        self.time += 0.05;
+        let mut drawn = autoitv3_gui_egui::DrawnWindow::default();
+        let mut output = self.ctx.run_ui(raw(self.time, events), |ui| {
             let mut open = true;
             let mut actions = Vec::new();
-            client = show_autoit_window(
+            drawn = show_autoit_window(
                 ui.ctx(),
                 &self.window,
                 &controls(),
                 &mut open,
                 last,
+                minimize,
                 &mut actions,
             );
         });
         output.textures_delta.clear();
+        let client = drawn.client;
+        self.requested = drawn.state_request;
         self.drawn = client;
         self.last = LastWindow {
             client: client.or(last.client),
@@ -236,7 +253,7 @@ fn a_minimised_window_is_not_drawn_and_comes_back_where_it_was() {
     let mut harness = Harness::new();
     let (before, _) = harness.frame(vec![]);
 
-    // @SW_MINIMIZE: AutoIt keeps the window, the screen does not show it.
+    // The faithful style: @SW_MINIMIZE takes the window off screen.
     harness.window.state = autoitv3_gui::WindowState::Minimized;
     let _ = harness.frame(vec![]);
     assert!(
@@ -259,6 +276,47 @@ fn a_minimised_window_is_not_drawn_and_comes_back_where_it_was() {
 }
 
 #[test]
+fn the_title_bar_style_keeps_the_title_and_hides_the_body() {
+    let mut harness = Harness::new();
+    harness.minimize = MinimizeStyle::TitleBar;
+    let (normal, _) = harness.frame(vec![]);
+
+    harness.window.state = autoitv3_gui::WindowState::Minimized;
+    let (collapsed, client) = harness.frame(vec![]);
+    assert_eq!(
+        client,
+        vec2(WIDTH as f32, 0.0),
+        "a title-bar-style window keeps no body"
+    );
+    assert!(
+        collapsed.height() < normal.height() - 100.0,
+        "the body is gone but the title bar stays: {normal:?} -> {collapsed:?}"
+    );
+    assert!(
+        (collapsed.width() - normal.width()).abs() < 1.0,
+        "the title bar keeps the width: {normal:?} -> {collapsed:?}"
+    );
+
+    // Double-clicking that title bar is the way back.
+    let title = Pos2::new(collapsed.center().x, collapsed.top() + 8.0);
+    double_click(&mut harness, title);
+    assert_eq!(
+        harness.requested,
+        Some(autoitv3_gui::WindowState::Normal),
+        "double-clicking a minimised title bar should restore"
+    );
+}
+
+/// Two clicks in quick succession on the same spot.
+fn double_click(harness: &mut Harness, pos: Pos2) {
+    harness.frame(vec![Event::PointerMoved(pos)]);
+    harness.frame(vec![press(pos, true)]);
+    harness.frame(vec![press(pos, false)]);
+    harness.frame(vec![press(pos, true)]);
+    harness.frame(vec![press(pos, false)]);
+}
+
+#[test]
 fn a_maximised_window_fills_the_viewport() {
     let mut harness = Harness::new();
     let (normal, _) = harness.frame(vec![]);
@@ -278,4 +336,52 @@ fn a_maximised_window_fills_the_viewport() {
         maximized.width() > screen.width() * 0.9,
         "a maximised window should nearly fill the viewport: {maximized:?}"
     );
+}
+
+#[test]
+fn double_clicking_the_title_bar_maximises_and_restores() {
+    let mut harness = Harness::new();
+    let (start, _) = harness.frame(vec![]);
+    let title = Pos2::new(start.center().x, start.top() + 8.0);
+
+    // Windows maximises on a title-bar double-click; egui would collapse the
+    // window instead, which is what this guards against.
+    double_click(&mut harness, title);
+    assert_eq!(
+        harness.requested,
+        Some(autoitv3_gui::WindowState::Maximized),
+        "the first double-click should ask to maximise"
+    );
+    let (after, _) = harness.frame(vec![]);
+    assert!(
+        after.height() >= start.height(),
+        "a double-click must not collapse the window: {start:?} -> {after:?}"
+    );
+
+    // Obey it the way the semantics layer would, then double-click again —
+    // after a gap, so egui counts a fresh double-click rather than a triple.
+    harness.time += 1.0;
+    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    let (maximized, _) = harness.frame(vec![]);
+    assert!(maximized.height() > start.height(), "maximised is taller");
+    let title = Pos2::new(maximized.center().x, maximized.top() + 8.0);
+    double_click(&mut harness, title);
+    assert_eq!(
+        harness.requested,
+        Some(autoitv3_gui::WindowState::Normal),
+        "double-clicking a maximised title bar should restore"
+    );
+}
+
+#[test]
+fn a_collapsed_window_still_reports_the_real_client_size() {
+    // The caller must not mistake "collapsed to a title bar" for a resize.
+    let mut harness = Harness::new();
+    harness.minimize = MinimizeStyle::TitleBar;
+    let (_, client) = harness.frame(vec![]);
+    assert!((client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 1.0);
+
+    harness.window.state = autoitv3_gui::WindowState::Minimized;
+    let (_, collapsed) = harness.frame(vec![]);
+    assert_eq!(collapsed.y, 0.0);
 }

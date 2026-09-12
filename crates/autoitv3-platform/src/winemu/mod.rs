@@ -82,6 +82,7 @@ mod version;
 pub use dllstruct::{DllStruct, FieldSelector};
 pub use gui::{
     Control, ControlKind, GuiBackend, GuiEvent, GuiImage, GuiUpdate, HeadlessBackend, Window,
+    WindowState,
 };
 pub use paths::WindowsPaths;
 pub use crypto::{CipherAlg, HashAlg};
