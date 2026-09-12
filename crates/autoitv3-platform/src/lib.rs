@@ -118,6 +118,11 @@ impl Platform for CompositePlatform {
         ctx: &mut dyn HostContext,
     ) -> Result<Option<Value>, RuntimeError> {
         for layer in &mut self.layers {
+            // `provides` is a cheap, clone-free pre-filter: only the layer
+            // that will actually answer pays for the argument clone.
+            if !layer.provides(name) {
+                continue;
+            }
             if let Some(v) = layer.call(name, args.clone(), ctx)? {
                 return Ok(Some(v));
             }
@@ -283,11 +288,10 @@ impl Platform for FilteredPlatform {
     }
 
     fn provides(&self, name: &str) -> bool {
-        let forced = self
+        !self
             .declined
             .iter()
-            .any(|d| d == &name.to_ascii_lowercase());
-        !forced && self.inner.provides(name)
+            .any(|d| d.eq_ignore_ascii_case(name)) && self.inner.provides(name)
     }
 
     fn macro_value(&self, name: &str) -> Option<Value> {
@@ -303,7 +307,7 @@ impl Platform for FilteredPlatform {
         if self
             .declined
             .iter()
-            .any(|d| d == &name.to_ascii_lowercase())
+            .any(|d| d.eq_ignore_ascii_case(name))
         {
             return Ok(None);
         }

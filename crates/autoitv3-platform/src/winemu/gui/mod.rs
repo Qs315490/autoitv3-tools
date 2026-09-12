@@ -93,6 +93,18 @@ pub const FUNCTIONS: &[&str] = &[
     "AutoItWinSetTitle", "Break",
 ];
 
+/// `FUNCTIONS` as a lookup set, built once on first use.
+///
+/// Every builtin call passes through `GuiState::call`; the set turns the
+/// "is this even a GUI function?" gate into a hash lookup instead of an
+/// O(165) scan plus lets the non-GUI majority skip the state-machine prelude.
+static FUNCTIONS_SET: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+    std::sync::OnceLock::new();
+
+fn functions_set() -> &'static std::collections::HashSet<&'static str> {
+    FUNCTIONS_SET.get_or_init(|| FUNCTIONS.iter().copied().collect())
+}
+
 /// The GUI half of the emulation: the model, a backend and scripted events.
 pub struct GuiState {
     /// The widget model all backends agree on.
@@ -330,7 +342,7 @@ impl GuiState {
 
     /// Whether this layer answers `name`.
     pub fn provides(name: &str) -> bool {
-        FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(name))
+        functions_set().contains(name.to_ascii_lowercase().as_str())
     }
 
     /// Drain backend events, then hand out the next scripted one.
@@ -366,16 +378,21 @@ impl GuiState {
     /// Dispatch a GUI call; `None` means "not a GUI function".
     ///
     /// Any edits a live window queued are applied first, so a `GUICtrlRead`
-    /// after typing sees the new text.
+    /// after typing sees the new text. Non-GUI names exit before the prelude:
+    /// every builtin call passes through here, and only GUI names need the
+    /// backend sync.
     pub fn call(
         &mut self,
         name: &str,
         args: &[Value],
         ctx: &mut dyn HostContext,
     ) -> Option<Value> {
+        let key = name.to_ascii_lowercase();
+        if !functions_set().contains(key.as_str()) {
+            return None;
+        }
         self.apply_updates();
         self.sync_desktop();
-        let key = name.to_ascii_lowercase();
         if let Some(kind) = ControlKind::from_create(&key) {
             return Some(self.create_control(kind, args, ctx));
         }
