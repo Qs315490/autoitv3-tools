@@ -149,6 +149,10 @@ pub struct DrawnWindow {
     pub chrome: Option<egui::Vec2>,
     /// Where the window ended up, as the model's `x`/`y` see it.
     pub pos: Option<egui::Pos2>,
+    /// The pointer was dragging *this* window this frame, so its geometry is
+    /// the user's: the caller must report a change as theirs even when the
+    /// model looks like it moved (the model is only echoing the last report).
+    pub pointer_owns: bool,
 }
 
 /// What the previous frame drew for one window; the caller keeps one per handle.
@@ -166,6 +170,10 @@ pub struct LastWindow {
     pub chrome: Option<egui::Vec2>,
     /// Where the window was drawn.
     pub pos: Option<egui::Pos2>,
+    /// The pointer was dragging this window, so it owns the geometry until it
+    /// is released — a fast drag can leave the pointer outside the rectangle
+    /// the last frame drew, and the drag must not change hands mid-way.
+    pub pointer_owns: bool,
 }
 
 /// The egui area id of an AutoIt window. Titles are not unique (two windows may
@@ -197,7 +205,10 @@ const DEFAULT_CHROME: egui::Vec2 = vec2(16.0, 56.0);
 /// * while the pointer is down: nothing, so a drag — including one that shrinks
 ///   the window — is in charge;
 /// * when the script moved or resized it: the script's size, and the script's
-///   position, since `WinMove`/`WinSetState` own the geometry then.
+///   position, since `WinMove`/`WinSetState` own the geometry then — *unless*
+///   the pointer is dragging this window right now, because then the model is
+///   only echoing back the place the drag reported, one round trip behind the
+///   pointer. Applying it would make the window lag and stutter under the drag.
 ///
 /// The caller reports a changed client size back to the model, which is how a
 /// user drag reaches `WinGetPos`; see `LiveBackend`.
@@ -230,6 +241,30 @@ pub fn show_autoit_window(
     // Title bar + frame, as measured on an earlier frame.
     let chrome = last.chrome.unwrap_or(DEFAULT_CHROME);
 
+    // The release frame still belongs to the drag: egui only writes the final
+    // size into its own state then, so clamping on that frame would drop the
+    // last stretch of the drag.
+    let dragging = ctx.input(|input| input.pointer.any_down() || input.pointer.any_released());
+
+    // Is the pointer on the window we drew last? Only the window a drag started
+    // on belongs to the pointer, so a script moving *another* window mid-drag
+    // still gets its move.
+    //
+    // While the pointer is on ours it owns the place: the script applies the
+    // position we reported a moment ago, so taking the model's place here would
+    // snap the window back to where it was one frame — or one poll — ago. That
+    // is what makes a drag lag behind the pointer and stutter.
+    let pointer_owns_geometry = dragging
+        && (last.pointer_owns
+            || ctx
+                .input(|input| input.pointer.interact_pos())
+                .zip(last.pos.zip(last.client))
+                .is_some_and(|(pointer, (pos, client))| {
+                    egui::Rect::from_min_size(pos, client + chrome)
+                        .expand(4.0)
+                        .contains(pointer)
+                }));
+
     // How big the client area should be this frame, and where the window goes.
     let (decided, pos) = if minimized {
         // Title-bar style: keep the window where it is, with no body.
@@ -243,9 +278,9 @@ pub fn show_autoit_window(
             // Only on the frame the state changed: moving it every frame would
             // mean switching the drag mode every frame, and egui only creates
             // the title-bar widget (the double-click target) in title-bar mode.
-            script_moved.then_some(screen.min),
+            (script_moved && !pointer_owns_geometry).then_some(screen.min),
         )
-    } else if script_moved {
+    } else if script_moved && !pointer_owns_geometry {
         (
             wanted,
             // AutoIt uses a negative coordinate for "leave that axis alone".
@@ -256,11 +291,6 @@ pub fn show_autoit_window(
         // What we drew last; the first frame falls back to `GUICreate`.
         (last.client.unwrap_or(wanted), None)
     };
-
-    // The release frame still belongs to the drag: egui only writes the final
-    // size into its own state then, so clamping on that frame would drop the
-    // last stretch of the drag.
-    let dragging = ctx.input(|input| input.pointer.any_down() || input.pointer.any_released());
     let area_id = window_area_id(window.handle);
     // Where the window controls end up; a click there is theirs, not the title
     // bar's (which would read it as a double-click).
@@ -446,6 +476,7 @@ pub fn show_autoit_window(
         state_request,
         controls: controls_rect,
         pos,
+        pointer_owns: pointer_owns_geometry,
         // Outer minus what we drew: exact, whatever the window's state.
         chrome: drawn
             .and_then(|client| {
@@ -464,8 +495,9 @@ pub fn show_autoit_window(
 /// window oscillate between two sizes.
 ///
 /// `user_state` says `geometry` carries a state the *user* asked for and the
-/// script has not applied yet: a size or place change on such a frame is the
-/// user's, even though the model looks like it moved the window itself.
+/// script has not applied yet, or that the pointer is dragging the window
+/// (see [`DrawnWindow::pointer_owns`]): a size or place change on such a frame
+/// is the user's, even though the model looks like it moved the window itself.
 pub fn record_drawn(
     window: &Window,
     geometry: WindowGeometry,
@@ -479,6 +511,7 @@ pub fn record_drawn(
         geometry: Some(geometry),
         chrome,
         pos: drawn.pos,
+        pointer_owns: drawn.pointer_owns,
     };
     let Some(client) = drawn.client else {
         // Nothing was drawn: keep the size for when the window comes back.
