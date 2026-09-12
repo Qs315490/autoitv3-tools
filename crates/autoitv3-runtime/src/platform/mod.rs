@@ -119,4 +119,12 @@ pub trait Platform {
         let _ = (obj, member, args, ctx);
         Ok(None)
     }
+
+    /// Drain the callback invocations an emulated enumerator scheduled during
+    /// the last [`Platform::call`] (`DllCallbackRegister` + `EnumWindows`):
+    /// `(AutoIt function name, arguments)` pairs the runtime executes after
+    /// the platform call returned. Default: nothing pending.
+    fn take_pending_callbacks(&mut self) -> Vec<(String, Vec<Value>)> {
+        Vec::new()
+    }
 }

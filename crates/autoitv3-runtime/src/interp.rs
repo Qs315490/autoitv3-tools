@@ -33,6 +33,10 @@ pub const DEFAULT_MAX_STEPS: u64 = 5_000_000;
 /// Default recursion guard.
 pub const DEFAULT_MAX_DEPTH: usize = 256;
 
+/// Upper bound on callback invocations drained after a single platform call,
+/// so a scripted enumerator cannot flood the run.
+const MAX_PENDING_CALLBACKS: usize = 10_000;
+
 /// One activation record.
 struct Frame {
     vars: HashMap<String, Value>,
@@ -520,14 +524,33 @@ impl Runtime {
         }
 
         // Then the OS layer, when one is installed.
+        let mut result = None;
+        let mut pending: Vec<(String, Vec<Value>)> = Vec::new();
         if self.platform.is_some() {
             let Runtime { globals, error, extended, profile, platform, .. } = self;
             let mut ctx = HostBridge { globals, error, extended, profile };
             if let Some(p) = platform.as_mut() {
-                if let Some(v) = p.call(name, args, &mut ctx)? {
-                    return Ok(v);
-                }
+                result = p.call(name, args, &mut ctx)?;
+                pending = p.take_pending_callbacks();
             }
+        }
+
+        // An emulated enumerator may have scheduled callback invocations
+        // (`DllCallbackRegister` + `EnumWindows`): run the named AutoIt
+        // functions now, after the platform call returned — the emulation
+        // never re-enters the interpreter mid-call. `@error`/`@extended`
+        // keep describing the platform call, not the callbacks.
+        if !pending.is_empty() {
+            let (err, ext) = (self.error, self.extended);
+            for (cb_name, cb_args) in pending.into_iter().take(MAX_PENDING_CALLBACKS) {
+                self.call_function(&cb_name, cb_args)?;
+            }
+            self.error = err;
+            self.extended = ext;
+        }
+
+        if let Some(v) = result {
+            return Ok(v);
         }
 
         Err(RuntimeError::UndefinedFunction { name: name.to_string(), span: Some(span) })

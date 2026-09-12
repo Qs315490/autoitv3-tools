@@ -1053,3 +1053,35 @@ Return $n[0] & ":" & DllStructGetData($d, 1)
 "#;
     assert_eq!(emu_only(WindowsEmulation::new(), body).to_autoit_string(), "3:abc");
 }
+
+#[test]
+fn enumwindows_drives_a_registered_callback() {
+    let emu = WindowsEmulation::new().with_scripted_windows(vec![0x1001, 0x1002, 0x1003]);
+    let src = r#"
+Global $g_Calls = 0
+Global $g_Last = 0
+
+Func F()
+    Local $cb = DllCallbackRegister("OnWindow", "int", "int;int")
+    Local $r = DllCall("user32.dll", "int", "EnumWindows", "ptr", $cb, "int", 42)
+    Return $g_Calls & ":" & $g_Last & ":" & $r[0]
+EndFunc
+
+Func OnWindow($hwnd, $lparam)
+    $g_Calls += 1
+    $g_Last = $hwnd
+    Return 1
+EndFunc
+"#;
+    // The callback really runs — once per scripted handle, with the handle as
+    // the first argument and the EnumWindows lparam as the second.
+    let prog = parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    // Execute the top level so the `Global` counters exist.
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "3:4099:True"
+    );
+}

@@ -437,6 +437,12 @@ pub struct WindowsEmulation {
     open_files: BTreeMap<i64, OpenFile>,
     /// Next id for `open_files`.
     next_file_handle: i64,
+    /// Handles the scripted `EnumWindows` family reports (see
+    /// [`WindowsEmulation::with_scripted_windows`]).
+    scripted_windows: Vec<i64>,
+    /// Callback invocations scheduled by the emulated enumerators, drained by
+    /// the runtime after the `DllCall` returns.
+    pending_callbacks: Vec<(String, Vec<Value>)>,
     /// Handles handed out by `DllOpen`.
     dlls: Vec<Option<String>>,
     /// Emulated CryptoAPI objects.
@@ -504,6 +510,8 @@ impl WindowsEmulation {
             sandbox_files: BTreeMap::new(),
             open_files: BTreeMap::new(),
             next_file_handle: 0x1000,
+            scripted_windows: Vec::new(),
+            pending_callbacks: Vec::new(),
             dlls: Vec::new(),
             crypto: CryptoState::default(),
             next_addr: 0x0100_0000,
@@ -629,6 +637,15 @@ impl WindowsEmulation {
     pub fn with_file(mut self, path: impl Into<String>, contents: impl Into<Vec<u8>>) -> Self {
         let path = normalise_sandbox_path(&path.into());
         self.sandbox_files.insert(path, contents.into());
+        self
+    }
+
+    /// Script the window list the `EnumWindows` family reports. Each handle
+    /// becomes one callback invocation whose first argument is the handle;
+    /// the AutoIt callback function itself runs after the `DllCall` returns
+    /// (the emulation never re-enters the interpreter mid-call).
+    pub fn with_scripted_windows(mut self, handles: Vec<i64>) -> Self {
+        self.scripted_windows = handles;
         self
     }
 
@@ -968,6 +985,11 @@ impl WindowsEmulation {
                 .collect()
         };
         self.memory_write(addr, &bytes)
+    }
+
+    /// Drain the callback invocations the enumerators scheduled.
+    pub fn take_pending_callbacks(&mut self) -> Vec<(String, Vec<Value>)> {
+        std::mem::take(&mut self.pending_callbacks)
     }
 
     /// Hand out a `DllOpen` handle for `name`.
@@ -1323,6 +1345,25 @@ impl WindowsEmulation {
                     return None;
                 }
                 Some(DllOutcome::value(Value::Int(dst as i64)))
+            }
+
+            // ---------------- scripted enumeration ----------------
+            "enumwindows" | "enumchildwindows" | "enumthreadwindows" => {
+                let cb = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                let lparam = arg(function.starts_with("enumthread") as usize + 1)
+                    .map(|v| v.to_int())
+                    .unwrap_or(0);
+                let index = callback_index(cb)?;
+                let name = self
+                    .callbacks
+                    .get(index)
+                    .cloned()
+                    .flatten()?;
+                for hwnd in self.scripted_windows.clone() {
+                    self.pending_callbacks
+                        .push((name.clone(), vec![Value::Int(hwnd), Value::Int(lparam)]));
+                }
+                Some(DllOutcome::value(Value::Bool(true)))
             }
 
             // ---------------- CryptoAPI ----------------
@@ -1900,6 +1941,10 @@ impl WindowsEmulation {
 impl Platform for WindowsEmulation {
     fn name(&self) -> &'static str {
         "windows-emulation"
+    }
+
+    fn take_pending_callbacks(&mut self) -> Vec<(String, Vec<Value>)> {
+        self.take_pending_callbacks()
     }
 
     fn provides(&self, name: &str) -> bool {
