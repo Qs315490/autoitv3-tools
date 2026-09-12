@@ -106,6 +106,11 @@ impl WindowGeometry {
         }
     }
 
+    /// The top-left the script asked for.
+    fn pos(self) -> egui::Pos2 {
+        egui::pos2(self.x.max(0) as f32, self.y.max(0) as f32)
+    }
+
     /// The client area the script asked for.
     fn client(self) -> egui::Vec2 {
         vec2(self.width.max(1) as f32, self.height.max(1) as f32)
@@ -142,6 +147,8 @@ pub struct DrawnWindow {
     pub controls: Option<egui::Rect>,
     /// Title bar + frame, measured this frame (outer minus client).
     pub chrome: Option<egui::Vec2>,
+    /// Where the window ended up, as the model's `x`/`y` see it.
+    pub pos: Option<egui::Pos2>,
 }
 
 /// What the previous frame drew for one window; the caller keeps one per handle.
@@ -404,6 +411,10 @@ pub fn show_autoit_window(
         }
     });
 
+    let pos = ctx
+        .memory(|memory| memory.area_rect(area_id))
+        .map(|rect| rect.min);
+
     // Windows maximises a window when its title bar is double-clicked, and
     // restores it when it is already maximised or minimised. A click that went
     // to the window controls is not a title-bar double-click.
@@ -417,10 +428,22 @@ pub fn show_autoit_window(
             });
     }
 
+    // Dragging a maximised window's border or title bar un-maximises it, the
+    // way Windows puts the window back to its normal placement and lets the
+    // pointer take it from there.
+    if geometry.state == WindowState::Maximized && dragging {
+        let resized = drawn.is_some_and(|client| (client - decided).length() > 0.5);
+        let moved = pos.is_some_and(|pos| pos.distance(geometry.pos()) > 0.5);
+        if resized || moved {
+            state_request = Some(WindowState::Normal);
+        }
+    }
+
     DrawnWindow {
         client: drawn,
         state_request,
         controls: controls_rect,
+        pos,
         // Outer minus what we drew: exact, whatever the window's state.
         chrome: drawn
             .and_then(|client| {
@@ -437,12 +460,17 @@ pub fn show_autoit_window(
 /// Every caller must fold frames the same way: forgetting to carry the drawn
 /// size (or the chrome) over a minimised or maximised frame is what makes a
 /// window oscillate between two sizes.
+///
+/// `user_state` says `geometry` carries a state the *user* asked for and the
+/// script has not applied yet: a size or place change on such a frame is the
+/// user's, even though the model looks like it moved the window itself.
 pub fn record_drawn(
     window: &Window,
     geometry: WindowGeometry,
     last: LastWindow,
     drawn: DrawnWindow,
-) -> (LastWindow, Option<GuiUpdate>) {
+    user_state: bool,
+) -> (LastWindow, Vec<GuiUpdate>) {
     let chrome = drawn.chrome.or(last.chrome);
     let record = |client| LastWindow {
         client,
@@ -451,23 +479,42 @@ pub fn record_drawn(
     };
     let Some(client) = drawn.client else {
         // Nothing was drawn: keep the size for when the window comes back.
-        return (record(last.client), None);
+        return (record(last.client), Vec::new());
     };
-    // A drag is the only thing worth reporting: a size the script chose is
-    // already in the model, and a minimised or maximised window is sized by its
-    // state and the desktop rather than by the pointer.
-    let dragged = geometry.state == WindowState::Normal
-        && last.geometry == Some(geometry)
-        && last
+    // A drag is the only thing worth reporting: a size or place the script
+    // chose is already in the model, and a minimised or maximised window is
+    // sized by its state and the desktop rather than by the pointer.
+    //
+    let script_moved = last.geometry != Some(geometry);
+    let user_dragged = geometry.state == WindowState::Normal
+        && (user_state || !script_moved)
+        && last.client.is_some();
+    let mut updates = Vec::new();
+    if user_dragged {
+        if last
             .client
-            .map(|previous| (client - previous).length() > 0.5)
-            .unwrap_or(false);
-    let update = (dragged && client.x >= 1.0 && client.y >= 1.0).then(|| GuiUpdate::Resize {
-        handle: window.handle,
-        width: client.x.round() as i32,
-        height: client.y.round() as i32,
-    });
-    (record(Some(client)), update)
+            .is_some_and(|previous| (client - previous).length() > 0.5)
+            && client.x >= 1.0
+            && client.y >= 1.0
+        {
+            updates.push(GuiUpdate::Resize {
+                handle: window.handle,
+                width: client.x.round() as i32,
+                height: client.y.round() as i32,
+            });
+        }
+        if let Some(pos) = drawn.pos {
+            let (x, y) = (pos.x.round() as i32, pos.y.round() as i32);
+            if (x - geometry.x).abs() > 1 || (y - geometry.y).abs() > 1 {
+                updates.push(GuiUpdate::Move {
+                    handle: window.handle,
+                    x,
+                    y,
+                });
+            }
+        }
+    }
+    (record(Some(client)), updates)
 }
 
 /// A title-bar window button: clicked, described for accessibility, and

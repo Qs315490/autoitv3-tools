@@ -117,8 +117,8 @@ impl Harness {
         self.drawn = client;
         // Exactly what LiveBackend does with a frame, so the two cannot drift.
         let geometry = WindowGeometry::of(&self.window);
-        let (next, update) = record_drawn(&self.window, geometry, last, drawn);
-        self.reported = update;
+        let (next, updates) = record_drawn(&self.window, geometry, last, drawn, false);
+        self.reported = updates.into_iter().next();
         self.last = next;
         let rect = self
             .ctx
@@ -575,7 +575,7 @@ fn rasterize_frame(harness: &mut Harness, events: Vec<Event>) -> (Vec<u8>, u32, 
     harness.requested = drawn.state_request;
     harness.controls = drawn.controls;
     let geometry = WindowGeometry::of(&harness.window);
-    let (next, _) = record_drawn(&harness.window, geometry, last, drawn);
+    let (next, _) = record_drawn(&harness.window, geometry, last, drawn, false);
     harness.last = next;
 
     // What EguiBackend does to turn shapes into pixels.
@@ -643,4 +643,139 @@ fn the_window_controls_are_line_art_like_the_close_button() {
              not a filled box"
         );
     }
+}
+
+#[test]
+fn dragging_a_maximised_window_leaves_the_maximised_state() {
+    // Windows un-maximises a window when its border is dragged, and lets the
+    // pointer take it from there; a maximised window here is pinned to the
+    // viewport, so without this the drag would be undone on the next frame.
+    let mut harness = Harness::new();
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    harness.window.state = autoitv3_gui::WindowState::Maximized;
+    let (maximized, _) = harness.frame(vec![]);
+    assert!(
+        maximized.width() > 800.0,
+        "the viewport is 900 wide, so maximised should fill it: {maximized:?}"
+    );
+
+    // Drag the right edge inwards.
+    let start = harness.frame(vec![]).0;
+    let from = Pos2::new(start.right() - 1.0, start.center().y);
+    for _ in 0..3 {
+        harness.frame(vec![Event::PointerMoved(from)]);
+    }
+    harness.frame(vec![press(from, true)]);
+    for step in 1..=4 {
+        let to = from - vec2(160.0 * step as f32 / 4.0, 0.0);
+        let (rect, _) = harness.frame(vec![Event::PointerMoved(to)]);
+        assert!(
+            rect.width() < maximized.width() - 20.0,
+            "the drag should shrink the window: {rect:?}"
+        );
+    }
+    assert_eq!(
+        harness.requested,
+        Some(autoitv3_gui::WindowState::Normal),
+        "the drag should ask to leave the maximised state"
+    );
+
+    // Once the script applies it (the model says Normal), the new size stays.
+    harness.time += 1.0;
+    harness.window.state = autoitv3_gui::WindowState::Normal;
+    harness.window.width = (start.width() - 160.0) as i32;
+    let (after, client) = harness.frame(vec![]);
+    assert!(
+        (after.width() - start.width()).abs() > 100.0,
+        "the window kept the dragged size: {start:?} -> {after:?}"
+    );
+    assert!(client.x > 0.0 && client.x < 900.0);
+}
+
+#[test]
+fn dragging_the_title_bar_moves_the_window_and_tells_the_model() {
+    let mut harness = Harness::new();
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    let start = harness.frame(vec![]).0;
+    let from = Pos2::new(start.center().x, start.top() + 8.0);
+    let to = from + vec2(60.0, 40.0);
+
+    harness.frame(vec![Event::PointerMoved(from)]);
+    harness.frame(vec![press(from, true)]);
+    for step in 1..=4 {
+        harness.frame(vec![Event::PointerMoved(
+            from + (to - from) * (step as f32 / 4.0),
+        )]);
+    }
+    let (moved, _) = harness.frame(vec![]);
+    assert!(
+        (moved.left() - start.left() - 60.0).abs() < 12.0
+            && (moved.top() - start.top() - 40.0).abs() < 12.0,
+        "the window followed the pointer: {start:?} -> {moved:?}"
+    );
+    match harness.reported {
+        Some(autoitv3_gui::GuiUpdate::Move { x, y, .. }) => {
+            assert!(
+                (x as f32 - moved.left()).abs() < 2.0 && (y as f32 - moved.top()).abs() < 2.0,
+                "the reported place {x},{y} should be where it was drawn: {moved:?}"
+            );
+        }
+        other => panic!("a user drag should report a move, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
+    // The script has not applied anything yet, so the window's numbers are the
+    // ones from the maximised frame; only the state differs. The size and place
+    // the user dragged to still have to reach the model, or the frame after
+    // this one snaps back to the desktop rectangle.
+    let mut window = Window::new(1, "W", 0, 0);
+    // While maximised the model holds the desktop rectangle; the user's drag is
+    // what the state override lets through.
+    window.width = 900;
+    window.height = 700;
+    let mut effective = window.clone();
+    effective.state = autoitv3_gui::WindowState::Normal;
+
+    let last = LastWindow {
+        client: Some(vec2(900.0, 700.0)),
+        geometry: Some(WindowGeometry {
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 700,
+            state: autoitv3_gui::WindowState::Maximized,
+        }),
+        chrome: Some(vec2(14.0, 48.0)),
+    };
+    let drawn = autoitv3_gui_egui::DrawnWindow {
+        client: Some(vec2(700.0, 500.0)),
+        pos: Some(Pos2::new(20.0, 30.0)),
+        ..Default::default()
+    };
+    let (_next, updates) = record_drawn(
+        &effective,
+        WindowGeometry::of(&effective),
+        last,
+        drawn,
+        true,
+    );
+    assert_eq!(
+        updates,
+        vec![
+            autoitv3_gui::GuiUpdate::Resize {
+                handle: 1,
+                width: 700,
+                height: 500
+            },
+            autoitv3_gui::GuiUpdate::Move {
+                handle: 1,
+                x: 20,
+                y: 30
+            },
+        ]
+    );
 }

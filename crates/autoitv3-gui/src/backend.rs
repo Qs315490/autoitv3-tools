@@ -54,6 +54,8 @@ pub enum GuiUpdate {
         width: i32,
         height: i32,
     },
+    /// The user moved a window; `x`/`y` is its new top-left.
+    Move { handle: i64, x: i32, y: i32 },
     /// The user changed a window's state — double-clicked its title bar, or
     /// clicked its taskbar button. The script sees `$GUI_EVENT_MINIMIZE`,
     /// `$GUI_EVENT_RESTORE` or `$GUI_EVENT_MAXIMIZE`.

@@ -1202,6 +1202,34 @@ impl GuiBackend for StateBackend {
 }
 
 #[test]
+fn a_user_move_reaches_wingetpos() {
+    // Dragging a window's title bar is a user move: the script sees it through
+    // WinGetPos (AutoIt surfaces no message for it).
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(ResizingBackend {
+        pending: vec![GuiUpdate::Move {
+            handle: 0x1_0000,
+            x: 300,
+            y: 200,
+        }],
+        window_created: false,
+        seen: seen.clone(),
+    }));
+    let body = r#"
+GUICreate("T", 380, 170, 10, 20)
+GUISetState()
+Local $p = WinGetPos("T")
+Return $p[0] & "," & $p[1]
+"#;
+    assert_eq!(text(emu, body), "300,200");
+    assert!(
+        seen.borrow().iter().any(|(_, w, h)| *w == 380 && *h == 170),
+        "the window was never shown to the backend: {:?}",
+        seen.borrow()
+    );
+}
+
+#[test]
 fn a_user_state_change_reaches_the_script() {
     use autoitv3_platform::winemu::WindowState;
 
