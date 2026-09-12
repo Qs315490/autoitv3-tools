@@ -209,6 +209,12 @@ impl GuiBackend for EguiBackend {
         Some(self.render())
     }
 
+    /// The canvas is this backend's desktop, so an emulated maximised window
+    /// fills it and `@DesktopWidth`/`@DesktopHeight` report it.
+    fn desktop_size(&self) -> Option<(i32, i32)> {
+        Some((self.width as i32, self.height as i32))
+    }
+
     fn present(&mut self) {
         if let Some(path) = self.screenshot_path.clone() {
             let _ = self.screenshot(&path);

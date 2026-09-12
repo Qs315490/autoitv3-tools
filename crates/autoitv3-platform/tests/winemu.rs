@@ -1241,6 +1241,85 @@ fn a_user_state_change_reaches_the_script() {
     );
 }
 
+/// A backend with a desktop size, which can switch to a bigger one after a
+/// few frames — the way a user resizes a live window's viewport.
+struct DesktopBackend {
+    sizes: Vec<(i32, i32)>,
+    /// Move to the next size once this many window updates have been seen.
+    change_after: usize,
+    seen: std::cell::Cell<usize>,
+}
+
+impl DesktopBackend {
+    fn fixed(size: (i32, i32)) -> Self {
+        Self {
+            sizes: vec![size],
+            change_after: usize::MAX,
+            seen: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl GuiBackend for DesktopBackend {
+    fn on_window(&mut self, _window: &Window) {
+        self.seen.set(self.seen.get() + 1);
+    }
+    fn desktop_size(&self) -> Option<(i32, i32)> {
+        let switches = self.seen.get() / self.change_after.max(1);
+        Some(self.sizes[switches.min(self.sizes.len() - 1)])
+    }
+}
+
+#[test]
+fn the_desktop_comes_from_the_backend() {
+    // No backend desktop: the emulated display mode.
+    assert_eq!(text(win10(), "Return @DesktopWidth"), "1024");
+    assert_eq!(text(win10(), "Return @DesktopHeight"), "768");
+
+    // A live window's viewport (or an offscreen canvas) is the desktop.
+    let emu = win10().with_gui_backend(Box::new(DesktopBackend::fixed((800, 600))));
+    assert_eq!(
+        text(emu, "Return @DesktopWidth & \"x\" & @DesktopHeight"),
+        "800x600"
+    );
+}
+
+#[test]
+fn maximising_takes_the_desktop_rectangle_and_restoring_gives_it_back() {
+    let emu = win10().with_gui_backend(Box::new(DesktopBackend::fixed((800, 600))));
+    let body = r#"
+GUICreate("T", 380, 170, 10, 20)
+WinSetState("T", "", @SW_MAXIMIZE)
+Local $max = WinGetPos("T")
+WinSetState("T", "", @SW_RESTORE)
+Local $back = WinGetPos("T")
+Return $max[0] & "," & $max[1] & " " & $max[2] & "x" & $max[3] & " -> " & $back[0] & "," & $back[1] & " " & $back[2] & "x" & $back[3]
+"#;
+    // Windows puts a maximised window at the top-left of the desktop and
+    // reports the desktop size, then restores the normal placement.
+    assert_eq!(text(emu, body), "0,0 800x600 -> 10,20 380x170");
+}
+
+#[test]
+fn a_maximised_window_follows_a_desktop_change() {
+    // The first desktop, then a bigger one: the window has to follow, and the
+    // script hears about the resize.
+    let mut backend = DesktopBackend::fixed((800, 600));
+    backend.sizes.push((1280, 720));
+    backend.change_after = 3;
+    let emu = win10().with_gui_backend(Box::new(backend));
+    let body = r#"
+GUICreate("T", 380, 170)
+GUISetState()
+WinSetState("T", "", @SW_MAXIMIZE)
+Local $msg = GUIGetMsg()
+Local $p = WinGetPos("T")
+Return $p[2] & "x" & $p[3] & " msg " & $msg
+"#;
+    // $GUI_EVENT_RESIZED is -12.
+    assert_eq!(text(emu, body), "1280x720 msg -12");
+}
+
 #[test]
 fn a_user_resize_reaches_wingetpos_and_guigetmsg() {
     // What a live window sends after the user drags an edge.

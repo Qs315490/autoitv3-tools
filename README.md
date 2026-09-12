@@ -875,10 +875,12 @@ cargo run -p autoitv3-gui-egui --features window --example live -- --auto
 # 不用人操作：脚本建完控件就返回，窗口自动关闭（验证接线用）
 ```
 
-> `--states` 的输出里能看到一个**已知偏差**：窗口最大化时 `WinGetPos` 仍返回还原尺寸
-> （模型只保存一份几何，没有"还原矩形 + 最大化矩形"两套）。真实 Windows 返回的是最大化后的
-> 屏幕尺寸，不少脚本靠它反推分辨率；要补需要给模型一个仿真桌面尺寸
-> （`@DesktopWidth`/`@DesktopHeight`），最大化时用还原矩形换桌面矩形。
+> `--states` 的第一步会打印**桌面尺寸**：实时窗口的**原生视口就是模拟桌面**，所以
+> `@DesktopWidth`/`@DesktopHeight` 报的就是那个父窗口的分辨率（离屏渲染用画布尺寸，
+> 无头分析回落到 1024×768 的假定显示模式）。窗口最大化时会把桌面矩形换成自己的几何
+> （`WinGetPos` 于是返回桌面尺寸、`WinGetClientSize` 同理），并把原矩形记下来供
+> `@SW_RESTORE` 还原——和 Windows 一致；之后你拖动父窗口改变分辨率，已最大化的窗口会跟着变
+> 并收到 `$GUI_EVENT_RESIZED`。
 
 示例里的 **Minimise** 按钮会 `WinSetState(@SW_MINIMIZE)`：默认模式下窗口消失、底部出现
 恢复按钮；`--titlebar` 模式下窗口收成标题栏、双击恢复。
@@ -893,6 +895,11 @@ backend.run(move |backend| {                    // 主线程；阻塞到窗口�
     // … 在 emu 上跑脚本；GUISetState() 之后窗口出现
 })?;
 ```
+
+**模拟桌面**：实时窗口的原生视口（`AutoIt GUI PoC` 那层）就是被仿真机器的桌面，
+`@DesktopWidth`/`@DesktopHeight` 读它，`@DesktopDepth`/`@DesktopRefresh` 给假定显示模式的
+32/60；离屏渲染后端把画布当桌面，无头运行回落到 1024×768。`GuiBackend::desktop_size()`
+就是后端报桌面的接口（不实现即用回落值），自定义后端记得转发它。
 
 **窗口尺寸与状态**：每个模拟窗口就是脚本 `GUICreate` 的**客户区大小**（第一次画时按它
 铺开，不再缩成内容大小），四个边和右下角的拖拽都能用，横竖都能拉。两个方向都通：

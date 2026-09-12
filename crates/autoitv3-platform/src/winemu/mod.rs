@@ -2231,6 +2231,14 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         "sw_restore" => Value::Int(9),
         "sw_showdefault" => Value::Int(10),
         "sw_forceminimize" => Value::Int(11),
+        // ----- display -----
+        // The desktop is whatever the backend provides: a live window's
+        // viewport, an offscreen renderer's canvas, or the emulated default.
+        "desktopwidth" => Value::Int(i64::from(emu.gui.desktop_size().0)),
+        "desktopheight" => Value::Int(i64::from(emu.gui.desktop_size().1)),
+        // The assumed display mode of that desktop.
+        "desktopdepth" => Value::Int(32),
+        "desktoprefresh" => Value::Int(60),
         // ----- machine identity -----
         "computername" => Value::Str(p.computer_name.clone()),
         "username" => Value::Str(p.user_name.clone()),

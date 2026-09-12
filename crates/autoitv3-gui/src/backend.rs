@@ -87,6 +87,15 @@ pub trait GuiBackend {
     fn snapshot(&mut self) -> Option<GuiImage> {
         None
     }
+    /// The size of the desktop this backend provides, in pixels.
+    ///
+    /// A live window's viewport and an offscreen canvas are both desktops for
+    /// the emulated machine, so `@DesktopWidth`/`@DesktopHeight` and a
+    /// maximised window take their size from here. `None` means "no real
+    /// desktop", and the emulation falls back to its default display mode.
+    fn desktop_size(&self) -> Option<(i32, i32)> {
+        None
+    }
 }
 
 /// The default backend: no rendering, no events of its own.

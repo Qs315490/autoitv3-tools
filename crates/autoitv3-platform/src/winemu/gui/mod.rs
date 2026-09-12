@@ -104,6 +104,9 @@ pub struct GuiState {
     polls: u64,
     /// The drawing pen `GUICtrlSetGraphic` moves around.
     draw_pen: (i32, i32),
+    /// The desktop size last seen, so a change can be noticed; `(0, 0)` until
+    /// the first GUI call.
+    desktop: (i32, i32),
 }
 
 impl Default for GuiState {
@@ -123,6 +126,7 @@ impl GuiState {
             auto_close: None,
             polls: 0,
             draw_pen: (0, 0),
+            desktop: (0, 0),
         }
     }
 
@@ -154,6 +158,83 @@ impl GuiState {
         self.backend.snapshot()
     }
 
+    /// The desktop the emulated machine has: the backend's viewport/canvas, or
+    /// [`DEFAULT_DESKTOP_SIZE`] when it has none.
+    pub fn desktop_size(&self) -> (i32, i32) {
+        self.backend
+            .desktop_size()
+            .unwrap_or(autoitv3_gui::DEFAULT_DESKTOP_SIZE)
+    }
+
+    /// Put a window into the state a `@SW_*` flag asks for, and return whether
+    /// anything changed.
+    ///
+    /// Maximising takes the window's rectangle as well, the way Windows does:
+    /// the desktop's rectangle replaces it, and the old one is kept for
+    /// `@SW_RESTORE`.
+    fn apply_show_flag(&mut self, handle: i64, flag: i64) -> bool {
+        let (visible, state) = show_flag(flag);
+        let (desktop_width, desktop_height) = self.desktop_size();
+        let Some(window) = self.model.window_mut(handle) else {
+            return false;
+        };
+        let mut changed = window.visible != visible || window.state != state;
+        window.visible = visible;
+        match state {
+            WindowState::Maximized => {
+                if window.state != WindowState::Maximized {
+                    window.restore = Some((window.x, window.y, window.width, window.height));
+                }
+                changed |= (window.width, window.height) != (desktop_width, desktop_height);
+                window.x = 0;
+                window.y = 0;
+                window.width = desktop_width;
+                window.height = desktop_height;
+            }
+            WindowState::Normal => {
+                if let Some((x, y, width, height)) = window.restore.take() {
+                    changed = true;
+                    window.x = x;
+                    window.y = y;
+                    window.width = width;
+                    window.height = height;
+                }
+            }
+            WindowState::Minimized => {}
+        }
+        window.state = state;
+        changed
+    }
+
+    /// A maximised window follows the desktop, the way Windows resizes it when
+    /// the display mode changes (a live window's viewport can be resized).
+    fn sync_desktop(&mut self) {
+        let desktop = self.desktop_size();
+        if self.desktop == desktop {
+            return;
+        }
+        self.desktop = desktop;
+        let (width, height) = desktop;
+        let maximized: Vec<i64> = self
+            .model
+            .windows
+            .iter()
+            .flatten()
+            .filter(|window| window.state == WindowState::Maximized)
+            .map(|window| window.handle)
+            .collect();
+        for handle in maximized {
+            if let Some(window) = self.model.window_mut(handle) {
+                window.x = 0;
+                window.y = 0;
+                window.width = width;
+                window.height = height;
+            }
+            self.notify_window(handle);
+            self.events.push_back(GuiEvent::System(GUI_EVENT_RESIZED));
+        }
+    }
+
     /// Apply edits a live window queued (typed text, toggled checkbox).
     fn apply_updates(&mut self) {
         for update in self.backend.take_updates() {
@@ -181,17 +262,14 @@ impl GuiState {
                     id
                 }
                 GuiUpdate::SetWindowState { handle, state } => {
-                    let changed = match self.model.window_mut(handle) {
-                        Some(window) => {
-                            let changed = window.state != state;
-                            window.state = state;
-                            if state != WindowState::Minimized {
-                                window.visible = true;
-                            }
-                            changed
-                        }
-                        None => false,
+                    // The same path a `@SW_*` flag takes, so a user's maximise
+                    // also remembers where to restore to.
+                    let flag = match state {
+                        WindowState::Minimized => 6,
+                        WindowState::Maximized => 3,
+                        WindowState::Normal => 9,
                     };
+                    let changed = self.apply_show_flag(handle, flag);
                     if changed {
                         self.notify_window(handle);
                         let event = match state {
@@ -279,6 +357,7 @@ impl GuiState {
         ctx: &mut dyn HostContext,
     ) -> Option<Value> {
         self.apply_updates();
+        self.sync_desktop();
         let key = name.to_ascii_lowercase();
         if let Some(kind) = ControlKind::from_create(&key) {
             return Some(self.create_control(kind, args, ctx));
@@ -300,6 +379,7 @@ impl GuiState {
                     enabled: true,
                     active: true,
                     state: WindowState::Normal,
+                    restore: None,
                     bk_color: None,
                     font: None,
                     cursor: None,
@@ -336,11 +416,7 @@ impl GuiState {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 };
-                let (visible, window_state) = show_flag(state);
-                if let Some(window) = self.model.window_mut(handle) {
-                    window.visible = visible;
-                    window.state = window_state;
-                }
+                self.apply_show_flag(handle, state);
                 self.notify_window(handle);
                 self.backend.present();
                 ctx.set_error(0, 0);
@@ -794,11 +870,7 @@ impl GuiState {
                 let flag = arg_int(args, 2);
                 match self.window_arg(args, 0) {
                     Some(handle) => {
-                        let (visible, state) = show_flag(flag);
-                        if let Some(window) = self.model.window_mut(handle) {
-                            window.visible = visible;
-                            window.state = state;
-                        }
+                        self.apply_show_flag(handle, flag);
                         self.notify_window(handle);
                         self.backend.present();
                         ctx.set_error(0, 0);
