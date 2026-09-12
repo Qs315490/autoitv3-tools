@@ -101,12 +101,19 @@ pub enum Value {
     /// identifier such as the function names stored in the obfuscator's
     /// function table.
     FuncRef(String),
+    /// A platform object (`ObjCreate`); opaque to the runtime.
+    Obj(ObjRef),
 }
 
 impl Value {
     /// Convenience constructor for a string value.
     pub fn str(s: impl Into<String>) -> Self {
         Value::Str(s.into())
+    }
+
+    /// Convenience constructor for a platform object value.
+    pub fn obj(o: ObjRef) -> Self {
+        Value::Obj(o)
     }
 
     /// Convenience constructor for an array value.
@@ -137,6 +144,7 @@ impl Value {
             Value::Map(_) => "Map",
             Value::Binary(_) => "Binary",
             Value::FuncRef(_) => "Function",
+            Value::Obj(_) => "Object",
         }
     }
 
@@ -162,7 +170,8 @@ impl Value {
                     None => false,
                 }
             }
-            Value::Array(_) | Value::Map(_) | Value::Binary(_) | Value::FuncRef(_) => true,
+            Value::Array(_) | Value::Map(_) | Value::Binary(_) | Value::FuncRef(_)
+            | Value::Obj(_) => true,
         }
     }
 
@@ -207,6 +216,7 @@ impl Value {
             Value::Map(_) => String::new(),
             Value::Binary(b) => binary_to_hex(b),
             Value::FuncRef(name) => name.clone(),
+            Value::Obj(o) => o.name.clone(),
         }
     }
 
@@ -242,6 +252,7 @@ impl Value {
             (Value::FuncRef(a), Value::FuncRef(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
             (Value::Map(a), Value::Map(b)) => Rc::ptr_eq(a, b),
+            (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             _ => false,
         }
@@ -286,6 +297,7 @@ impl fmt::Debug for Value {
             Value::Map(m) => write!(f, "Map(len={})", m.borrow().len()),
             Value::Binary(b) => write!(f, "Binary(len={})", b.len()),
             Value::FuncRef(n) => write!(f, "FuncRef({n})"),
+            Value::Obj(o) => write!(f, "Obj({})", o.name),
         }
     }
 }

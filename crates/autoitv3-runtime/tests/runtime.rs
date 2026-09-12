@@ -724,7 +724,10 @@ fn member_access_reports_that_it_needs_a_platform_host() {
     let src = "Func F()\n    Return $obj.Prop\nEndFunc\n";
     let err = rt(src).call_function("F", vec![]).unwrap_err();
     let msg = err.message();
-    assert!(msg.contains("platform host"), "got: {msg}");
+    assert!(
+        msg.contains("platform host") || msg.contains("non-object value"),
+        "got: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------

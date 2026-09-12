@@ -805,20 +805,15 @@ impl Runtime {
             }
             ExprKind::Binary(op, a, b) => self.eval_binary(op, a, b, e.span),
             ExprKind::Paren(p) => self.eval_expr(p),
-            // COM/object member access has no portable semantics: it needs a
-            // platform host (see `crate::platform`) to resolve the member
-            // against a real object.
-            ExprKind::Member(_, name) => {
-                return Err(RuntimeError::Unsupported {
-                    what: format!("member access `.{}` (needs a platform host)", name.name),
-                    span: Some(e.span),
-                })
-            }
-            ExprKind::MethodCall(_, name, _) => {
-                return Err(RuntimeError::Unsupported {
-                    what: format!("method call `.{}()` (needs a platform host)", name.name),
-                    span: Some(e.span),
-                })
+            // Object member access resolves through the platform: property
+            // reads for `Member`, method dispatch for `MethodCall`.
+            ExprKind::Member(subject, name) => self.eval_member(subject, &name.name, e.span),
+            ExprKind::MethodCall(subject, name, args) => {
+                let mut evaluated = Vec::with_capacity(args.len());
+                for a in args {
+                    evaluated.push(self.eval_expr(a)?);
+                }
+                self.eval_method(subject, &name.name, evaluated, e.span)
             }
             ExprKind::WithSubject => {
                 return Err(RuntimeError::Unsupported {
@@ -841,6 +836,61 @@ impl Runtime {
                 Ok(Value::array(out))
             }
         }
+    }
+
+    /// `$obj.Member` — property read through the platform.
+    fn eval_member(
+        &mut self,
+        subject: &Expr,
+        member: &str,
+        span: autoitv3_ast::span::Span,
+    ) -> Result<Value, RuntimeError> {
+        let value = self.eval_expr(subject)?;
+        let Value::Obj(obj) = value else {
+            return Err(RuntimeError::Unsupported {
+                what: format!("member access `.{member}` on a non-object value"),
+                span: Some(span),
+            });
+        };
+        let Runtime { globals, error, extended, profile, platform, .. } = self;
+        let Some(platform) = platform.as_mut() else {
+            return Err(RuntimeError::Unsupported {
+                what: format!("member access `.{member}` (no platform installed)"),
+                span: Some(span),
+            });
+        };
+        let mut ctx = HostBridge { globals, error, extended, profile };
+        platform
+            .obj_get(&obj, member, &mut ctx)
+            .map(|v| v.unwrap_or(Value::Null))
+    }
+
+    /// `$obj.Method(...)` — method dispatch through the platform.
+    fn eval_method(
+        &mut self,
+        subject: &Expr,
+        member: &str,
+        args: Vec<Value>,
+        span: autoitv3_ast::span::Span,
+    ) -> Result<Value, RuntimeError> {
+        let value = self.eval_expr(subject)?;
+        let Value::Obj(obj) = value else {
+            return Err(RuntimeError::Unsupported {
+                what: format!("method call `.{member}()` on a non-object value"),
+                span: Some(span),
+            });
+        };
+        let Runtime { globals, error, extended, profile, platform, .. } = self;
+        let Some(platform) = platform.as_mut() else {
+            return Err(RuntimeError::Unsupported {
+                what: format!("method call `.{member}()` (no platform installed)"),
+                span: Some(span),
+            });
+        };
+        let mut ctx = HostBridge { globals, error, extended, profile };
+        platform
+            .obj_call(&obj, member, &args, &mut ctx)
+            .map(|v| v.unwrap_or(Value::Null))
     }
 
     fn eval_binary(
