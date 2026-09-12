@@ -25,6 +25,11 @@ use autoitv3_runtime::value::Value;
 /// Every function this layer implements.
 pub const FUNCTIONS: &[&str] = &["ProcessExists", "ProcessList", "ProcessClose"];
 
+/// `/proc` probes shared with the common process service. The `linux` module
+/// compiles on every host (the `lib.rs` stack is chosen at compile time) and
+/// these are pure filesystem reads, so no cfg gate is needed.
+pub(crate) mod proc_support;
+
 /// The Linux platform.
 #[derive(Debug, Default)]
 pub struct LinuxPlatform {
@@ -40,26 +45,7 @@ impl LinuxPlatform {
 
 /// Every running process as `(pid, name)`, read from `/proc`.
 fn process_table() -> Vec<(i64, String)> {
-    let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir("/proc") else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|n| n.parse::<i64>().ok())
-        else {
-            continue;
-        };
-        let comm = Path::new("/proc").join(pid.to_string()).join("comm");
-        let name = fs::read_to_string(comm)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-        out.push((pid, name));
-    }
-    out.sort_by_key(|(pid, _)| *pid);
-    out
+    proc_support::system_processes()
 }
 
 /// Match a process name the way AutoIt does: case-insensitively, with or

@@ -60,6 +60,7 @@ pub(crate) mod clipboard;
 pub(crate) mod com;
 pub(crate) mod dll;
 mod drive;
+mod files;
 pub(crate) mod misc;
 pub(crate) mod process;
 pub(crate) mod registry;
@@ -214,6 +215,10 @@ impl Platform for WindowsPlatform {
                 | "memgetstats" | "isadmin" | "shellexecute" | "shellexecutewait"
                 | "runas" | "runaswait" | "drivemapadd" | "drivemapdel"
                 | "drivemapget" | "shutdown"
+                // real Windows filesystem semantics the common layer only
+                // approximates
+                | "filegetattrib" | "filesetattrib" | "filegetshortname"
+                | "envupdate"
         )
     }
 
@@ -311,6 +316,37 @@ impl Platform for WindowsPlatform {
                 }
             }
             "regwrite" => registry::reg_write(&args, ctx),
+            // ---------------- real Windows filesystem semantics ----------------
+            "filegetattrib" => {
+                let path = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+                match files::file_get_attrib(&path) {
+                    Some(a) => {
+                        ctx.set_error(0, 0);
+                        Value::Str(a)
+                    }
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::str("")
+                    }
+                }
+            }
+            "filesetattrib" => {
+                if !writes_allowed(ctx) {
+                    ctx.set_error(1, 0);
+                    return Ok(Some(Value::Int(0)));
+                }
+                let path = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+                let changes = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
+                let ok = !changes.is_empty() && files::file_set_attrib(&path, &changes);
+                ctx.set_error(if ok { 0 } else { 1 }, 0);
+                Value::Int(i64::from(ok))
+            }
+            "filegetshortname" => {
+                let path = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
+                ctx.set_error(0, 0);
+                Value::Str(files::file_get_short_name(&path))
+            }
+            "envupdate" => files::env_update(),
             // ---------------- COM ----------------
             "objcreate" => {
                 let name = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();

@@ -62,9 +62,11 @@ autoitv3-tools/
           net.rs        Inet*/TCP*/UDP*/Ping/代理设置（std::net）
         linux/        系统层（Linux）：/proc 进程查询、OS 标识宏
           mod.rs
+          proc_support.rs  /proc 探针（进程表/存活/内存，供 common 进程服务使用）
         windows/      系统层（Windows）：原生 Win32 后端（DllCall/DllStruct/剪贴板/
                       进程/驱动器/系统宏）；注册表、COM、GUI 由仿真层兜底
           mod.rs
+          files.rs    真实文件属性（RASH）、8.3 短名、EnvUpdate 广播
         winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
           mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
           version.rs    WindowsVersion / WindowsArch：选定仿真系统版本（默认 win10）
@@ -689,7 +691,7 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 | 仿真 | `winemu/` | 非 Windows 时在**最前**；Windows 上在**最后兜底** | Windows 身份、路径、`DllStruct*`/`DllCall`、注册表、剪贴板、驱动器——让 Windows 目标脚本能在 Linux 上继续跑（见下文「Windows 仿真」）；`AU3_WIN_EMU=0` / `--no-win-emu` 可整体关闭 |
 | 通用 | `common/`（`mod.rs` + `proc.rs` + `net.rs`） | **所有**平台 | 文件与目录 I/O（含 `FileFind*`、`FileGetPos`/`FileSetPos`/`FileSetEnd`、`FileGetEncoding`、`FileReadToArray`、`FileSetTime`）、INI（`Ini*` 7 个）、环境变量、数学、计时器、控制台，以及进程（`Run`/`ProcessWait*`/`StdoutRead`…）与网络（`Inet*`/`TCP*`/`UDP*`/`Ping`）——AutoIt 在各系统上行为一致的部分 |
 | 系统 | `linux/` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
-| 系统 | `windows/` | 仅 Windows | **原生 Win32 后端**：`DllCall`/`DllCallAddress`/`DllOpen`/`DllClose`（`LoadLibraryW`/`GetProcAddress` + 变参调用桥）、`DllStruct*`（复用 winemu 布局引擎，但缓冲是**真实堆内存**，被调方直接写穿）、剪贴板（`ClipGet`/`ClipPut`，`CF_UNICODETEXT`）、进程（`ProcessList`/`ProcessExists`/`ProcessClose`，Toolhelp 快照）、驱动器（`DriveGet*`/`DriveMap*` 真实卷与网络映射）、注册表（`Reg*`，64 位视图 + AutoIt 类型码）、COM（`ObjCreate`/`IsObj`/`ObjName` 与 `.$member`/`.Method()` 经手写 `IDispatch` vtable 晚绑定）、系统/Shell（`MemGetStats`/`IsAdmin`/`ShellExecute*`/`RunAs*`/`Shutdown`）以及 Windows 身份宏（`@WindowsDir`/`@OSVersion`/`@ComputerName`…）。GUI 仍由仿真层兜底；`ObjGet`（文件名字对象）与 `ObjEvent`（事件接收器）报告 `@error = 1` |
+| 系统 | `windows/` | 仅 Windows | **原生 Win32 后端**：`DllCall`/`DllCallAddress`/`DllOpen`/`DllClose`（`LoadLibraryW`/`GetProcAddress` + 变参调用桥）、`DllStruct*`（复用 winemu 布局引擎，但缓冲是**真实堆内存**，被调方直接写穿）、剪贴板（`ClipGet`/`ClipPut`，`CF_UNICODETEXT`）、进程（`ProcessList`/`ProcessExists`/`ProcessClose`，Toolhelp 快照）、驱动器（`DriveGet*`/`DriveMap*` 真实卷与网络映射）、注册表（`Reg*`，64 位视图 + AutoIt 类型码）、COM（`ObjCreate`/`IsObj`/`ObjName` 与 `.$member`/`.Method()` 经手写 `IDispatch` vtable 晚绑定）、系统/Shell（`MemGetStats`/`IsAdmin`/`ShellExecute*`/`RunAs*`/`Shutdown`）以及 Windows 身份宏（`@WindowsDir`/`@OSVersion`/`@ComputerName`…）；`files.rs` 以真实 Win32 语义覆盖 common 的近似实现（`FileGetAttrib`/`FileSetAttrib` 的 RASH 位、`FileGetShortName` 的真实 8.3 名、`EnvUpdate` 的 `WM_SETTINGCHANGE` 广播）。GUI 仍由仿真层兜底；`ObjGet`（文件名字对象）与 `ObjEvent`（事件接收器）报告 `@error = 1` |
 
 `host_platform()` 按目标平台组装成 `CompositePlatform`：Windows 为
 `windows+common+winemu`（原生层最前应答真实语义，通用层居中，仿真层最后只接住

@@ -765,6 +765,64 @@ EndFunc
     assert_eq!(v.to_int(), 1, "diag: {diag}");
 }
 
+// ---------------------------------------------------------------------------
+// real Windows filesystem semantics overriding the common approximations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn filegetattrib_and_filesetattrib_use_real_windows_attributes() {
+    let dir = std::env::temp_dir().join(format!("au3-native-attrib-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("attrib.txt");
+    std::fs::write(&path, b"x").unwrap();
+    let p = path.to_string_lossy().replace('\\', "\\\\");
+    let got = text(&format!(
+        r#"
+Func F()
+    Local $before = FileGetAttrib("{p}")
+    FileSetAttrib("{p}", "+SH")
+    Local $hidden = FileGetAttrib("{p}")
+    FileSetAttrib("{p}", "-SH")
+    Local $cleared = FileGetAttrib("{p}")
+    FileDelete("{p}")
+    DirRemove("{dir}")
+    Return $before & "|" & $hidden & "|" & $cleared
+EndFunc
+"#,
+        p = p,
+        dir = dir.to_string_lossy().replace('\\', "\\\\")
+    ));
+    // A fresh file is "normal" (A is set by default on new files), +S+H adds
+    // both letters, -S-H leaves none of the settable bits.
+    assert!(
+        got.starts_with('|') || got.starts_with("A|") || got.starts_with("R|") || got.starts_with("N|"),
+        "before: {got}"
+    );
+    let parts: Vec<&str> = got.split('|').collect();
+    assert!(parts[1].contains('S') && parts[1].contains('H'), "hidden: {got}");
+    assert!(!parts[2].contains('S') && !parts[2].contains('H'), "cleared: {got}");
+}
+
+#[test]
+fn filegetshortname_answers_from_the_real_filesystem() {
+    let got = text(
+        r#"
+Func F()
+    Return FileGetShortName(@WindowsDir & "explorer.exe")
+EndFunc
+"#,
+    );
+    // Where 8.3 names are disabled the API returns the long path itself; the
+    // one thing it must never do is come back empty.
+    assert!(!got.is_empty(), "short name empty");
+    assert!(got.to_lowercase().contains("explorer.exe"), "got {got}");
+}
+
+#[test]
+fn envupdate_reports_whether_the_broadcast_was_delivered() {
+    assert_eq!(int("Return EnvUpdate()"), 1);
+}
+
 #[test]
 fn objcreate_failure_sets_error() {
     assert_eq!(
