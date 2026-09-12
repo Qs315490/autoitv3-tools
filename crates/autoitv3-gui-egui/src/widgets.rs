@@ -306,60 +306,99 @@ pub fn show_autoit_window(
         // controls (which live outside it, in the title bar).
         drawn = Some(ui.min_rect().size());
 
-        // Minimise / maximise buttons in the title bar. egui only offers a
-        // close button there, so draw ours in the window's own layer, created
-        // after the title bar is built (later widgets win the click).
+        // Minimise / maximise buttons in the title bar, drawn the way egui
+        // draws its own close button: line art in the text colour, no
+        // background, a little bigger on hover. egui only offers the close
+        // button, so ours are laid out by hand where the title bar's atoms
+        // would put them (they do not take part in the layout, which would
+        // change the size egui measures for the body).
         if let Some(title) = ui.ctx().read_response(area_id.with("__title_click")) {
-            let rect = title_controls_rect(title.rect);
-            controls_rect = Some(rect);
-            let side = rect.height();
-            // Drawn and interacted with by hand: `ui.interact` does not take
-            // part in the layout, so the body keeps its measured size. The
-            // picture belongs to the same layer as the title bar, so a set
-            // clip rect is what lets it paint above the body.
-            let painter = ui.painter().clone().with_clip_rect(rect.expand(2.0));
+            let style = ui.style().clone();
+            let margin = egui::Frame::window(&style).total_margin();
+            let icon = style.spacing.icon_width;
+            let gap = style.spacing.item_spacing.x;
+            // The title-bar rect is the heading row plus the frame around it.
+            let row_height = (title.rect.height() - margin.sum().y).max(icon);
+            let center_y = title.rect.top() + margin.top + row_height / 2.0;
+            // `title.rect.right()` is the close button's left edge.
+            let slot = |index: f32| {
+                egui::Rect::from_center_size(
+                    egui::pos2(
+                        title.rect.right() - gap * (index + 1.0) - icon * (index + 0.5),
+                        center_y,
+                    ),
+                    egui::Vec2::splat(icon),
+                )
+            };
+            let maximise = slot(0.0);
+            let minimise = slot(1.0);
+            controls_rect = Some(maximise.union(minimise));
             let restore = geometry.state != WindowState::Normal;
-            let control = |rect: egui::Rect, glyph: &str, hover: &str| {
-                let response =
-                    ui.interact(rect, area_id.with(("control", glyph)), egui::Sense::click());
-                let visuals = ui.style().interact(&response);
-                painter.rect(
-                    rect.shrink(1.0),
-                    egui::CornerRadius::same(2),
-                    visuals.bg_fill,
-                    visuals.bg_stroke,
+
+            let (response, rect, stroke) = title_bar_button(
+                ui,
+                area_id.with("maximise"),
+                maximise,
+                if restore {
+                    "Restore window"
+                } else {
+                    "Maximise window"
+                },
+            );
+            let painter = ui.painter().clone().with_clip_rect(rect.expand(4.0));
+            if restore {
+                // Two overlapping squares, the way Windows draws restore.
+                let inner = rect.shrink(2.0);
+                let back = egui::Rect::from_min_size(
+                    inner.min + egui::vec2(inner.width() * 0.3, 0.0),
+                    inner.size() * 0.7,
+                );
+                let front = egui::Rect::from_min_size(
+                    inner.min + egui::vec2(0.0, inner.height() * 0.3),
+                    inner.size() * 0.7,
+                );
+                painter.rect_stroke(
+                    back,
+                    egui::CornerRadius::ZERO,
+                    stroke,
                     egui::StrokeKind::Inside,
                 );
-                painter.text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    glyph,
-                    egui::FontId::proportional(side * 0.6),
-                    visuals.text_color(),
+                painter.rect_stroke(
+                    front,
+                    egui::CornerRadius::ZERO,
+                    stroke,
+                    egui::StrokeKind::Inside,
                 );
-                response.on_hover_text(hover).clicked()
-            };
-            // Right to left, the way Windows orders them.
-            let maximise = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - side, rect.top()),
-                egui::vec2(side, side),
-            );
-            let minimise = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - 2.0 * side, rect.top()),
-                egui::vec2(side, side),
-            );
-            if control(
-                maximise,
-                if restore { "\u{1F5D7}" } else { "\u{1F5D6}" },
-                if restore { "Restore" } else { "Maximise" },
-            ) {
+            } else {
+                painter.rect_stroke(
+                    rect.shrink(2.0),
+                    egui::CornerRadius::ZERO,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if response
+                .on_hover_text(if restore { "Restore" } else { "Maximise" })
+                .clicked()
+            {
                 state_request = Some(if restore {
                     WindowState::Normal
                 } else {
                     WindowState::Maximized
                 });
             }
-            if control(minimise, "\u{1F5D5}", "Minimise") {
+
+            let (response, rect, stroke) =
+                title_bar_button(ui, area_id.with("minimise"), minimise, "Minimise window");
+            let painter = ui.painter().clone().with_clip_rect(rect.expand(4.0));
+            painter.line_segment(
+                [
+                    egui::pos2(rect.left() + 2.0, rect.center().y),
+                    egui::pos2(rect.right() - 2.0, rect.center().y),
+                ],
+                stroke,
+            );
+            if response.on_hover_text("Minimise").clicked() {
                 state_request = Some(WindowState::Minimized);
             }
         }
@@ -431,14 +470,21 @@ pub fn record_drawn(
     (record(Some(client)), update)
 }
 
-/// The strip at the right of a title bar that the window controls occupy.
-fn title_controls_rect(title: egui::Rect) -> egui::Rect {
-    let side = title.height().min(28.0);
-    let width = (2.0 * side).min(title.width());
-    egui::Rect::from_min_max(
-        egui::pos2(title.right() - width, title.top()),
-        title.right_bottom(),
-    )
+/// A title-bar window button: clicked, described for accessibility, and
+/// returned with the rect and stroke egui's own close button would use.
+fn title_bar_button(
+    ui: &egui::Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    label: &str,
+) -> (egui::Response, egui::Rect, egui::Stroke) {
+    let response = ui.interact(rect, id, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    let visuals = ui.style().interact(&response);
+    let rect = rect.shrink(2.0).expand(visuals.expansion);
+    (response, rect, visuals.fg_stroke)
 }
 
 /// Whether the pointer is inside `rect` right now.
