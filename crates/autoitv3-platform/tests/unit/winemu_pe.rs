@@ -1,4 +1,4 @@
-//! Unit tests for `winemu::pe`'s PE resource reader.
+//! Unit tests for `winfmt::pe`'s PE resource reader.
 //!
 //! Kept out of `pe.rs` so the module reads as implementation; `#[path]`
 //! pulls the file back in as a unit-test module, which is what lets it
