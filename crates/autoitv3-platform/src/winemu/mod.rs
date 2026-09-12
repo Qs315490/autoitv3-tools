@@ -69,27 +69,23 @@
 
 mod compress;
 mod crypto;
-mod dllstruct;
 pub mod gui;
 mod paths;
-mod pe;
 mod registry;
 mod shell;
-mod shortcut;
-mod verinfo;
 mod version;
 
-pub use dllstruct::{DllStruct, FieldSelector};
 pub use gui::{
     Control, ControlKind, GuiBackend, GuiEvent, GuiImage, GuiUpdate, HeadlessBackend, Window,
     WindowState,
 };
 pub use paths::WindowsPaths;
 pub use crypto::{CipherAlg, HashAlg};
-pub use pe::{PeImage, Resource, Selector};
+pub use crate::winfmt::{PeImage, Resource, Selector};
+pub use crate::winfmt::{DllStruct, FieldSelector, Shortcut};
 pub use registry::{FileRegistry, MemoryRegistry, RegistryData, RegistryStore};
-pub use shortcut::Shortcut;
-pub use version::{WindowsArch, WindowsVersion};
+pub use version::WindowsVersion;
+pub use crate::winfmt::WindowsArch;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -1823,7 +1819,7 @@ impl Platform for WindowsEmulation {
                 } else {
                     field
                 };
-                match verinfo::read(&path) {
+                match crate::winfmt::verinfo::read(&path) {
                     Some(info) => {
                         if let Some(v) = info.string(field) {
                             ctx.set_error(0, 0);
@@ -1856,7 +1852,7 @@ impl Platform for WindowsEmulation {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
-                let sc = shortcut::Shortcut {
+                let sc = crate::winfmt::shortcut::Shortcut {
                     target,
                     working_dir: arg_str(&args, 2),
                     arguments: arg_str(&args, 3),
@@ -1866,13 +1862,13 @@ impl Platform for WindowsEmulation {
                     icon_index: args.get(7).map(|v| v.to_int() as i32).unwrap_or(0),
                     show_command: args.get(8).map(|v| v.to_int() as u32).unwrap_or(1),
                 };
-                let ok = shortcut::write(&lnk, &sc).is_ok();
+                let ok = crate::winfmt::shortcut::write(&lnk, &sc).is_ok();
                 ctx.set_error(if ok { 0 } else { 1 }, 0);
                 Value::Int(i64::from(ok))
             }
             "filegetshortcut" => {
                 let lnk = arg_str(&args, 0);
-                match shortcut::read(&lnk) {
+                match crate::winfmt::shortcut::read(&lnk) {
                     Some(sc) => {
                         ctx.set_error(0, 0);
                         Value::array(vec![

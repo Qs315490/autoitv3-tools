@@ -50,6 +50,10 @@ pub mod linux;
 pub mod common;
 pub mod winemu;
 
+/// Pure Windows file-format / binary-layout machinery (DllStruct layouts,
+/// PE resources, RT_VERSION, Shell Links) shared by the answering layers.
+pub mod winfmt;
+
 #[cfg(windows)]
 pub mod windows;
 
@@ -57,9 +61,9 @@ pub use linux::LinuxPlatform;
 pub use common::CommonPlatform;
 pub use winemu::{
     find_resource_module, has_staged_resources, resource_search_dirs, CipherAlg, FileRegistry,
-    HashAlg, MemoryRegistry, PeImage, RegistryData, RegistryStore, Selector, WindowsArch,
-    WindowsEmulation, WindowsVersion,
+    HashAlg, MemoryRegistry, RegistryData, RegistryStore, WindowsEmulation, WindowsVersion,
 };
+pub use winfmt::{DllStruct, FieldSelector, PeImage, Resource, Selector, Shortcut, WindowsArch};
 
 #[cfg(windows)]
 pub use windows::WindowsPlatform;

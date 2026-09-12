@@ -16,7 +16,8 @@
 //! Windows: a definition parser, a byte buffer, and typed field access. It is
 //! deliberately **not** a general FFI — nothing here touches real memory or a
 //! real DLL, so a struct is an opaque handle backed by a `Vec<u8>` the
-//! emulation can fill in (see [`super::WindowsEmulation`]'s `DllCall`).
+//! emulation can fill in (see the emulation layer's `DllCall`); on a real
+//! Windows host the native layer points the same buffer at real heap memory.
 //!
 //! Supported definition syntax:
 //!
@@ -32,7 +33,7 @@ use std::rc::Rc;
 
 use autoitv3_runtime::value::Value;
 
-use super::version::WindowsArch;
+use crate::winfmt::WindowsArch;
 
 /// One field in a struct definition.
 #[derive(Debug, Clone)]

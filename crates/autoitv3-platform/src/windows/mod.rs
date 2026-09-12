@@ -71,9 +71,9 @@ use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::profile::EffectPolicy;
 use autoitv3_runtime::value::Value;
 
-use crate::winemu::DllStruct;
+use crate::winfmt::DllStruct;
 
-use super::winemu::WindowsArch;
+use crate::winfmt::WindowsArch;
 
 /// The platform used when the target OS is Windows.
 #[derive(Debug, Default)]
@@ -656,7 +656,7 @@ impl WindowsPlatform {
     }
 
     fn struct_data(&mut self, args: &[Value], ctx: &mut dyn HostContext, is_get: bool) -> Value {
-        use crate::winemu::FieldSelector;
+        use crate::winfmt::FieldSelector;
         let handle = args.first().map(|v| v.to_int()).unwrap_or(0);
         let selector = args
             .get(1)

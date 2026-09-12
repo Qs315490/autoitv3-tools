@@ -70,23 +70,24 @@ autoitv3-tools/
           files.rs    真实文件属性（RASH）、8.3 短名、EnvUpdate 广播
         winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
           mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
-          version.rs    WindowsVersion / WindowsArch：选定仿真系统版本（默认 win10）
+          version.rs    WindowsVersion：选定仿真系统版本（默认 win10）
           paths.rs      WindowsPaths：C:\ 目录布局（@WindowsDir、@AppDataDir…）
-          dllstruct.rs  DllStruct* 定义解析与按字段读写（OSVERSIONINFO 等）
           registry.rs   RegistryStore 接口 + FileRegistry（默认，落盘 .au3_registry）
                         + MemoryRegistry（可选，不落盘）
-          pe.rs / compress.rs / crypto.rs  PE 资源、LZNT1、CryptoAPI 仿真
-          verinfo.rs    PE RT_VERSION 解析（FileGetVersion）
-          shortcut.rs   .lnk Shell Link 读写（FileCreateShortcut/FileGetShortcut）
+          compress.rs / crypto.rs  LZNT1 解压、CryptoAPI 仿真
           shell.rs      ShellExecute*/RunAs*
           gui/          GUI 无头语义：messages.rs（$EM_*/$LVM_* 默认）、
                         mod.rs（165 个 GUI 函数的 AutoIt 语义；控件模型与
                         GuiBackend 接缝在 autoitv3-gui crate）
+        winfmt/       机制层（纯字节解析/布局，不碰 OS API；winemu 与 windows
+                      共同复用）：dllstruct.rs（DllStruct 布局引擎）、pe.rs（PE
+                      资源）、verinfo.rs（RT_VERSION）、shortcut.rs（.lnk）、
+                      mod.rs（WindowsArch 指针宽度）
       tests/
         platform.rs   分层、选择、注入、通用函数与宏（33 项）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
         winemu.rs     Windows 仿真层：DllStruct / 注册表 / 快捷方式 / GUI …
-        unit/         winemu 各模块的单元测试（`#[path]` 回挂）
+        unit/         winfmt/winemu 各模块的单元测试（`#[path]` 回挂）
           winemu_compress.rs  LZNT1 解压
           winemu_crypto.rs    CryptoAPI 仿真
           winemu_pe.rs        PE 资源读取

@@ -1,4 +1,4 @@
-//! Unit tests for `winemu::verinfo`'s RT_VERSION reader.
+//! Unit tests for `winfmt::verinfo`'s RT_VERSION reader.
 //!
 //! Kept out of `verinfo.rs` so the module reads as implementation; `#[path]`
 //! pulls the file back in as a unit-test module, which is what lets it
