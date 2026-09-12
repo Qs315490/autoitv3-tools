@@ -87,6 +87,7 @@ pub use registry::{FileRegistry, MemoryRegistry, RegistryData, RegistryStore};
 pub use version::WindowsVersion;
 pub use crate::winfmt::WindowsArch;
 
+use std::collections::BTreeMap;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -264,6 +265,19 @@ struct ResourceHandle {
 /// value and elements 1..n are the arguments (the obfuscator reads its
 /// out-parameters straight out of there — `$r[5]` for the fifth argument), so
 /// an emulated call reports its by-ref results the same way.
+/// An open handle from the emulated `CreateFileW`.
+struct OpenFile {
+    path: String,
+    content: Vec<u8>,
+    write: bool,
+    pos: u64,
+}
+
+/// Windows-path normalisation for the file sandbox: backslashes, lower-case.
+fn normalise_sandbox_path(path: &str) -> String {
+    path.replace('/', "\\").to_ascii_lowercase()
+}
+
 struct DllOutcome {
     retval: Value,
     /// `(argument index, value after the call)`.
@@ -415,6 +429,14 @@ pub struct WindowsEmulation {
     /// Resource bytes materialised by `LockResource`, keyed by their address.
     /// Shared like a struct's storage so `DllStructCreate` can map over them.
     blobs: Vec<(u64, Rc<RefCell<Vec<u8>>>)>,
+    /// In-memory sandbox backing the emulated file APIs (`CreateFileW` & co):
+    /// normalised path -> content. Seeded via `with_file`, mutated by
+    /// `WriteFile`; the real filesystem is never touched.
+    sandbox_files: BTreeMap<String, Vec<u8>>,
+    /// Handles `CreateFileW` handed out, id -> open state.
+    open_files: BTreeMap<i64, OpenFile>,
+    /// Next id for `open_files`.
+    next_file_handle: i64,
     /// Handles handed out by `DllOpen`.
     dlls: Vec<Option<String>>,
     /// Emulated CryptoAPI objects.
@@ -479,6 +501,9 @@ impl WindowsEmulation {
             resource_dirs: Vec::new(),
             handles: Vec::new(),
             blobs: Vec::new(),
+            sandbox_files: BTreeMap::new(),
+            open_files: BTreeMap::new(),
+            next_file_handle: 0x1000,
             dlls: Vec::new(),
             crypto: CryptoState::default(),
             next_addr: 0x0100_0000,
@@ -594,6 +619,16 @@ impl WindowsEmulation {
     /// Use `path` for the emulated clipboard instead of `.au3_clipboard`.
     pub fn with_clipboard_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.clipboard = path.into();
+        self
+    }
+
+    /// Seed the emulated file sandbox: `CreateFileW(path, GENERIC_READ)` will
+    /// read these bytes, and `WriteFile` content is only visible to the
+    /// emulation (the real filesystem is never touched). Paths are
+    /// normalised to lower-case with backslashes.
+    pub fn with_file(mut self, path: impl Into<String>, contents: impl Into<Vec<u8>>) -> Self {
+        let path = normalise_sandbox_path(&path.into());
+        self.sandbox_files.insert(path, contents.into());
         self
     }
 
@@ -869,6 +904,72 @@ impl WindowsEmulation {
         false
     }
 
+    /// The name `open_dll` handed `handle` out for.
+    fn dll_name(&self, handle: i64) -> Option<&str> {
+        self.dlls
+            .get(handle as usize - 1)?
+            .as_ref()
+            .map(String::as_str)
+    }
+
+    /// Resolve a string argument that is either a literal (`"kernel32.dll"`)
+    /// or a pointer into emulated memory (`DllStructGetPtr`).
+    fn c_string_arg(&self, value: Value) -> Option<String> {
+        match value {
+            Value::Str(text) => Some(text),
+            Value::Int(addr) => self.c_string_at(addr as u64, true),
+            _ => None,
+        }
+    }
+
+    /// Read a NUL-terminated string at an emulated address.
+    ///
+    /// Unit-by-unit, with the storage bounds as the hard stop: a short
+    /// `DllStruct` buffer is a valid string home, and emulated memory has no
+    /// pages to over-read into.
+    fn c_string_at(&self, addr: u64, wide: bool) -> Option<String> {
+        let mut out = String::new();
+        let mut at = addr;
+        if wide {
+            loop {
+                let b = self.memory_read(at, 2)?;
+                let unit = u16::from_le_bytes([b[0], b[1]]);
+                if unit == 0 {
+                    return Some(out);
+                }
+                out.push(char::from_u32(unit as u32).unwrap_or('\u{fffd}'));
+                at += 2;
+            }
+        } else {
+            loop {
+                let b = self.memory_read(at, 1)?;
+                if b[0] == 0 {
+                    return Some(out);
+                }
+                out.push(b[0] as char);
+                at += 1;
+            }
+        }
+    }
+
+    /// Write a NUL-terminated string into emulated memory; `max` bounds the
+    /// byte footprint (buffer size semantics).
+    fn write_c_string(&mut self, addr: u64, text: &str, wide: bool, max: usize) -> bool {
+        let bytes: Vec<u8> = if wide {
+            text.encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(|u| u.to_le_bytes())
+                .take(max)
+                .collect()
+        } else {
+            text.bytes()
+                .chain(std::iter::once(0))
+                .take(max)
+                .collect()
+        };
+        self.memory_write(addr, &bytes)
+    }
+
     /// Hand out a `DllOpen` handle for `name`.
     fn open_dll(&mut self, name: &str) -> i64 {
         if let Some(i) = self.dlls.iter().position(|slot| slot.is_none()) {
@@ -983,7 +1084,11 @@ impl WindowsEmulation {
     ) -> Option<DllOutcome> {
         let arg = |i: usize| pairs.get(i).map(|(_, v)| v.clone());
         let values: Vec<Value> = pairs.iter().map(|(_, v)| v.clone()).collect();
-        match function.to_ascii_lowercase().as_str() {
+        // Arms that branch on A/W suffixes compare against the lower-cased
+        // name, not the caller's spelling.
+        let lower = function.to_ascii_lowercase();
+        let wide_name = lower.ends_with('w');
+        match lower.as_str() {
             "getversionexw" | "getversionexa" | "getversionex" | "rtlgetversion" => {
                 Some(DllOutcome::value(self.fill_version_struct(&values)?))
             }
@@ -1060,6 +1165,164 @@ impl WindowsEmulation {
                     return None;
                 }
                 Some(DllOutcome::value(Value::Int(0)))
+            }
+
+            // ---------------- modules ----------------
+            "loadlibraryw" | "loadlibrarya" | "loadlibrary" => {
+                let name = self.c_string_arg(arg(0)?)?;
+                Some(DllOutcome::value(Value::Int(self.open_dll(&name))))
+            }
+            "getprocaddress" => {
+                let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                if self.dll_name(handle).is_none() {
+                    return None;
+                }
+                // A non-zero pseudo address: enough for a script to detect
+                // "the export exists" and to compare two exports.
+                Some(DllOutcome::value(Value::Int(self.allocate(0x10) as i64)))
+            }
+            "getmodulefilenamew" | "getmodulefilenamea" => {
+                let wide = wide_name;
+                let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                let name = self
+                    .dll_name(handle)
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "emulated.dll".to_string());
+                let full = format!("{}\\{}", self.paths.windows_dir, name);
+                let buf = arg(1).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let size = arg(2).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+                if size == 0 || !self.write_c_string(buf, &full, wide, size) {
+                    return None;
+                }
+                Some(DllOutcome::value(Value::Int(full.len() as i64)))
+            }
+
+            // ---------------- memory ----------------
+            "virtualalloc" | "virtualallocex" | "heapalloc" => {
+                let size = arg(1).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+                if size == 0 {
+                    return None;
+                }
+                let addr = self.allocate(size);
+                self.blobs
+                    .push((addr, Rc::new(RefCell::new(vec![0u8; size]))));
+                Some(DllOutcome::value(Value::Int(addr as i64)))
+            }
+            "virtualfree" | "heapfree" => Some(DllOutcome::value(Value::Bool(true))),
+            "getprocessheap" => Some(DllOutcome::value(Value::Int(0x1))),
+
+            // ---------------- sandboxed files ----------------
+            "createfilew" | "createfilea" => {
+                let path = self.c_string_arg(arg(0)?)?;
+                let access = arg(1).map(|v| v.to_int()).unwrap_or(0);
+                let write = access & 0x4000_0000 != 0; // GENERIC_WRITE
+                let read = access & 0x8000_0000 != 0 || !write; // GENERIC_READ
+                if !read && !write {
+                    return None;
+                }
+                let handle = self.next_file_handle;
+                self.next_file_handle += 1;
+                let content = if write {
+                    Vec::new()
+                } else {
+                    match self.sandbox_files.get(&normalise_sandbox_path(&path)) {
+                        Some(c) => c.clone(),
+                        None => return None, // file not found
+                    }
+                };
+                self.open_files
+                    .insert(handle, OpenFile { path, content, write, pos: 0 });
+                Some(DllOutcome::value(Value::Int(handle)))
+            }
+            "readfile" => {
+                let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                let buf = arg(1).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let count = arg(2).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+                let lpread = arg(3).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let file = self.open_files.get_mut(&handle)?;
+                if file.write {
+                    return None;
+                }
+                let start = (file.pos as usize).min(file.content.len());
+                let end = (start + count).min(file.content.len());
+                let bytes = file.content[start..end].to_vec();
+                file.pos = end as u64;
+                if !self.memory_write(buf, &bytes) {
+                    return None;
+                }
+                if lpread != 0 {
+                    self.memory_write(lpread, &(bytes.len() as u32).to_le_bytes());
+                }
+                Some(DllOutcome::value(Value::Bool(true)))
+            }
+            "writefile" => {
+                let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                let buf = arg(1).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let count = arg(2).map(|v| v.to_int()).unwrap_or(0).max(0) as usize;
+                let lpwritten = arg(3).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let bytes = self.memory_read(buf, count)?;
+                let file = self.open_files.get_mut(&handle)?;
+                if !file.write {
+                    return None;
+                }
+                file.content.extend_from_slice(&bytes);
+                if lpwritten != 0 {
+                    self.memory_write(lpwritten, &(bytes.len() as u32).to_le_bytes());
+                }
+                Some(DllOutcome::value(Value::Bool(true)))
+            }
+            "getfilesize" => {
+                let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                let len = self
+                    .open_files
+                    .get(&handle)
+                    .map(|f| f.content.len() as i64)
+                    .unwrap_or(-1);
+                if len < 0 {
+                    return None;
+                }
+                Some(DllOutcome::value(Value::Int(len)))
+            }
+            "closehandle" => {
+                let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
+                match self.open_files.remove(&handle) {
+                    Some(f) => {
+                        if f.write {
+                            self.sandbox_files
+                                .insert(normalise_sandbox_path(&f.path), f.content);
+                        }
+                        Some(DllOutcome::value(Value::Bool(true)))
+                    }
+                    None => Some(DllOutcome::value(Value::Bool(true))),
+                }
+            }
+
+            // ---------------- CRT-style strings ----------------
+            "lstrlenw" | "lstrlena" => {
+                let s = self.c_string_arg(arg(0)?)?;
+                Some(DllOutcome::value(Value::Int(s.chars().count() as i64)))
+            }
+            "lstrcpyw" | "lstrcpya" => {
+                let dst = arg(0).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let src = self.c_string_arg(arg(1)?)?;
+                let wide = wide_name;
+                let max = if wide { (src.chars().count() + 1) * 2 } else { src.len() + 1 };
+                if !self.write_c_string(dst, &src, wide, max) {
+                    return None;
+                }
+                Some(DllOutcome::value(Value::Int(dst as i64)))
+            }
+            "lstrcatw" | "lstrcata" => {
+                let dst = arg(0).map(|v| v.to_int()).unwrap_or(0) as u64;
+                let tail = self.c_string_arg(arg(1)?)?;
+                let wide = wide_name;
+                let mut head = self.c_string_at(dst, wide)?;
+                head.push_str(&tail);
+                let max = if wide { (head.chars().count() + 1) * 2 } else { head.len() + 1 };
+                if !self.write_c_string(dst, &head, wide, max) {
+                    return None;
+                }
+                Some(DllOutcome::value(Value::Int(dst as i64)))
             }
 
             // ---------------- CryptoAPI ----------------
