@@ -17,7 +17,7 @@
 //!   shows every item. Tab items are drawn as a row of tabs.
 //! * Colors are read as AutoIt documents them, `0xRRGGBB`.
 
-use autoitv3_gui::{Control, ControlKind, DrawCmd, Window, WindowState};
+use autoitv3_gui::{Control, ControlKind, DrawCmd, GuiUpdate, Window, WindowState};
 use egui::{
     vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
     TextStyle,
@@ -140,6 +140,8 @@ pub struct DrawnWindow {
     /// Where the minimise/maximise controls ended up, the maximise one on the
     /// right. `None` when the window was not drawn.
     pub controls: Option<egui::Rect>,
+    /// Title bar + frame, measured this frame (outer minus client).
+    pub chrome: Option<egui::Vec2>,
 }
 
 /// What the previous frame drew for one window; the caller keeps one per handle.
@@ -151,6 +153,10 @@ pub struct LastWindow {
     /// The geometry that frame was drawn from, so a script-side change is
     /// recognisable.
     pub geometry: Option<WindowGeometry>,
+    /// Title bar + frame, measured as outer minus drawn client. Kept here
+    /// rather than re-measured by the caller, so a frame that draws a window at
+    /// some other size (minimised, maximised) cannot corrupt it.
+    pub chrome: Option<egui::Vec2>,
 }
 
 /// The egui area id of an AutoIt window. Titles are not unique (two windows may
@@ -212,14 +218,8 @@ pub fn show_autoit_window(
     let wanted = geometry.client();
     let script_moved = last.geometry != Some(geometry);
 
-    // Title bar + frame, measured as outer minus client on an earlier frame.
-    let chrome = last
-        .client
-        .and_then(|client| {
-            ctx.memory(|memory| memory.area_rect(window_area_id(window.handle)))
-                .map(|rect| rect.size() - client)
-        })
-        .unwrap_or(DEFAULT_CHROME);
+    // Title bar + frame, as measured on an earlier frame.
+    let chrome = last.chrome.unwrap_or(DEFAULT_CHROME);
 
     // How big the client area should be this frame, and where the window goes.
     let (decided, pos) = if minimized {
@@ -382,7 +382,53 @@ pub fn show_autoit_window(
         client: drawn,
         state_request,
         controls: controls_rect,
+        // Outer minus what we drew: exact, whatever the window's state.
+        chrome: drawn
+            .and_then(|client| {
+                ctx.memory(|memory| memory.area_rect(area_id))
+                    .map(|rect| rect.size() - client)
+            })
+            .or(last.chrome),
     }
+}
+
+/// Fold one drawn frame into the record the next frame is drawn against, and
+/// report a size the *user* dragged as a [`GuiUpdate::Resize`].
+///
+/// Every caller must fold frames the same way: forgetting to carry the drawn
+/// size (or the chrome) over a minimised or maximised frame is what makes a
+/// window oscillate between two sizes.
+pub fn record_drawn(
+    window: &Window,
+    geometry: WindowGeometry,
+    last: LastWindow,
+    drawn: DrawnWindow,
+) -> (LastWindow, Option<GuiUpdate>) {
+    let chrome = drawn.chrome.or(last.chrome);
+    let record = |client| LastWindow {
+        client,
+        geometry: Some(geometry),
+        chrome,
+    };
+    let Some(client) = drawn.client else {
+        // Nothing was drawn: keep the size for when the window comes back.
+        return (record(last.client), None);
+    };
+    // A drag is the only thing worth reporting: a size the script chose is
+    // already in the model, and a minimised or maximised window is sized by its
+    // state and the desktop rather than by the pointer.
+    let dragged = geometry.state == WindowState::Normal
+        && last.geometry == Some(geometry)
+        && last
+            .client
+            .map(|previous| (client - previous).length() > 0.5)
+            .unwrap_or(false);
+    let update = (dragged && client.x >= 1.0 && client.y >= 1.0).then(|| GuiUpdate::Resize {
+        handle: window.handle,
+        width: client.x.round() as i32,
+        height: client.y.round() as i32,
+    });
+    (record(Some(client)), update)
 }
 
 /// The strip at the right of a title bar that the window controls occupy.

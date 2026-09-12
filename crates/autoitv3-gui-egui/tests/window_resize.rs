@@ -9,7 +9,7 @@
 
 use autoitv3_gui::{Control, ControlKind, Window};
 use autoitv3_gui_egui::{
-    show_autoit_window, window_area_id, LastWindow, MinimizeStyle, WindowGeometry,
+    record_drawn, show_autoit_window, window_area_id, LastWindow, MinimizeStyle, WindowGeometry,
 };
 use egui::{vec2, Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 
@@ -59,6 +59,8 @@ struct Harness {
     requested: Option<autoitv3_gui::WindowState>,
     /// Where the title-bar controls were drawn.
     controls: Option<Rect>,
+    /// A resize the frame asked to report to the model.
+    reported: Option<autoitv3_gui::GuiUpdate>,
     minimize: MinimizeStyle,
     /// Seconds; egui tells a double-click from a triple one by how long ago the
     /// previous click was, so a frozen clock turns the second gesture into a
@@ -78,6 +80,7 @@ impl Harness {
             drawn: None,
             requested: None,
             controls: None,
+            reported: None,
             minimize: MinimizeStyle::Hidden,
             time: 0.0,
         }
@@ -107,10 +110,11 @@ impl Harness {
         self.requested = drawn.state_request;
         self.controls = drawn.controls;
         self.drawn = client;
-        self.last = LastWindow {
-            client: client.or(last.client),
-            geometry: Some(WindowGeometry::of(&self.window)),
-        };
+        // Exactly what LiveBackend does with a frame, so the two cannot drift.
+        let geometry = WindowGeometry::of(&self.window);
+        let (next, update) = record_drawn(&self.window, geometry, last, drawn);
+        self.reported = update;
+        self.last = next;
         let rect = self
             .ctx
             .memory(|memory| memory.area_rect(window_area_id(1)))
@@ -218,6 +222,24 @@ fn restoring_a_maximised_window_brings_back_both_axes() {
         (restored.height() - normal.height()).abs() < 0.5,
         "the height did not come back: {normal:?} -> {restored:?}"
     );
+    assert!(
+        (restored.left() - normal.left()).abs() < 0.5
+            && (restored.top() - normal.top()).abs() < 0.5,
+        "the position did not come back: {normal:?} -> {restored:?}"
+    );
+    assert!(
+        harness.reported.is_none(),
+        "restoring is not a user resize: {:?}",
+        harness.reported
+    );
+    // And it stays there.
+    for _ in 0..3 {
+        let (again, _) = harness.frame(vec![]);
+        assert!(
+            (again.size() - restored.size()).length() < 0.5,
+            "the restored window drifted: {restored:?} -> {again:?}"
+        );
+    }
     assert!(
         (client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 1.0,
         "the restored client is {client:?}"
@@ -499,4 +521,30 @@ fn clicking_a_window_control_is_not_a_title_double_click() {
         Some(autoitv3_gui::WindowState::Minimized),
         "the button wins over the title-bar double-click"
     );
+}
+
+#[test]
+fn a_maximised_window_does_not_oscillate() {
+    // A maximised window is sized by the desktop, not by the size it had
+    // before: if a frame forgets what it drew, the next one measures a chrome
+    // out of the stale size and the window flips between the two every frame.
+    let mut harness = Harness::new();
+    harness.frame(vec![]);
+    harness.frame(vec![]);
+    harness.window.state = autoitv3_gui::WindowState::Maximized;
+
+    let (first, _) = harness.frame(vec![]);
+    for frame in 0..6 {
+        let (again, client) = harness.frame(vec![]);
+        assert!(
+            (again.size() - first.size()).length() < 0.5,
+            "frame {frame}: the maximised window changed size: {first:?} -> {again:?}"
+        );
+        assert!(
+            harness.reported.is_none(),
+            "frame {frame}: a maximised window's size is not a user resize: {:?}",
+            harness.reported
+        );
+        let _ = client;
+    }
 }
