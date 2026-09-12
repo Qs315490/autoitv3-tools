@@ -1,15 +1,14 @@
 //! Tests for the Windows emulation layer.
 //!
-//! The suite is `not(windows)` only: on a Windows build the real
-//! [`autoitv3_platform::WindowsPlatform`] is installed instead, and these
-//! expectations would be answered by the host OS.
-
-#![cfg(not(windows))]
+//! The suite runs on **every** host: the platform stack here is the
+//! emulation layer alone, so the same expectations hold whether the host is
+//! Linux (winemu is the whole story) or Windows (winemu is what a script
+//! gets when the native layer is absent).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use autoitv3_platform::host_platform_with;
+use autoitv3_platform::{CommonPlatform, CompositePlatform};
 use autoitv3_platform::winemu::{
     Control, FileRegistry, GuiBackend, GuiEvent, GuiUpdate, MemoryRegistry, RegistryData,
     RegistryStore, Window, WindowsArch, WindowsEmulation, WindowsPaths, WindowsVersion,
@@ -27,7 +26,12 @@ fn run_profiled(emu: WindowsEmulation, profile: ExecutionProfile, body: &str) ->
     let src = format!("Func F()\n{body}\nEndFunc\n");
     let prog = autoitv3_ast::parse(&src).expect("parses");
     let mut rt = Runtime::with_program(&prog);
-    rt.set_platform(host_platform_with(emu));
+    // The emulation layer first, the common layer beneath it — the same
+    // composition a Linux analysis run gets, on every host.
+    rt.set_platform(Box::new(CompositePlatform::new(
+        "winemu+common",
+        vec![Box::new(emu), Box::new(CommonPlatform::new())],
+    )));
     rt.set_profile(profile);
     rt.call_function("F", vec![]).expect("no runtime error")
 }
@@ -604,22 +608,14 @@ fn a_disabled_layer_leaves_windows_calls_undefined() {
     let src = "Func F()\n    Return DllStructCreate(\"dword x\")\nEndFunc\n";
     let prog = autoitv3_ast::parse(src).unwrap();
     let mut rt = Runtime::with_program(&prog);
-    rt.set_platform(host_platform_with(emu));
+    rt.set_platform(Box::new(emu));
     let err = rt.call_function("F", vec![]).unwrap_err();
     assert!(
         err.message().contains("undefined function"),
         "got: {}",
         err.message()
     );
-    // The macros fall through to the host, which reports Linux.
-    assert_eq!(
-        rt.platform_name(),
-        if cfg!(windows) {
-            "common+windows"
-        } else {
-            "common+linux"
-        }
-    );
+    assert_eq!(rt.platform_name(), "windows-emulation");
 }
 
 #[test]
@@ -784,7 +780,7 @@ fn dll_call_address_fails_without_a_loader() {
 
 #[test]
 fn com_calls_fail_predictably() {
-    let body = r#"Local $o = ObjCreate("Scripting.Dictionary")
+    let body = r#"Local $o = ObjCreate("NoSuch.ProgID.Anywhere")
     Local $e1 = @error
     Local $g = ObjGet("", "Some.Object")
     Local $e2 = @error
@@ -1421,4 +1417,209 @@ Local $e = GUICtrlCreateInput("start", 0, 0)
 Return GUICtrlRead($e)
 "#;
     assert_eq!(text(emu, body), "typed");
+}
+
+
+#[test]
+fn emulated_modules_round_trip() {
+    let body = r#"
+Local $h = DllCall("kernel32.dll", "ptr", "LoadLibraryW", "wstr", "kernel32.dll")
+Local $p = DllCall("kernel32.dll", "ptr", "GetProcAddress", "ptr", $h[0], "wstr", "GetCurrentProcessId")
+Local $t = DllStructCreate("wchar buf[260]")
+DllCall("kernel32.dll", "dword", "GetModuleFileNameW", "ptr", $h[0], "ptr", DllStructGetPtr($t), "dword", 260)
+Local $bad = DllCall("kernel32.dll", "ptr", "GetProcAddress", "ptr", 9999, "wstr", "Nope")
+Local $e = @error
+Return $h[0] & ":" & ($p[0] > 0) & ":" & DllStructGetData($t, 1) & ":" & $bad & ":" & $e
+"#;
+    let got = run(win10(), body).to_autoit_string();
+    assert!(
+        got.starts_with(r"1:True:C:\Windows\kernel32.dll:0:1"),
+        "got {got}"
+    );
+}
+
+#[test]
+fn emulated_memory_apis_allocate_and_round_trip() {
+    let body = r#"
+Local $mem = DllCall("kernel32.dll", "ptr", "VirtualAlloc", "ptr", 0, "ulong_ptr", 16, "dword", 0x3000, "dword", 4)
+Local $src = DllStructCreate("byte buf[4]")
+DllStructSetData($src, 1, Binary("0x01020304"))
+DllCall("kernel32.dll", "none", "RtlMoveMemory", "ptr", $mem[0], "ptr", DllStructGetPtr($src), "ulong_ptr", 4)
+Local $out = DllStructCreate("byte out[4]", $mem[0])
+Return DllStructGetData($out, 1) = Binary("0x01020304")
+"#;
+    assert_eq!(
+        run(win10(), body).to_autoit_string(),
+        "True"
+    );
+}
+
+#[test]
+fn emulated_file_apis_read_a_seeded_sandbox_file() {
+    let emu = WindowsEmulation::new().with_file(r"C:\probe\data.txt", b"payload".to_vec());
+    let body = r#"
+Local $h = DllCall("kernel32.dll", "ptr", "CreateFileW", "wstr", "C:\probe\data.txt", "dword", 0x80000000, "dword", 0, "ptr", 0)
+Local $buf = DllStructCreate("byte buf[16]")
+Local $got = DllStructCreate("dword read")
+Local $r = DllCall("kernel32.dll", "bool", "ReadFile", "ptr", $h[0], "ptr", DllStructGetPtr($buf), "dword", 16, "ptr", DllStructGetPtr($got), "ptr", 0)
+DllCall("kernel32.dll", "bool", "CloseHandle", "ptr", $h[0])
+Return ($r[0] = 1) & ":" & DllStructGetData($got, 1) & ":" & BinaryMid(DllStructGetData($buf, 1), 1, 7)
+"#;
+    assert_eq!(run(emu, body).to_autoit_string(), "True:7:0x7061796C6F6164");
+}
+
+#[test]
+fn emulated_file_apis_write_and_read_back() {
+    let body = r#"
+Local $h = DllCall("kernel32.dll", "ptr", "CreateFileW", "wstr", "C:\probe\out.txt", "dword", 0x40000000, "dword", 0, "ptr", 0)
+Local $buf = DllStructCreate("char buf[5]")
+DllStructSetData($buf, 1, "hello")
+Local $w = DllCall("kernel32.dll", "bool", "WriteFile", "ptr", $h[0], "ptr", DllStructGetPtr($buf), "dword", 5, "ptr", 0, "ptr", 0)
+DllCall("kernel32.dll", "bool", "CloseHandle", "ptr", $h[0])
+Local $h2 = DllCall("kernel32.dll", "ptr", "CreateFileW", "wstr", "C:\probe\out.txt", "dword", 0x80000000, "dword", 0, "ptr", 0)
+Local $size = DllCall("kernel32.dll", "dword", "GetFileSize", "ptr", $h2[0], "ptr", 0)
+Local $buf2 = DllStructCreate("char buf[5]")
+DllCall("kernel32.dll", "bool", "ReadFile", "ptr", $h2[0], "ptr", DllStructGetPtr($buf2), "dword", 5, "ptr", 0, "ptr", 0)
+DllCall("kernel32.dll", "bool", "CloseHandle", "ptr", $h2[0])
+Return ($w[0] = 1) & ":" & $size[0] & ":" & DllStructGetData($buf2, 1)
+"#;
+    assert_eq!(run(win10(), body).to_autoit_string(), "True:5:hello");
+}
+
+#[test]
+fn emulated_crt_strings_work_over_struct_memory() {
+    let body = r#"
+Local $t = DllStructCreate("wchar s[8]")
+DllStructSetData($t, 1, "abc")
+Local $n = DllCall("kernel32.dll", "int", "lstrlenW", "ptr", DllStructGetPtr($t))
+Local $d = DllStructCreate("wchar s[8]")
+DllCall("kernel32.dll", "ptr", "lstrcpyW", "ptr", DllStructGetPtr($d), "ptr", DllStructGetPtr($t))
+Return $n[0] & ":" & DllStructGetData($d, 1)
+"#;
+    assert_eq!(run(win10(), body).to_autoit_string(), "3:abc");
+}
+
+#[test]
+fn enumwindows_drives_a_registered_callback() {
+    let emu = WindowsEmulation::new().with_scripted_windows(vec![0x1001, 0x1002, 0x1003]);
+    let src = r#"
+Global $g_Calls = 0
+Global $g_Last = 0
+
+Func F()
+    Local $cb = DllCallbackRegister("OnWindow", "int", "int;int")
+    Local $r = DllCall("user32.dll", "int", "EnumWindows", "ptr", $cb, "int", 42)
+    Return $g_Calls & ":" & $g_Last & ":" & $r[0]
+EndFunc
+
+Func OnWindow($hwnd, $lparam)
+    $g_Calls += 1
+    $g_Last = $hwnd
+    Return 1
+EndFunc
+"#;
+    // The callback really runs — once per scripted handle, with the handle as
+    // the first argument and the EnumWindows lparam as the second.
+    let prog = autoitv3_ast::parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    // Execute the top level so the `Global` counters exist.
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "3:4099:True"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// pseudo COM (the emulation answering ObjCreate for well-known ProgIDs)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scripting_dictionary_behaves_like_the_real_one() {
+    let emu = WindowsEmulation::new();
+    let src = r#"
+Global $g_Count = 0
+Global $g_Seen = ""
+
+Func F()
+    Local $d = ObjCreate("Scripting.Dictionary")
+    $d.Add("name", "payload")
+    $d.Add("count", 42)
+    $g_Count = $d.Count
+    $g_Seen = $d.Item("name") & "/" & $d.Exists("count") & "/" & $d.Exists("nope")
+    $d.Remove("count")
+    Local $keys = $d.Keys
+    Return $g_Count & ":" & $g_Seen & ":" & $keys[0] & ":" & $d.Count
+EndFunc
+"#;
+    let prog = autoitv3_ast::parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "2:payload/True/False:name:1"
+    );
+}
+
+#[test]
+fn wscript_shell_bridges_to_the_emulated_registry() {
+    // In-memory registry: keeps the shared default `.au3_registry` clean.
+    let emu = WindowsEmulation::new().with_memory_registry();
+    let src = r#"
+Global $g_Val = ""
+
+Func F()
+    Local $w = ObjCreate("WScript.Shell")
+    $w.RegWrite("HKCU\Software\Au3PseudoCom\Answer", "Answer", "REG_SZ")
+    $g_Val = $w.RegRead("HKCU\Software\Au3PseudoCom\Answer")
+    $w.RegDelete("HKCU\Software\Au3PseudoCom\Answer")
+    Local $env = $w.ExpandEnvironmentStrings("%USERNAME%")
+    Return $g_Val & ":" & ($env <> "%USERNAME%")
+EndFunc
+"#;
+    let prog = autoitv3_ast::parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "Answer:True"
+    );
+}
+
+#[test]
+fn filesystemobject_answers_pure_path_arithmetic() {
+    let emu = WindowsEmulation::new()
+        .with_file(r"C:\probe\payload.bin", b"x".to_vec());
+    let src = r#"
+Global $g_Ext = ""
+Global $g_Exists = 0
+
+Func F()
+    Local $fso = ObjCreate("Scripting.FileSystemObject")
+    $g_Ext = $fso.GetExtensionName("C:\dir\archive.tar.gz")
+    $g_Exists = ($fso.FileExists("C:\probe\payload.bin") = 1) And ($fso.FileExists("C:\probe\nope.bin") = 0)
+    Local $spec = $fso.GetSpecialFolder(0)
+    Return $g_Ext & ":" & ($g_Exists = 1) & ":" & $spec
+EndFunc
+"#;
+    let prog = autoitv3_ast::parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        r"gz:True:C:\Windows"
+    );
+}
+
+#[test]
+fn unknown_progid_still_fails_honestly() {
+    let body = r#"
+Local $o = ObjCreate("NoSuch.ProgID.Here")
+Return @error
+"#;
+    assert_eq!(run(win10(), body).to_int(), 1);
 }
