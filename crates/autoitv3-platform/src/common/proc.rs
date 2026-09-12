@@ -496,10 +496,14 @@ fn split_command_line(s: &str) -> Vec<String> {
 /// `(pid, name)` for a process named `wanted`, or a numeric PID probe.
 fn find_process(wanted: &str) -> Option<(i64, String)> {
     if let Ok(pid) = wanted.parse::<i64>() {
-        let name = process_name(pid).unwrap_or_default();
-        return Path::new(&format!("/proc/{pid}"))
-            .exists()
-            .then_some((pid, name));
+        if pid <= 0 {
+            return None;
+        }
+        return system_processes()
+            .into_iter()
+            .find(|(p, _)| *p == pid)
+            .map(|(pid, name)| (pid, name))
+            .filter(|_| cfg!(windows) || Path::new(&format!("/proc/{pid}")).exists());
     }
     system_processes()
         .into_iter()
@@ -515,6 +519,7 @@ fn name_matches(candidate: &str, wanted: &str) -> bool {
     c == w
 }
 
+#[cfg(target_os = "linux")]
 fn process_name(pid: i64) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/comm"))
         .ok()
@@ -542,12 +547,19 @@ fn system_processes() -> Vec<(i64, String)> {
     out
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn system_processes() -> Vec<(i64, String)> {
+    crate::windows::process::system_processes()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn system_processes() -> Vec<(i64, String)> {
     Vec::new()
 }
 
-/// `(VmRSS, VmHWM)` in bytes, from `/proc/<pid>/status`.
+/// `(VmRSS, VmHWM)` in bytes, from `/proc/<pid>/status` (Linux) or
+/// `K32GetProcessMemoryInfo` (Windows).
+#[cfg(target_os = "linux")]
 fn read_memory(pid: i64) -> (Option<i64>, Option<i64>) {
     let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
         return (None, None);
@@ -560,4 +572,14 @@ fn read_memory(pid: i64) -> (Option<i64>, Option<i64>) {
             .map(|kb| kb * 1024)
     };
     (field("VmRSS:"), field("VmHWM:"))
+}
+
+#[cfg(windows)]
+fn read_memory(pid: i64) -> (Option<i64>, Option<i64>) {
+    crate::windows::process::process_memory(pid)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn read_memory(_pid: i64) -> (Option<i64>, Option<i64>) {
+    (None, None)
 }

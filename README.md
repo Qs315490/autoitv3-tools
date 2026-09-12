@@ -62,7 +62,8 @@ autoitv3-tools/
           net.rs        Inet*/TCP*/UDP*/Ping/代理设置（std::net）
         linux/        系统层（Linux）：/proc 进程查询、OS 标识宏
           mod.rs
-        windows/      系统层（Windows）：注册表/COM/DllCall/GUI 扩展点（骨架）
+        windows/      系统层（Windows）：原生 Win32 后端（DllCall/DllStruct/剪贴板/
+                      进程/驱动器/系统宏）；注册表、COM、GUI 由仿真层兜底
           mod.rs
         winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
           mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
@@ -685,16 +686,17 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 
 | 层 | 模块 | 安装于 | 内容 |
 | -- | ---- | ------ | ---- |
-| 仿真 | `winemu/` | **仅非 Windows** | Windows 身份、路径、`DllStruct*`/`DllCall`、注册表、剪贴板、驱动器——让 Windows 目标脚本能在 Linux 上继续跑（见下文「Windows 仿真」） |
+| 仿真 | `winemu/` | 非 Windows 时在**最前**；Windows 上在**最后兜底** | Windows 身份、路径、`DllStruct*`/`DllCall`、注册表、剪贴板、驱动器——让 Windows 目标脚本能在 Linux 上继续跑（见下文「Windows 仿真」）；`AU3_WIN_EMU=0` / `--no-win-emu` 可整体关闭 |
 | 通用 | `common/`（`mod.rs` + `proc.rs` + `net.rs`） | **所有**平台 | 文件与目录 I/O（含 `FileFind*`、`FileGetPos`/`FileSetPos`/`FileSetEnd`、`FileGetEncoding`、`FileReadToArray`、`FileSetTime`）、INI（`Ini*` 7 个）、环境变量、数学、计时器、控制台，以及进程（`Run`/`ProcessWait*`/`StdoutRead`…）与网络（`Inet*`/`TCP*`/`UDP*`/`Ping`）——AutoIt 在各系统上行为一致的部分 |
 | 系统 | `linux/` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
-| 系统 | `windows/` | 仅 Windows | 注册表、COM、`DllCall`、GUI（**骨架**，后续填充） |
+| 系统 | `windows/` | 仅 Windows | **原生 Win32 后端**：`DllCall`/`DllCallAddress`/`DllOpen`/`DllClose`（`LoadLibraryW`/`GetProcAddress` + 变参调用桥）、`DllStruct*`（复用 winemu 布局引擎，但缓冲是**真实堆内存**，被调方直接写穿）、剪贴板（`ClipGet`/`ClipPut`，`CF_UNICODETEXT`）、进程（`ProcessList`/`ProcessExists`/`ProcessClose`，Toolhelp 快照）、驱动器（`DriveGet*`/`DriveMap*` 真实卷与网络映射）、注册表（`Reg*`，64 位视图 + AutoIt 类型码）、COM（`ObjCreate`/`IsObj`/`ObjName` 与 `.$member`/`.Method()` 经手写 `IDispatch` vtable 晚绑定）、系统/Shell（`MemGetStats`/`IsAdmin`/`ShellExecute*`/`RunAs*`/`Shutdown`）以及 Windows 身份宏（`@WindowsDir`/`@OSVersion`/`@ComputerName`…）。GUI 仍由仿真层兜底；`ObjGet`（文件名字对象）与 `ObjEvent`（事件接收器）报告 `@error = 1` |
 
 `host_platform()` 按目标平台组装成 `CompositePlatform`：Windows 为
-`common+windows`，其余平台为 `winemu+common+linux`（仿真层在最前，
-因此它的宏会**有意覆盖**通用层的同名宏）。逐层查找；通用层在 Windows 上同样生效，
-系统层只补真正系统相关的部分。需要显式指定仿真配置时用
-`host_platform_with(WindowsEmulation::new()...)`。
+`windows+common+winemu`（原生层最前应答真实语义，通用层居中，仿真层最后只接住
+原生未实现的 Windows 专有名），其余平台为 `winemu+common+linux`（仿真层在最前，
+因此它的宏会**有意覆盖**通用层的同名宏）。逐层查找；通用层在 Windows 上同样生效。
+`AU3_WIN_EMU=0`（或 `--no-win-emu`）去掉兜底后，原生未实现的名字回归"未定义函数"。
+需要显式指定仿真配置时用 `host_platform_with(WindowsEmulation::new()...)`。
 
 `Platform` **trait** 留在 `autoitv3-runtime`（解释器调用的接缝），**实现**在此 crate。
 依赖方向单向——运行时不知道任何具体操作系统——因此 `Runtime::new()` 默认**没有**平台层，
@@ -724,7 +726,7 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 | ---- | ---- | ---- |
 | 执行 | `Run`、`RunWait` | `std::process`；`$STDIO_*` 标志决定是否接管标准流 |
 | 标准 IO | `StdoutRead`、`StderrRead`、`StdinWrite`、`StdioClose` | 每条流一个后台读取线程，读操作永不阻塞；进程结束后 join，缓冲完整 |
-| 进程 | `ProcessWait`、`ProcessWaitClose`、`ProcessGetStats`、`ProcessSetPriority` | `ProcessWait*` 超时为**秒**、0 表示无限（与 AutoIt 一致）；`ProcessGetStats` 读 `/proc/<pid>/status` |
+| 进程 | `ProcessWait`、`ProcessWaitClose`、`ProcessGetStats`、`ProcessSetPriority` | `ProcessWait*` 超时为**秒**、0 表示无限（与 AutoIt 一致）；`ProcessGetStats` 在 Linux 读 `/proc/<pid>/status`，在 Windows 走 `K32GetProcessMemoryInfo` |
 | 网络 | `InetGet`、`InetGetInfo`、`InetGetSize`、`InetRead`、`InetClose`、`Ping`、`FtpSetProxy`、`HttpSetProxy`、`HttpSetUserAgent`、`TCP*`（9）、`UDP*`（7） | `Inet*` 仅明文 `http://`（无 TLS）；`TCP*`/`UDP*` 用 `std::net`，句柄放进各自的套接字表 |
 
 > **执行配置门控**：启动进程、打开套接字、联网下载都属于外部副作用，在

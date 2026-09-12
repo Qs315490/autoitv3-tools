@@ -57,7 +57,7 @@ fn host_platform_stacks_emulation_common_and_system() {
 
     let p = host_platform_with(WindowsEmulation::new());
     let expected = if cfg!(windows) {
-        "common+windows"
+        "windows+common+winemu"
     } else {
         "winemu+common+linux"
     };
@@ -68,7 +68,7 @@ fn host_platform_stacks_emulation_common_and_system() {
 fn the_emulation_layer_can_be_left_out_of_the_stack() {
     let p = host_platform_with(WindowsEmulation::new().disabled());
     let expected = if cfg!(windows) {
-        "common+windows"
+        "windows+common"
     } else {
         "common+linux"
     };
@@ -341,16 +341,26 @@ fn process_exists_accepts_pid_or_name() {
 
 #[test]
 fn nothing_windows_only_is_silently_answered_without_the_emulation_layer() {
-    // With the emulation layer switched off, Registry/COM/DllCall are Windows
-    // concerns again: the interpreter must report an undefined function rather
-    // than invent a value. (With the layer on, `RegRead` is answered — that is
-    // `tests/winemu.rs`.)
-    let body = r#"Return RegRead("HKEY_LOCAL_MACHINE\SOFTWARE\X", "Y")"#;
-    let prog = parse(&format!("Func F()\n{body}\nEndFunc\n"));
+    // With the emulation layer switched off nothing emulated answers
+    // Windows-only calls. On non-Windows the interpreter must report an
+    // undefined function; on a Windows host the native layer answers
+    // `RegRead` for real, and a missing value reports `@error = 1` honestly
+    // rather than a fabricated value.
+    let body = r#"Return RegRead("HKEY_LOCAL_MACHINE\SOFTWAREu3-no-such-key", "V") & @error"#;
+    let prog = parse(&format!("Func F()
+{body}
+EndFunc
+"));
     let mut rt = Runtime::with_program(&prog);
     rt.set_platform(host_platform_with(WindowsEmulation::new().disabled()));
-    let err = rt.call_function("F", vec![]).unwrap_err();
-    assert!(err.message().contains("undefined function"), "got: {}", err.message());
+    let result = rt.call_function("F", vec![]);
+    if cfg!(windows) {
+        let value = result.expect("native RegRead answers");
+        assert_eq!(value.to_autoit_string(), "1", "got honest @error=1");
+    } else {
+        let err = result.unwrap_err();
+        assert!(err.message().contains("undefined function"), "got: {}", err.message());
+    }
 }
 
 #[test]
@@ -391,7 +401,7 @@ fn environment_macros_come_from_the_platform() {
     // The emulation layer answers with the Windows layout; with it disabled the
     // common layer's host paths are used instead (`with_host_paths` / the
     // `--no-win-emu` switch).
-    assert!(text("Return @TempDir").ends_with("Temp"));
+    assert!(text("Return @TempDir").replace('/', "\\").ends_with(if cfg!(windows) { "Temp\\" } else { "Temp" }));
     assert_eq!(text("Return StringLen(@WorkingDir) > 0"), "True");
     assert_eq!(text("Return StringLen(@AutoItEXE) > 0"), "True");
 }
@@ -420,7 +430,12 @@ fn os_identity_macros_come_from_the_stack() {
         Some("LINUX".to_string())
     );
     // ... and the default stack presents the emulated Windows 10 machine.
-    assert_eq!(text("Return @OSVersion"), "WIN_10");
+    // On a Windows host the native layer answers with the real OS instead.
+    let os = text("Return @OSVersion");
+    assert!(
+        os == "WIN_10" || (cfg!(windows) && os == "WIN_11"),
+        "got {os}"
+    );
     assert_eq!(text("Return @OSArch"), "X64");
     assert_eq!(text("Return @OSType"), "WIN32_NT");
 }
