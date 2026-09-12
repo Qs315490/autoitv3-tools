@@ -130,6 +130,16 @@ impl Platform for CompositePlatform {
         Ok(None)
     }
 
+    /// Merge the callback invocations every layer scheduled; the runtime
+    /// runs them after this call returns.
+    fn take_pending_callbacks(&mut self) -> Vec<(String, Vec<Value>)> {
+        let mut all = Vec::new();
+        for layer in &mut self.layers {
+            all.extend(layer.take_pending_callbacks());
+        }
+        all
+    }
+
     /// Forward object creation to the first layer that answers.
     fn obj_create(
         &mut self,
