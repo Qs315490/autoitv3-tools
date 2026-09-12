@@ -81,7 +81,12 @@ autoitv3-tools/
       tests/
         platform.rs   分层、选择、注入、通用函数与宏（33 项）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
-        winemu/       Windows 仿真层（DllStruct / CryptoAPI / LZNT1 / PE 资源 / 注册表 …）
+        winemu.rs     Windows 仿真层：DllStruct / 注册表 / 快捷方式 / GUI …
+        unit/         winemu 各模块的单元测试（`#[path]` 回挂）
+          winemu_compress.rs  LZNT1 解压
+          winemu_crypto.rs    CryptoAPI 仿真
+          winemu_pe.rs        PE 资源读取
+          winemu_verinfo.rs   RT_VERSION
     autoitv3-gui/            # 库 crate（零依赖）——GUI 控件模型 + 后端接缝
       src/model.rs           Window/Control/GuiModel、绘制指令、$GUI_* 状态位
       src/backend.rs         GuiBackend trait + HeadlessBackend + GuiEvent/GuiImage
@@ -93,6 +98,7 @@ autoitv3-tools/
       src/png.rs             极简 PNG 写出（stored deflate，无依赖）
       src/live.rs            LiveBackend：真窗口（feature "window"），点击/编辑回灌
       tests/controls.rs      29 种控件逐一渲染 + 整窗画廊 + 确定性
+      tests/unit/            widgets / raster / live 的单元测试（`#[path]` 回挂）
       examples/live.rs       实时窗口示例：Label + Input + Button
     autoitv3-deobf/          # 库 crate——反混淆 pass（常量折叠 + 函数表解析 + 可选重命名）
       src/
@@ -111,6 +117,7 @@ autoitv3-tools/
       tests/
         deobf.rs      反混淆 pass 单元测试（30 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
+        unit/rename.rs `#forceref` 重写的单元测试（`#[path]` 回挂）
     autoitv3-unpack/         # 库 crate——从编译产物里取回载荷（au3 unpack）
       src/lib.rs            资源打包载荷的 7 阶段解码 + 资源角色自动识别
                             （loader/member 靠 SHA1 校验确认，不做名字假设）
