@@ -281,6 +281,23 @@ impl GuiState {
                     }
                     continue;
                 }
+                GuiUpdate::Move { handle, x, y } => {
+                    // A user's drag. AutoIt has no message for this (scripts
+                    // poll WinGetPos), so the model is all that changes.
+                    let changed = match self.model.window_mut(handle) {
+                        Some(window) => {
+                            let changed = window.x != x || window.y != y;
+                            window.x = x;
+                            window.y = y;
+                            changed
+                        }
+                        None => false,
+                    };
+                    if changed {
+                        self.notify_window(handle);
+                    }
+                    continue;
+                }
                 GuiUpdate::Resize {
                     handle,
                     width,

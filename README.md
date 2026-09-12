@@ -923,6 +923,12 @@ backend.run(move |backend| {                    // 主线程；阻塞到窗口�
   真的会移动/缩放窗口，`WinSetState`/`GUISetState` 的 `@SW_HIDE`/`@SW_MINIMIZE`/
   `@SW_MAXIMIZE`/`@SW_RESTORE` 也照做——最大化的窗口铺满视口。
 
+**用户拖动 = 拥有几何**：拖动边框会改大小、拖动标题栏会移动，两者都**回写模型**
+（`GuiUpdate::Resize`/`Move`），所以 `WinGetPos`/`WinGetClientSize` 与屏幕一致；AutoIt 对"移动"
+没有消息，脚本靠轮询。**拖动一个最大化的窗口（边框或标题栏）会先退出最大化**——和 Windows
+一样先回到正常摆放位置，再让指针接管；为此实时窗口会记住"用户要求的那个状态"，
+在脚本应用之前不回弹（否则中间几帧会被最大化规则拉回去）。
+
 **标题栏控件**：窗口标题栏右侧有 **最小化** 和 **最大化/还原** 两个按钮（最大化后同一个按钮变成还原），
 点一下即可操作，脚本相应收到 `$GUI_EVENT_MINIMIZE`/`RESTORE`/`MAXIMIZE`。egui 只自带关闭按钮，
 所以这两个是我们自己画的，但**样式与 egui 关闭按钮完全一致**：同样的 `spacing.icon_width` 方形尺寸、

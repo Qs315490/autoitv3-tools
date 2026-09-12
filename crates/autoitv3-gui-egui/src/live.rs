@@ -140,6 +140,7 @@ impl LiveBackend {
             closed: std::collections::HashSet::new(),
             pending: Pending::new(),
             seen: HashMap::new(),
+            requested: HashMap::new(),
             ever_had_window: false,
             empty_frames: 0,
         };
@@ -339,6 +340,10 @@ struct LiveApp {
     pending: Pending,
     /// What we last drew for each window handle; see [`LastWindow`].
     seen: HashMap<i64, LastWindow>,
+    /// A state the user asked for (un-maximising by dragging, say) that the
+    /// model has not confirmed yet, with a frame budget so a script that
+    /// overrides it cannot pin the window forever.
+    requested: HashMap<i64, (WindowState, u8)>,
     /// Set once the mirror has held a visible window, so a slow script is not
     /// mistaken for a finished one.
     ever_had_window: bool,
@@ -358,6 +363,13 @@ impl eframe::App for LiveApp {
         };
         self.closed.retain(|handle| windows.contains_key(handle));
         self.seen.retain(|handle, _| windows.contains_key(handle));
+        self.requested.retain(|handle, (state, frames)| {
+            *frames = frames.saturating_sub(1);
+            windows
+                .get(handle)
+                .is_none_or(|window| window.state != *state)
+                && *frames > 0
+        });
         expire_pending(&mut self.pending, &controls);
 
         if windows.values().any(|window| window.visible) {
@@ -416,6 +428,7 @@ impl eframe::App for LiveApp {
         let shared = &self.shared;
         let pending = &mut self.pending;
         let seen_windows = &mut self.seen;
+        let requested_states = &mut self.requested;
         let minimize = self.minimize;
         for window in windows.values() {
             if !window.visible || self.closed.contains(&window.handle) {
@@ -425,7 +438,17 @@ impl eframe::App for LiveApp {
                 .get(&window.handle)
                 .copied()
                 .unwrap_or_default();
-            let geometry = WindowGeometry::of(window);
+            // A minimised/maximised window the user has dragged out of its
+            // state keeps that state locally until the script applies it,
+            // instead of snapping back for a frame.
+            let requested = requested_states.get(&window.handle).copied();
+            let mut effective = window.clone();
+            if let Some((state, frames)) = requested {
+                if window.state != state && frames > 0 {
+                    effective.state = state;
+                }
+            }
+            let geometry = WindowGeometry::of(&effective);
 
             let mut open = true;
             let mut actions = Vec::new();
@@ -437,12 +460,18 @@ impl eframe::App for LiveApp {
                 .filter_map(|id| controls.get(id).cloned())
                 .collect();
             overlay_pending(&mut body, pending);
-            let drawn =
-                show_autoit_window(&ctx, window, &body, &mut open, last, minimize, &mut actions);
+            let drawn = show_autoit_window(
+                &ctx,
+                &effective,
+                &body,
+                &mut open,
+                last,
+                minimize,
+                &mut actions,
+            );
 
-            // A double-click on the title bar is the Windows gesture for
-            // maximise/restore; the script hears about it like any other state
-            // change.
+            // A double-click on the title bar, a window control, or a drag out
+            // of the maximised state: tell the script what the user asked for.
             if let Some(state) = drawn.state_request {
                 shared
                     .updates
@@ -452,6 +481,9 @@ impl eframe::App for LiveApp {
                         handle: window.handle,
                         state,
                     });
+                if state != window.state {
+                    requested_states.insert(window.handle, (state, PENDING_FRAMES));
+                }
             }
 
             for interaction in actions {
@@ -468,11 +500,14 @@ impl eframe::App for LiveApp {
                 let _ = shared.events_tx.send(GuiEvent::Close(window.handle));
             }
 
-            // One place decides what to remember and whether the user resized
-            // the window; the same function is what the tests drive.
-            let (next, update) = record_drawn(window, geometry, last, drawn);
-            if let Some(update) = update {
-                shared.updates.lock().unwrap().push(update);
+            // One place decides what to remember and what the user changed; the
+            // same function is what the tests drive.
+            // A state the user asked for makes the frame's geometry theirs to
+            // report, even though the model has not caught up yet.
+            let user_state = requested_states.contains_key(&window.handle);
+            let (next, updates) = record_drawn(&effective, geometry, last, drawn, user_state);
+            if !updates.is_empty() {
+                shared.updates.lock().unwrap().extend(updates);
             }
             seen_windows.insert(window.handle, next);
         }
