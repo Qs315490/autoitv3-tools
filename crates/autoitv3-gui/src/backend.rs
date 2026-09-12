@@ -5,7 +5,7 @@
 //! [`HeadlessBackend`] does neither — it is a no-op renderer — so analysis runs
 //! need no toolkit at all.
 
-use crate::model::{Control, Window};
+use crate::model::{Control, Window, WindowState};
 
 /// A GUI event a backend can deliver to `GUIGetMsg`/`TrayGetMsg`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +54,10 @@ pub enum GuiUpdate {
         width: i32,
         height: i32,
     },
+    /// The user changed a window's state — double-clicked its title bar, or
+    /// clicked its taskbar button. The script sees `$GUI_EVENT_MINIMIZE`,
+    /// `$GUI_EVENT_RESTORE` or `$GUI_EVENT_MAXIMIZE`.
+    SetWindowState { handle: i64, state: WindowState },
 }
 
 /// A renderer/event source for the GUI model.

@@ -10,6 +10,11 @@
 //! Click **Greet** to print `Hello, <typed name>!` on stdout; close the window
 //! (or its X) to let the script's `GUIGetMsg` loop exit.
 //!
+//! Press **Minimise** to see what `@SW_MINIMIZE` does. By default the window
+//! leaves the screen, the way Windows hides it, and a strip along the bottom of
+//! the viewport offers the way back. Pass `--titlebar` to keep the title bar on
+//! screen instead and double-click it to restore.
+//!
 //! Pass `--auto` to run a script that creates the controls and returns at once:
 //! the window then closes itself, which is handy for checking the plumbing
 //! without a user.
@@ -18,7 +23,7 @@
 //! because winit insists on creating the event loop there. It starts the script
 //! on a worker thread and blocks until the window closes.
 
-use autoitv3_gui_egui::LiveBackend;
+use autoitv3_gui_egui::{LiveBackend, MinimizeStyle};
 use autoitv3_platform::winemu::WindowsEmulation;
 use autoitv3_runtime::Runtime;
 
@@ -27,6 +32,7 @@ GUICreate("AutoIt PoC", 380, 170)
 GUICtrlCreateLabel("Type a name, then press Greet:", 12, 12)
 $edit = GUICtrlCreateInput("world", 12, 36, 220, 24)
 $btn = GUICtrlCreateButton("Greet", 12, 74, 110, 30)
+GUICtrlCreateButton("Minimise", 132, 74, 110, 30)
 GUISetState()
 "#;
 
@@ -36,6 +42,14 @@ GUICtrlCreateLabel("Type a name, then press Greet:", 12, 12)
 $edit = GUICtrlCreateInput("world", 12, 36, 220, 24)
 $btn = GUICtrlCreateButton("Greet", 12, 74, 110, 30)
 GUISetState()
+Sleep(1000)
+WinMove("AutoIt PoC", "", 200, 150, 500, 300)   ; 窗口真的过去并变大
+Sleep(1000)
+WinSetState("AutoIt PoC", "", @SW_MAXIMIZE)     ; 铺满
+Sleep(1000)
+WinSetState("AutoIt PoC", "", @SW_MINIMIZE)     ; 消失（脚本仍持有）
+Sleep(1000)
+WinSetState("AutoIt PoC", "", @SW_RESTORE)      ; 回来
 While 1
     $msg = GUIGetMsg()
     If $msg = -3 Then ExitLoop
@@ -45,10 +59,16 @@ WEnd
 "#;
 
 fn main() {
-    let auto = std::env::args().any(|arg| arg == "--auto");
+    let mut args = std::env::args().skip(1);
+    let auto = args.any(|arg| arg == "--auto");
+    let title_bar_minimize = std::env::args().any(|arg| arg == "--titlebar");
     let source = if auto { CONTROLS } else { SCRIPT };
 
-    let backend = LiveBackend::new("AutoIt GUI PoC");
+    let mut backend = LiveBackend::new("AutoIt GUI PoC");
+    if title_bar_minimize {
+        // Keep the title bar on screen when the script minimises the window.
+        backend = backend.with_minimize_style(MinimizeStyle::TitleBar);
+    }
     backend
         .run(move |backend| {
             let emulation = WindowsEmulation::new().with_gui_backend(Box::new(backend));

@@ -46,6 +46,6 @@ pub use raster::rasterize;
 pub use render::EguiBackend;
 #[cfg(feature = "egui")]
 pub use widgets::{
-    draw_control, draw_window_body, show_autoit_window, window_area_id, Action, Interaction,
-    LastWindow, WindowGeometry,
+    draw_control, draw_window_body, show_autoit_window, window_area_id, Action, DrawnWindow,
+    Interaction, LastWindow, MinimizeStyle, WindowGeometry,
 };

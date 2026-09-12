@@ -1164,6 +1164,83 @@ impl GuiBackend for SizingBackend {
     }
 }
 
+/// A backend that reports a user's window-state change (double-clicking a
+/// title bar, clicking a taskbar button) once the window is ready for it.
+struct StateBackend {
+    pending: Vec<GuiUpdate>,
+    /// Hand the change over once the window is in this state.
+    release_after: autoitv3_platform::winemu::WindowState,
+    ready: bool,
+    seen: Rc<RefCell<Vec<(i64, autoitv3_platform::winemu::WindowState)>>>,
+}
+
+impl Default for StateBackend {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+            release_after: autoitv3_platform::winemu::WindowState::Normal,
+            ready: false,
+            seen: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
+
+impl GuiBackend for StateBackend {
+    fn on_window(&mut self, window: &Window) {
+        self.seen.borrow_mut().push((window.handle, window.state));
+        if window.visible && window.state == self.release_after {
+            self.ready = true;
+        }
+    }
+    fn take_updates(&mut self) -> Vec<GuiUpdate> {
+        if self.ready {
+            std::mem::take(&mut self.pending)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[test]
+fn a_user_state_change_reaches_the_script() {
+    use autoitv3_platform::winemu::WindowState;
+
+    // `$GUI_EVENT_MINIMIZE` is -4, `$GUI_EVENT_RESTORE` -5,
+    // `$GUI_EVENT_MAXIMIZE` -6. WinGetState keeps its own bit vocabulary:
+    // exists(1) + visible(2) + enabled(4) + active(8) + minimised(16) or
+    // maximised(32).
+    fn case(state: WindowState, release_after: WindowState, script: &str) -> String {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let emu = win10().with_gui_backend(Box::new(StateBackend {
+            pending: vec![GuiUpdate::SetWindowState { handle: 0x1_0000, state }],
+            release_after,
+            ready: false,
+            seen: seen.clone(),
+        }));
+        let result = text(emu, script);
+        assert!(
+            seen.borrow().iter().any(|(_, seen)| *seen == state),
+            "the new state never reached the backend: {:?}",
+            seen.borrow()
+        );
+        result
+    }
+
+    const MINIMISE_FIRST: &str = "WinSetState(\"T\", \"\", @SW_MINIMIZE)\n";
+    let body = |first: &str| {
+        format!(
+            "GUICreate(\"T\", 380, 170)\nGUISetState()\n{first}Local $msg = GUIGetMsg()\nReturn WinGetState(\"T\") & \" msg \" & $msg"
+        )
+    };
+
+    assert_eq!(case(WindowState::Minimized, WindowState::Normal, &body("")), "31 msg -4");
+    assert_eq!(case(WindowState::Maximized, WindowState::Normal, &body("")), "47 msg -6");
+    assert_eq!(
+        case(WindowState::Normal, WindowState::Minimized, &body(MINIMISE_FIRST)),
+        "15 msg -5"
+    );
+}
+
 #[test]
 fn a_user_resize_reaches_wingetpos_and_guigetmsg() {
     // What a live window sends after the user drags an edge.

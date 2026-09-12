@@ -180,6 +180,29 @@ impl GuiState {
                     }
                     id
                 }
+                GuiUpdate::SetWindowState { handle, state } => {
+                    let changed = match self.model.window_mut(handle) {
+                        Some(window) => {
+                            let changed = window.state != state;
+                            window.state = state;
+                            if state != WindowState::Minimized {
+                                window.visible = true;
+                            }
+                            changed
+                        }
+                        None => false,
+                    };
+                    if changed {
+                        self.notify_window(handle);
+                        let event = match state {
+                            WindowState::Minimized => GUI_EVENT_MINIMIZE,
+                            WindowState::Maximized => GUI_EVENT_MAXIMIZE,
+                            WindowState::Normal => GUI_EVENT_RESTORE,
+                        };
+                        self.events.push_back(GuiEvent::System(event));
+                    }
+                    continue;
+                }
                 GuiUpdate::Resize {
                     handle,
                     width,
