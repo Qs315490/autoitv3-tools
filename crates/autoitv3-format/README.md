@@ -10,5 +10,5 @@
     autoitv3-format/         # 库 crate——格式打印（原名 pretty）
       src/lib.rs    把 AST 重新打印为 AutoIt 源码（默认保留注释，可 strip；规范缩进）
       tests/
-        format.rs    格式化/注释保留/Else/空参数括号测试（6 项）
+        format.rs    格式化/注释保留/Else/空参数括号测试（9 项）
 ```

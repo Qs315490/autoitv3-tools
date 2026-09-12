@@ -8,6 +8,7 @@
 
 ```text
     autoitv3-gui/            # 库 crate（零依赖）——GUI 控件模型 + 后端接缝
+      src/lib.rs             公共 API（GuiEvent/GuiImage/GuiBackend 导出）
       src/model.rs           Window/Control/GuiModel、绘制指令、$GUI_* 状态位
       src/backend.rs         GuiBackend trait + HeadlessBackend + GuiEvent/GuiImage
 ```

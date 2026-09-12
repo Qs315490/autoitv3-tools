@@ -2910,7 +2910,7 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         "ostype" => Value::Str("WIN32_NT".to_string()),
         "osbuild" => Value::Str(version.build().to_string()),
         "osservicepack" => Value::Str(version.service_pack().to_string()),
-        "osarch" | "processorarch" | "cpuch" => Value::Str(arch.as_str().to_string()),
+        "osarch" | "processorarch" | "cpuarch" => Value::Str(arch.as_str().to_string()),
         "oslang" | "oslocale" | "muilang" => Value::Str("0409".to_string()),
         "kblayout" => Value::Str("00000409".to_string()),
         "autoitx64" => Value::Int(i64::from(arch.pointer_size() == 8)),

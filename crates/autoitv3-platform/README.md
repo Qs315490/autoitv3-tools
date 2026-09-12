@@ -10,7 +10,9 @@
     autoitv3-platform/       # 库 crate——平台层（分层：仿真 + 通用 + 系统）
       src/
         lib.rs        Platform 分层组合（CompositePlatform）、host_platform() /
-                      host_platform_with() 工厂、runtime_with_platform() 便捷构造
+                      host_platform_with() / host_platform_with_options()（PlatformOptions：
+                      force_emulated 经 FilteredPlatform 把指定函数路由到仿真层）工厂、
+                      runtime_with_platform() 便捷构造
         common/       通用层：文件/目录 I/O、INI、环境变量、数学、计时器、控制台
                       + 进程执行与网络 —— Linux 与 Windows 都安装
           mod.rs        CommonPlatform：直接分发 + 委托给下面两个服务
@@ -22,8 +24,15 @@
           proc_support.rs  /proc 探针（进程表/存活/内存，供 common 进程服务使用）
         windows/      系统层（Windows）：原生 Win32 后端（DllCall/DllStruct/剪贴板/
                       进程/驱动器/系统宏）；注册表、COM、GUI 由仿真层兜底
-          mod.rs
-          files.rs    真实文件属性（RASH）、8.3 短名、EnvUpdate 广播
+          mod.rs        WindowsPlatform：分发 + obj_*（IDispatch 晚绑定转发）+ 宏
+          dll.rs        DllCall/DllCallAddress（LoadLibraryW/GetProcAddress + 变参调用桥）
+          registry.rs   Reg*（64 位视图 + AutoIt 类型码 + @error 阶梯 + @extended 类型）
+          com.rs        手写 IDispatch vtable 晚绑定（VARIANT/BSTR 封送，MTA）
+          clipboard.rs  ClipGet/Put（CF_UNICODETEXT）
+          process.rs    Toolhelp 进程快照 + K32GetProcessMemoryInfo
+          drive.rs      DriveGet*（真实卷信息）
+          files.rs      真实文件属性（RASH）、8.3 短名、EnvUpdate 广播
+          misc.rs       MemGetStats/IsAdmin/ShellExecute*/RunAs*/DriveMap*/Shutdown
         winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
           mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
           version.rs    WindowsVersion：选定仿真系统版本（默认 win10）
@@ -40,7 +49,9 @@
                       资源）、verinfo.rs（RT_VERSION）、shortcut.rs（.lnk）、
                       mod.rs（WindowsArch 指针宽度）
       tests/
-        platform.rs   分层、选择、注入、通用函数与宏（33 项）
+        platform.rs   分层、选择、注入、通用函数与宏（54 项）
+        windows_native.rs  原生 Win32 层 38 项（真实内核/注册表/COM 冒烟）+
+                      扩展仿真 DllCall/回调/伪 COM（经 emu 栈，全宿主可跑）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
         winemu.rs     Windows 仿真层：DllStruct / 注册表 / 快捷方式 / GUI …
         unit/         winfmt/winemu 各模块的单元测试（`#[path]` 回挂）
@@ -86,7 +97,7 @@
 | 数学 | `Round`（半数远离零）、`Sqrt`、`Sin`/`Cos`/`Tan`/`ASin`/`ACos`/`ATan`（**弧度**）、`Log`、`Exp`、`Floor`、`Ceiling`、`Random`、`RandomSeed` |
 | 计时 | `TimerInit`、`TimerDiff` |
 | 控制台 | `ConsoleWrite`、`ConsoleWriteError`、`ConsoleRead` |
-| 宏 | `@TempDir`、`@AutoItPID`、`@AutoItEXE`、`@WorkingDir`/`@ScriptDir`、`@UserName`、`@HomePath`/`@UserProfileDir`、`@AppDataDir`/`@LocalAppDataDir`（XDG）、`@DesktopDir`、`@MyDocumentsDir` |
+| 宏 | `@TempDir`、`@AutoItPID`、`@AutoItEXE`、`@WorkingDir`/`@ScriptDir`、`@UserName`、`@ComputerName`、`@HomePath`/`@UserProfileDir`、`@AppDataDir`/`@LocalAppDataDir`（XDG）、`@DesktopDir`、`@MyDocumentsDir` |
 
 ### 通用层的进程与网络（`common/proc.rs` + `common/net.rs`）
 
@@ -123,15 +134,15 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`、`@AutoItX64` |
 | 目录 | `WindowsPaths` 给出传统 `C:` 布局：`@WindowsDir`、`@SystemDir`、`@ProgramFilesDir`、`@HomeDrive`、`@TempDir`、`@AppDataDir`、`@LocalAppDataDir`、`@UserProfileDir`、`@StartMenuDir`、`@StartupDir`…… |
 | 原生结构 | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`/`IsDllStruct`——定义解析器支持 `struct;…;endstruct`、常见整型/浮点/指针、`char`/`wchar` 数组、无名段、`align N`；句柄指向一块本层持有的字节缓冲 |
-| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`，已实现 `GetVersionExW`/`A`、`RtlGetVersion`、`GetVersion`、`GetSystemInfo`/`GetNativeSystemInfo` 以及几个无副作用的查询。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
-| 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存、写立刻回写文件；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
+| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`：版本/系统信息（`GetVersionExW/A`、`RtlGetVersion`、`GetSystemInfo`）、资源链（`GetModuleHandle*`/`FindResource*`/`SizeofResource`/`LoadResource`/`LockResource`/`RtlMoveMemory`）、模块与内存（`LoadLibrary*`/`GetProcAddress`/`GetModuleFileName*`、`VirtualAlloc`/`HeapAlloc` 等）、**内存沙箱文件**（`CreateFile*`/`ReadFile`/`WriteFile`/`GetFileSize`/`CloseHandle`，`with_file()` 注入）、CRT 字符串（`lstrlen*`/`lstrcpy*`/`lstrcat*`）、脚本化 `EnumWindows` 家族、CryptoAPI 与 LZNT1 解压。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
+| 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存；写先在内存累积（dirty 标记），store drop 或显式 `flush()` 时一次落盘；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
 | 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
 | 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFileSystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配）；网络映射 `DriveMapAdd`/`DriveMapDel`/`DriveMapGet` 与 `DriveSetLabel` 维护本层的映射/卷标状态 |
 | Windows 文件 | `FileGetVersion`（解析 PE `RT_VERSION`）、`FileCreateShortcut`/`FileGetShortcut`（读写真实 `.lnk` Shell Link）、`FileCreateNTFSLink`、`FileRecycle`/`FileRecycleEmpty`（落到 `.au3_recycle`，可用 `with_recycle_dir()` 改名）、`FileInstall`（磁盘文件或已加载模块的 `RT_RCDATA` 资源） |
-| 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`DllCallAddress` 无加载器，按边界失败 |
+| 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`EnumWindows`/`EnumChildWindows`/`EnumThreadWindows` 按 `with_scripted_windows()` 的句柄表把回调排入队列，运行时在 DllCall 返回后真实执行脚本函数（不重入解释器）；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
-| COM | 无 COM 运行时：`ObjCreate`/`ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 返回 `0`/`""` 并置 `@error = 1`，`IsObj` 恒为 `0`（不编造对象） |
-| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
+| COM | **伪 COM**：`ObjCreate` 对内建 ProgID 表返回真实行为对象——`Scripting.Dictionary`（Add/Exists/Item/Count/Keys/Items/Remove/RemoveAll）、`WScript.Shell`（RegRead/RegWrite/RegDelete 桥接仿真注册表、ExpandEnvironmentStrings、Run）、`Scripting.FileSystemObject`（FileExists/DriveExists/路径运算/GetSpecialFolder）；表外 ProgID 与 `ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 维持 `@error = 1` |
+| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*`/`$TVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞 |
 
 **选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
 `Win10`/`Win11`，**默认 Win10**：

@@ -22,7 +22,7 @@
         error.rs      RuntimeError 与控制流信号 Flow
         lib.rs        公共 API
       tests/
-        runtime.rs    解释器/host/debug 接口 + 可选样本集成测试（32 项）
+        runtime.rs    解释器/host/debug 接口 + 可选样本集成测试（63 项）
         regexp.rs     StringRegExp / StringRegExpReplace（27 项）
         unit/vocab.rs 内置函数 / 宏词表的单元测试（3 项，`#[path]` 回挂）
 ```
@@ -66,6 +66,12 @@ rt.set_profile(ExecutionProfile::faithful());       // 运行：AutoIt 语义
 
 **默认是 `faithful()`**——库不应悄悄改变脚本的行为；反混淆相关代码（`deobfuscate`
 的常量折叠与函数表解析）**显式**切到 `deterministic()`，保证输出可复现、不触碰机器。
+
+两个预设之上还可以**按效果类型**做细粒度开关：`EffectKind` 分 file / env / registry /
+clipboard / spawn / shutdown / net / process 八类，`ExecutionProfile::with_effect(kind, allowed)`
+在预设上叠加（如确定性运行放行注册表探测写入、忠实运行单独禁用 `Shutdown`）；
+平台层的每个副作用门控点都经 `HostContext::effect_allowed(kind)` 查询该决策。
+CLI 对应 `au3 run --allow <KIND>` / `--deny <KIND>`。
 
 CLI 的 `au3 run` 面向"探查混淆样本"，因此默认用确定性配置；需要按 AutoIt 语义真跑时加
 `--faithful`：
