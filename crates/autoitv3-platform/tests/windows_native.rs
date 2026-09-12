@@ -1085,3 +1085,95 @@ EndFunc
         "3:4099:True"
     );
 }
+
+// ---------------------------------------------------------------------------
+// pseudo COM (the emulation answering ObjCreate for well-known ProgIDs)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scripting_dictionary_behaves_like_the_real_one() {
+    let emu = WindowsEmulation::new();
+    let src = r#"
+Global $g_Count = 0
+Global $g_Seen = ""
+
+Func F()
+    Local $d = ObjCreate("Scripting.Dictionary")
+    $d.Add("name", "payload")
+    $d.Add("count", 42)
+    $g_Count = $d.Count
+    $g_Seen = $d.Item("name") & "/" & $d.Exists("count") & "/" & $d.Exists("nope")
+    $d.Remove("count")
+    Local $keys = $d.Keys
+    Return $g_Count & ":" & $g_Seen & ":" & $keys[0] & ":" & $d.Count
+EndFunc
+"#;
+    let prog = parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "2:payload/True/False:name:1"
+    );
+}
+
+#[test]
+fn wscript_shell_bridges_to_the_emulated_registry() {
+    let emu = WindowsEmulation::new();
+    let src = r#"
+Global $g_Val = ""
+
+Func F()
+    Local $w = ObjCreate("WScript.Shell")
+    $w.RegWrite("HKCU\Software\Au3PseudoCom\Answer", "Answer", "REG_SZ")
+    $g_Val = $w.RegRead("HKCU\Software\Au3PseudoCom\Answer")
+    $w.RegDelete("HKCU\Software\Au3PseudoCom\Answer")
+    Local $env = $w.ExpandEnvironmentStrings("%USERNAME%")
+    Return $g_Val & ":" & ($env <> "%USERNAME%")
+EndFunc
+"#;
+    let prog = parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "Answer:True"
+    );
+}
+
+#[test]
+fn filesystemobject_answers_pure_path_arithmetic() {
+    let emu = WindowsEmulation::new()
+        .with_file(r"C:\probe\payload.bin", b"x".to_vec());
+    let src = r#"
+Global $g_Ext = ""
+Global $g_Exists = 0
+
+Func F()
+    Local $fso = ObjCreate("Scripting.FileSystemObject")
+    $g_Ext = $fso.GetExtensionName("C:\dir\archive.tar.gz")
+    $g_Exists = ($fso.FileExists("C:\probe\payload.bin") = 1) And ($fso.FileExists("C:\probe\nope.bin") = 0)
+    Local $spec = $fso.GetSpecialFolder(0)
+    Return $g_Ext & ":" & ($g_Exists = 1) & ":" & $spec
+EndFunc
+"#;
+    let prog = parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        r"gz:True:C:\Windows"
+    );
+}
+
+#[test]
+fn unknown_progid_still_fails_honestly() {
+    let body = r#"
+Local $o = ObjCreate("NoSuch.ProgID.Here")
+Return @error
+"#;
+    assert_eq!(emu_only(WindowsEmulation::new(), body).to_int(), 1);
+}
