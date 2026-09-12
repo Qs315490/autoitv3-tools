@@ -250,6 +250,157 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
     }
 }
 
+/// Fine-grained platform-stack options.
+///
+/// The presets stay what they are ([`host_platform`] / [`host_platform_with`]);
+/// this adds two dials on top:
+///
+/// * `emulation` — the same [`WindowsEmulation`] configuration
+///   `host_platform_with` takes;
+/// * `force_emulated` — function names the **native** Windows layer must
+///   decline, so the emulation layer answers them instead. This is how a run
+///   opts into per-area emulation (the CLI's `--emulate registry` spells
+///   `Reg*` names) while everything else keeps native semantics.
+pub struct PlatformOptions {
+    /// Emulation-layer configuration (`WindowsEmulation::from_env()` by
+    /// convention).
+    pub emulation: WindowsEmulation,
+    /// Lower-case function names routed to the emulation layer even when the
+    /// native layer could answer. Empty by default.
+    pub force_emulated: Vec<String>,
+}
+
+/// A [`WindowsPlatform`] that declines the names in `declined`, letting the
+/// layers behind it answer instead.
+struct FilteredPlatform {
+    inner: windows::WindowsPlatform,
+    declined: std::rc::Rc<[String]>,
+}
+
+impl Platform for FilteredPlatform {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn provides(&self, name: &str) -> bool {
+        let forced = self
+            .declined
+            .iter()
+            .any(|d| d == &name.to_ascii_lowercase());
+        !forced && self.inner.provides(name)
+    }
+
+    fn macro_value(&self, name: &str) -> Option<Value> {
+        self.inner.macro_value(name)
+    }
+
+    fn call(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        if self
+            .declined
+            .iter()
+            .any(|d| d == &name.to_ascii_lowercase())
+        {
+            return Ok(None);
+        }
+        self.inner.call(name, args, ctx)
+    }
+
+    fn obj_create(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.inner.obj_create(name, args, ctx)
+    }
+
+    fn obj_get(
+        &mut self,
+        obj: &autoitv3_runtime::value::ObjRef,
+        member: &str,
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.inner.obj_get(obj, member, ctx)
+    }
+
+    fn obj_set(
+        &mut self,
+        obj: &autoitv3_runtime::value::ObjRef,
+        member: &str,
+        value: &Value,
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.inner.obj_set(obj, member, value, ctx)
+    }
+
+    fn obj_call(
+        &mut self,
+        obj: &autoitv3_runtime::value::ObjRef,
+        member: &str,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.inner.obj_call(obj, member, args, ctx)
+    }
+}
+
+/// Like [`host_platform_with`], but with fine-grained [`PlatformOptions`]:
+/// per-area emulation routing (`force_emulated`) on top of the emulation
+/// configuration. The presets' layer order is unchanged.
+pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform> {
+    let PlatformOptions {
+        emulation,
+        force_emulated,
+    } = options;
+    let emulated = emulation.is_enabled();
+    let declined: std::rc::Rc<[String]> = force_emulated
+        .into_iter()
+        .map(|n| n.to_ascii_lowercase())
+        .collect();
+    #[cfg(windows)]
+    {
+        let native: Box<dyn Platform> = if declined.is_empty() {
+            Box::new(windows::WindowsPlatform::new())
+        } else {
+            Box::new(FilteredPlatform {
+                inner: windows::WindowsPlatform::new(),
+                declined: declined.clone(),
+            })
+        };
+        let mut layers: Vec<Box<dyn Platform>> = vec![native, Box::new(CommonPlatform::new())];
+        if emulated {
+            layers.push(Box::new(emulation));
+        }
+        let name = if emulated {
+            "windows+common+winemu"
+        } else {
+            "windows+common"
+        };
+        Box::new(CompositePlatform::new(name, layers))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = declined;
+        let mut layers: Vec<Box<dyn Platform>> = Vec::new();
+        if emulated {
+            layers.push(Box::new(emulation));
+        }
+        layers.push(Box::new(CommonPlatform::new()));
+        layers.push(Box::new(LinuxPlatform::new()));
+        let name = if emulated {
+            "winemu+common+linux"
+        } else {
+            "common+linux"
+        };
+        Box::new(CompositePlatform::new(name, layers))
+    }
+}
+
 /// A [`Runtime`] with the program loaded and this OS's platform stack installed.
 ///
 /// Convenience for the common case; `Runtime::new()` alone has **no** platform,

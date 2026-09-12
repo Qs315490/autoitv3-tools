@@ -95,7 +95,7 @@ use std::time::Instant;
 use autoitv3_runtime::error::RuntimeError;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::platform::Platform;
-use autoitv3_runtime::profile::EffectPolicy;
+use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::value::Value;
 
 /// Environment variable selecting the emulated version (`win10`, `win11`, ...).
@@ -1412,7 +1412,7 @@ impl WindowsEmulation {
     }
 
     fn reg_write(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
-        if !writes_allowed(ctx) {
+        if !ctx.effect_allowed(EffectKind::RegistryWrite) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -1420,7 +1420,7 @@ impl WindowsEmulation {
         let value = arg_str(args, 1);
         // `RegWrite(key, value, type, data)`; a 3-argument call omits the type.
         let (type_code, data) = if args.len() >= 4 {
-            (Some(args[2].to_int()), args[3].clone())
+            (reg_type_code(&args[2]), args[3].clone())
         } else {
             (None, args.get(2).cloned().unwrap_or(Value::Null))
         };
@@ -1434,7 +1434,7 @@ impl WindowsEmulation {
     }
 
     fn reg_delete(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
-        if !writes_allowed(ctx) {
+        if !ctx.effect_allowed(EffectKind::RegistryWrite) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -1494,7 +1494,7 @@ impl WindowsEmulation {
     }
 
     fn clip_put(&self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
-        if !writes_allowed(ctx) {
+        if !ctx.effect_allowed(EffectKind::FileWrite) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -1842,7 +1842,7 @@ impl Platform for WindowsEmulation {
                 }
             }
             "filecreateshortcut" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -1888,7 +1888,7 @@ impl Platform for WindowsEmulation {
                 }
             }
             "filecreatentfslink" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -1903,7 +1903,7 @@ impl Platform for WindowsEmulation {
                 Value::Int(i64::from(ok))
             }
             "filerecycle" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -1912,7 +1912,7 @@ impl Platform for WindowsEmulation {
                 Value::Int(i64::from(ok))
             }
             "filerecycleempty" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -1924,7 +1924,7 @@ impl Platform for WindowsEmulation {
                 Value::Int(i64::from(ok))
             }
             "fileinstall" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2008,7 +2008,7 @@ impl Platform for WindowsEmulation {
 
             // ---------------- drive mappings ----------------
             "drivemapadd" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::NetAccess) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2046,7 +2046,7 @@ impl Platform for WindowsEmulation {
                 }
             }
             "drivemapdel" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::NetAccess) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2071,7 +2071,7 @@ impl Platform for WindowsEmulation {
                 }
             }
             "drivesetlabel" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2094,7 +2094,7 @@ impl Platform for WindowsEmulation {
 
             // ---------------- shell execution ----------------
             "shellexecute" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::Spawn) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2109,7 +2109,7 @@ impl Platform for WindowsEmulation {
                 Value::Int(i64::from(ok))
             }
             "shellexecutewait" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::Spawn) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2133,7 +2133,7 @@ impl Platform for WindowsEmulation {
                 }
             }
             "runas" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::Spawn) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2151,7 +2151,7 @@ impl Platform for WindowsEmulation {
                 }
             }
             "runaswait" => {
-                if !writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::Spawn) {
                     ctx.set_error(1, 0);
                     return Ok(Some(Value::Int(0)));
                 }
@@ -2375,6 +2375,26 @@ fn struct_handle_arg(extra: &[Value]) -> Option<i64> {
 }
 
 /// Argument as a string, using AutoIt's coercion.
+/// The `RegWrite` type argument: `"REG_SZ"`-style spellings first, then the
+/// numeric code -- mirroring the native layer's `type_code_of`.
+fn reg_type_code(v: &Value) -> Option<i64> {
+    match v {
+        Value::Str(text) => match text.trim().to_ascii_uppercase().as_str() {
+            "REG_SZ" => Some(1),
+            "REG_EXPAND_SZ" => Some(2),
+            "REG_BINARY" => Some(3),
+            "REG_DWORD" => Some(4),
+            "REG_MULTI_SZ" => Some(7),
+            "REG_QWORD" => Some(11),
+            _ => None,
+        },
+        other => {
+            let code = other.to_int();
+            matches!(code, 1..=11).then_some(code)
+        }
+    }
+}
+
 fn arg_str(args: &[Value], i: usize) -> String {
     args.get(i).map(|v| v.to_autoit_string()).unwrap_or_default()
 }
@@ -2385,10 +2405,6 @@ fn arg_int(args: &[Value], i: usize) -> i64 {
 }
 
 /// Whether the execution profile allows side effects.
-fn writes_allowed(ctx: &dyn HostContext) -> bool {
-    matches!(ctx.profile().effects, EffectPolicy::Allow)
-}
-
 /// The account name to present, from the host environment.
 fn host_user() -> String {
     std::env::var("USERNAME")

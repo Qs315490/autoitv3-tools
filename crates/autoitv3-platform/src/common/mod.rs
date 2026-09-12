@@ -64,7 +64,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use autoitv3_runtime::error::RuntimeError;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::platform::Platform;
-use autoitv3_runtime::profile::{EffectPolicy, RandomPolicy, DEFAULT_RANDOM_SEED};
+use autoitv3_runtime::profile::{RandomPolicy, DEFAULT_RANDOM_SEED};
+use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::value::Value;
 
 use self::net::NetworkService;
@@ -295,7 +296,7 @@ impl CommonPlatform {
         let create_path = mode & 8 != 0;
 
         // Opening for write creates or truncates the file: a state change.
-        if access != Access::Read && !Self::writes_allowed(ctx) {
+        if access != Access::Read && !ctx.effect_allowed(EffectKind::FileWrite) {
             ctx.set_error(1, 0);
             return Value::Int(-1);
         }
@@ -431,7 +432,7 @@ impl CommonPlatform {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
-        if !Self::writes_allowed(ctx) {
+        if !ctx.effect_allowed(EffectKind::FileWrite) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -480,11 +481,6 @@ impl CommonPlatform {
             total.2 += d + u64::from(e.file_type().map(|t| t.is_dir()).unwrap_or(false));
         }
         total
-    }
-
-    /// Whether the profile allows modifying state.
-    fn writes_allowed(ctx: &dyn HostContext) -> bool {
-        matches!(ctx.profile().effects, EffectPolicy::Allow)
     }
 
     // ----- dispatch -----
@@ -591,7 +587,7 @@ impl CommonPlatform {
             // closest portable answer.
             "filegetshortname" => Value::Str(arg_str(args, 0)),
             "filedelete" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -601,7 +597,7 @@ impl CommonPlatform {
                 Value::Int(i64::from(ok))
             }
             "filecopy" | "filemove" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -640,7 +636,7 @@ impl CommonPlatform {
                 Value::Int(i64::from(ok))
             }
             "filesetattrib" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -662,7 +658,7 @@ impl CommonPlatform {
                 Value::Int(i64::from(ok))
             }
             "filechangedir" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -701,7 +697,7 @@ impl CommonPlatform {
                 Value::Int(1)
             }
             "filesetend" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -816,7 +812,7 @@ impl CommonPlatform {
                 Value::Str(name)
             }
             "filesettime" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -869,7 +865,7 @@ impl CommonPlatform {
                 }
             }
             "iniwrite" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -885,7 +881,7 @@ impl CommonPlatform {
                 Value::Int(i64::from(ok))
             }
             "inidelete" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -932,7 +928,7 @@ impl CommonPlatform {
                 Value::array(out)
             }
             "inirenamesection" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -947,7 +943,7 @@ impl CommonPlatform {
                 Value::Int(i64::from(ok))
             }
             "iniwritesection" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -979,7 +975,7 @@ impl CommonPlatform {
 
             // ---------------- directories ----------------
             "dircreate" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -988,7 +984,7 @@ impl CommonPlatform {
                 Value::Int(i64::from(ok))
             }
             "dirremove" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -1019,7 +1015,7 @@ impl CommonPlatform {
                 }
             }
             "dircopy" | "dirmove" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
@@ -1049,7 +1045,7 @@ impl CommonPlatform {
             // ---------------- environment ----------------
             "envget" => Value::Str(std::env::var(arg_str(args, 0)).unwrap_or_default()),
             "envset" => {
-                if !Self::writes_allowed(ctx) {
+                if !ctx.effect_allowed(EffectKind::EnvWrite) {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }

@@ -7,10 +7,11 @@ use std::path::Path;
 
 use autoitv3_ast::{parse, Program};
 use autoitv3_platform::{
-    find_resource_module, has_staged_resources, resource_search_dirs, WindowsArch,
-    WindowsEmulation, WindowsVersion,
+    find_resource_module, has_staged_resources, resource_search_dirs, PlatformOptions,
+    WindowsArch, WindowsEmulation, WindowsVersion,
 };
 use autoitv3_runtime::platform::Platform;
+use autoitv3_runtime::profile::{EffectKind, ExecutionProfile};
 use clap::Args;
 
 /// `-o FILE` output redirection, shared by the source-emitting commands.
@@ -50,6 +51,65 @@ pub struct WinEmuArgs {
     /// undefined-function errors
     #[arg(long = "no-win-emu")]
     pub no_win_emu: bool,
+
+    /// Route a function area through the emulation layer even where a native
+    /// implementation exists. Repeatable. Areas: `registry` (Reg*),
+    /// `clipboard` (Clip*), or a raw function name (`RegWrite`).
+    #[arg(long = "emulate", value_name = "AREA")]
+    pub emulate: Vec<String>,
+}
+
+/// The side-effect knobs shared by the commands that set a profile.
+#[derive(clap::Args, Debug, Default)]
+pub struct EffectArgs {
+    /// Allow one class of side effect in the deterministic profile. Repeatable.
+    /// Kinds: file, env, registry, clipboard, spawn, shutdown, net, process.
+    #[arg(long = "allow", value_name = "KIND")]
+    pub allow: Vec<String>,
+
+    /// Deny one class of side effect, even in the faithful profile. Repeatable.
+    #[arg(long = "deny", value_name = "KIND")]
+    pub deny: Vec<String>,
+}
+
+impl EffectArgs {
+    /// Layer the `--allow`/`--deny` decisions over a base profile.
+    pub fn apply(&self, mut profile: ExecutionProfile) -> CliResult<ExecutionProfile> {
+        for (list, allowed) in [(&self.allow, true), (&self.deny, false)] {
+            for raw in list {
+                let kind = EffectKind::from_name(raw).ok_or_else(|| {
+                    CliError::failure(format!(
+                        "unknown effect {raw:?} (try file, env, registry, clipboard, spawn, \
+                         shutdown, net, process)"
+                    ))
+                })?;
+                if profile.overrides.get(kind).is_some() {
+                    return Err(CliError::failure(format!(
+                        "effect {raw:?} given to both --allow and --deny"
+                    )));
+                }
+                profile = profile.with_effect(kind, allowed);
+            }
+        }
+        Ok(profile)
+    }
+}
+
+/// Expand an `--emulate` area alias into the function names routed to the
+/// emulation layer.
+fn expand_emulate_area(raw: &str) -> CliResult<Vec<String>> {
+    let names: &[&str] = match raw.to_ascii_lowercase().as_str() {
+        "registry" | "reg" => &[
+            "RegRead",
+            "RegWrite",
+            "RegDelete",
+            "RegEnumKey",
+            "RegEnumVal",
+        ],
+        "clipboard" | "clip" => &["ClipGet", "ClipPut"],
+        other => return Ok(vec![other.to_string()]),
+    };
+    Ok(names.iter().map(|n| n.to_string()).collect())
 }
 
 impl WinEmuArgs {
@@ -110,7 +170,17 @@ impl WinEmuArgs {
             }
             emu = emu.with_resource_dirs(dirs);
         }
-        Ok(autoitv3_platform::host_platform_with(emu))
+        // `--emulate` routes the named areas to the emulation layer even where
+        // a native implementation exists; everything else keeps native
+        // semantics.
+        let mut force_emulated = Vec::new();
+        for area in &self.emulate {
+            force_emulated.extend(expand_emulate_area(area)?);
+        }
+        Ok(autoitv3_platform::host_platform_with_options(PlatformOptions {
+            emulation: emu,
+            force_emulated,
+        }))
     }
 }
 

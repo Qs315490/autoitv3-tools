@@ -11,7 +11,7 @@
 //! which keeps the interpreter core independent of any platform.
 
 use crate::error::RuntimeError;
-use crate::profile::ExecutionProfile;
+use crate::profile::{EffectKind, ExecutionProfile};
 use crate::value::Value;
 
 /// A native function callable from interpreted AutoIt code.
@@ -33,6 +33,16 @@ pub trait HostContext {
     /// The execution profile in force, so a platform can honour it (skipping
     /// `Sleep`, seeding `Random`, refusing writes).
     fn profile(&self) -> &ExecutionProfile;
+    /// The effective decision for one class of external effect: the profile's
+    /// per-kind override when set, otherwise its base [`EffectPolicy`].
+    ///
+    /// Platform layers gate every side effect through this instead of a bare
+    /// "are writes allowed", so an embedder (or the CLI's `--allow`/`--deny`)
+    /// can fine-tune individual effects — e.g. permit registry writes in a
+    /// deobfuscation run, or forbid `Shutdown` in a faithful one.
+    fn effect_allowed(&self, kind: EffectKind) -> bool {
+        self.profile().effect_allowed(kind)
+    }
 }
 
 /// A pluggable provider of native functions.

@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Memory::{
 };
 use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 
-use super::writes_allowed;
+use autoitv3_runtime::profile::EffectKind;
 
 /// How long to keep retrying `OpenClipboard` while another process holds it.
 const OPEN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -76,7 +76,7 @@ pub(crate) fn clip_get(ctx: &mut dyn HostContext) -> Value {
 /// Replace the clipboard text; `1` on success, `0` with `@error = 1` on
 /// refusal (analysis profile) or failure to open/claim the clipboard.
 pub(crate) fn clip_put(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::ClipboardWrite) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }

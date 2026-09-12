@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::profile::EffectPolicy;
+use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::value::Value;
 
 /// Every function this service implements.
@@ -491,7 +492,7 @@ impl NetworkService {
             ctx.set_error(1, 0);
             return Value::Int(0);
         };
-        if !file.is_empty() && !writes_allowed(ctx) {
+        if !file.is_empty() && !ctx.effect_allowed(EffectKind::NetAccess) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
@@ -632,10 +633,6 @@ impl NetworkService {
 // ---------------------------------------------------------------------------
 
 fn io_allowed(ctx: &dyn HostContext) -> bool {
-    matches!(ctx.profile().effects, EffectPolicy::Allow)
-}
-
-fn writes_allowed(ctx: &dyn HostContext) -> bool {
     matches!(ctx.profile().effects, EffectPolicy::Allow)
 }
 

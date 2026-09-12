@@ -40,7 +40,7 @@ use windows_sys::Win32::UI::Shell::{
     ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
 };
 
-use super::writes_allowed;
+use autoitv3_runtime::profile::EffectKind;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -125,7 +125,7 @@ pub(crate) fn shell_execute(args: &[Value], ctx: &mut dyn HostContext) -> Value 
 
 /// `ShellExecuteWait(...)` — the process exit code.
 pub(crate) fn shell_execute_wait(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::Spawn) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }
@@ -206,7 +206,7 @@ fn open_process(pid: i64) -> Option<windows_sys::Win32::Foundation::HANDLE> {
 /// `RunAs(user, domain, password, logon_flags, program [, workingdir [,
 /// showflag [, optflag]]])` — the child PID; the credentials are real.
 pub(crate) fn run_as(args: &[Value], ctx: &mut dyn HostContext, wait: bool) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::Spawn) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }
@@ -275,7 +275,7 @@ pub(crate) fn run_as(args: &[Value], ctx: &mut dyn HostContext, wait: bool) -> V
 
 /// `DriveMapAdd(device, share [, flags [, user [, password]]])`.
 pub(crate) fn drive_map_add(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::NetAccess) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }
@@ -323,7 +323,7 @@ pub(crate) fn drive_map_add(args: &[Value], ctx: &mut dyn HostContext) -> Value 
 
 /// `DriveMapDel(device)`.
 pub(crate) fn drive_map_del(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::NetAccess) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }
@@ -405,7 +405,7 @@ fn is_drive_device(device: &str) -> bool {
 /// and hibernate (64) are refused with `@error = 1`; there is no
 /// `ExitWindowsEx` equivalent and `SetSuspendState` needs elevated rights.
 pub(crate) fn shutdown(args: &[Value], ctx: &mut dyn HostContext) -> Value {
-    if !writes_allowed(ctx) {
+    if !ctx.effect_allowed(EffectKind::Shutdown) {
         ctx.set_error(1, 0);
         return Value::Int(0);
     }

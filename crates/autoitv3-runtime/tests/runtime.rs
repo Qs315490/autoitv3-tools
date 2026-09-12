@@ -439,8 +439,52 @@ EndFunc
 }
 
 #[test]
-fn execute_runs_generated_source() {
-    let src = r#"
+fn effect_overrides_fine_tune_the_presets() {
+    use autoitv3_runtime::profile::{EffectKind, ExecutionProfile};
+
+    // The presets themselves are untouched.
+    let det = ExecutionProfile::deterministic();
+    let faith = ExecutionProfile::faithful();
+    for kind in EffectKind::ALL {
+        assert!(!det.effect_allowed(*kind), "deterministic allows {kind:?}");
+        assert!(faith.effect_allowed(*kind), "faithful denies {kind:?}");
+    }
+
+    // A deterministic run may write the registry it probes — and nothing else.
+    let reg = det.with_effect(EffectKind::RegistryWrite, true);
+    assert!(reg.effect_allowed(EffectKind::RegistryWrite));
+    assert!(!reg.effect_allowed(EffectKind::FileWrite));
+    assert!(!reg.effect_allowed(EffectKind::Shutdown));
+    assert_eq!(reg.random, det.random, "other preset fields unchanged");
+
+    // A faithful run can still be told: never call Shutdown.
+    let no_shutdown = faith.with_effect(EffectKind::Shutdown, false);
+    assert!(!no_shutdown.effect_allowed(EffectKind::Shutdown));
+    assert!(no_shutdown.effect_allowed(EffectKind::FileWrite));
+    assert!(no_shutdown.effect_allowed(EffectKind::Spawn));
+
+    // Decisions are also reachable through the HostContext seam.
+    struct Probe(ExecutionProfile);
+    impl HostContext for Probe {
+        fn get_global(&self, _: &str) -> Option<Value> {
+            None
+        }
+        fn set_global(&mut self, _: &str, _: Value) {}
+        fn error(&self) -> i64 {
+            0
+        }
+        fn set_error(&mut self, _: i64, _: i64) {}
+        fn profile(&self) -> &ExecutionProfile {
+            &self.0
+        }
+    }
+    let ctx = Probe(reg);
+    assert!(ctx.effect_allowed(EffectKind::RegistryWrite));
+    assert!(!ctx.effect_allowed(EffectKind::Spawn));
+}
+
+#[test]
+fn execute_runs_generated_source() {    let src = r#"
 Func F()
     Return Execute("1 + 2")
 EndFunc
