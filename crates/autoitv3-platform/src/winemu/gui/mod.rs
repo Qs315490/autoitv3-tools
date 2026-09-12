@@ -98,11 +98,17 @@ pub const FUNCTIONS: &[&str] = &[
 /// Every builtin call passes through `GuiState::call`; the set turns the
 /// "is this even a GUI function?" gate into a hash lookup instead of an
 /// O(165) scan plus lets the non-GUI majority skip the state-machine prelude.
-static FUNCTIONS_SET: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+/// Keys are lower-cased: callers hand in the already-lowered call name.
+static FUNCTIONS_SET: std::sync::OnceLock<std::collections::HashSet<String>> =
     std::sync::OnceLock::new();
 
-fn functions_set() -> &'static std::collections::HashSet<&'static str> {
-    FUNCTIONS_SET.get_or_init(|| FUNCTIONS.iter().copied().collect())
+fn functions_set() -> &'static std::collections::HashSet<String> {
+    FUNCTIONS_SET.get_or_init(|| {
+        FUNCTIONS
+            .iter()
+            .map(|f| f.to_ascii_lowercase())
+            .collect()
+    })
 }
 
 /// The GUI half of the emulation: the model, a backend and scripted events.
