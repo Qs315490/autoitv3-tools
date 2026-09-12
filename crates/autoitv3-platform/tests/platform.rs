@@ -160,6 +160,44 @@ fn file_read_line_is_one_based_and_reports_eof() {
 }
 
 #[test]
+fn file_read_line_without_a_line_number_reads_sequentially() {
+    let dir = scratch("seq-lines");
+    let path = dir.join("c.txt");
+    std::fs::write(&path, "one\r\ntwo\r\n\r\nfour").unwrap();
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 0)
+    Local $a = FileReadLine($h)
+    Local $b = FileReadLine($h)
+    Local $c = FileReadLine($h)
+    Local $d = FileReadLine($h)
+    Local $e = FileReadLine($h)
+    Local $err = @error
+    FileClose($h)
+    Return $a & "," & $b & "," & $c & "," & $d & "," & $e & "," & $err"#,
+        p = path.display()
+    );
+    // Empty lines are real lines; only reading past the end is an error.
+    assert_eq!(text(&body), "one,two,,four,,1");
+}
+
+#[test]
+fn dirgetsize_reports_the_extended_triple_with_flag_one() {
+    let dir = scratch("dirsize");
+    let sub = dir.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(dir.join("a.txt"), vec![0u8; 10]).unwrap();
+    std::fs::write(sub.join("b.bin"), vec![0u8; 20]).unwrap();
+    let body = format!(
+        r#"Local $plain = DirGetSize("{d}")
+    Local $ext = DirGetSize("{d}", 1)
+    Return $plain & ":" & $ext[0] & ":" & $ext[1] & ":" & $ext[2]"#,
+        d = dir.display()
+    );
+    // 30 bytes in two files; the extended form counts the one subdirectory.
+    assert_eq!(text(&body), "30:30:2:1");
+}
+
+#[test]
 fn file_open_failure_returns_minus_one() {
     let body = r#"Local $h = FileOpen("/definitely/not/here.txt", 0)
     Return $h & ":" & @error"#;

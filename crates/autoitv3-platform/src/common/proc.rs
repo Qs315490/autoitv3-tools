@@ -25,10 +25,11 @@
 //! * `$STDERR_MERGED` (8) is emulated by concatenating the stderr buffer into
 //!   `StdoutRead` rather than dup'ing the OS handle.
 //! * `ProcessSetPriority` reports success without changing the nice level.
-//! * Name-based lookups read `/proc` on Linux; other hosts only resolve PIDs.
+//! * The platform-divergent probes — process tables, liveness and memory —
+//!   live in the system layers (`crate::linux::proc_support`,
+//!   `crate::windows::process`); this module only calls them.
 
 use std::io::{Read, Write};
-use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -134,12 +135,13 @@ impl ProcessService {
     }
 
     /// Whether a process is still running. Children we spawned are reaped with
-    /// `try_wait`; anything else is probed through `/proc` (Linux).
+    /// `try_wait`; anything else is probed on the host (`/proc` on Linux, the
+    /// process snapshot on Windows).
     fn alive(&mut self, pid: i64) -> bool {
         if let Some(i) = self.index_of(pid) {
             return matches!(self.procs[i].child.try_wait(), Ok(None));
         }
-        Path::new(&format!("/proc/{pid}")).exists()
+        pid_alive(pid)
     }
 
     fn run(&mut self, args: &[Value], wait: bool, ctx: &mut dyn HostContext) -> Value {
@@ -502,8 +504,7 @@ fn find_process(wanted: &str) -> Option<(i64, String)> {
         return system_processes()
             .into_iter()
             .find(|(p, _)| *p == pid)
-            .map(|(pid, name)| (pid, name))
-            .filter(|_| cfg!(windows) || Path::new(&format!("/proc/{pid}")).exists());
+            .filter(|_| pid_alive(pid));
     }
     system_processes()
         .into_iter()
@@ -519,32 +520,24 @@ fn name_matches(candidate: &str, wanted: &str) -> bool {
     c == w
 }
 
-#[cfg(target_os = "linux")]
-fn process_name(pid: i64) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{pid}/comm"))
-        .ok()
-        .map(|s| s.trim().to_string())
-}
+// --- per-platform probes ---------------------------------------------------
+// The listing/memory helpers are the platform-divergent part of this service:
+// Linux answers through `/proc` (`crate::linux::proc_support`), Windows
+// through `Toolhelp32`/`K32GetProcessMemoryInfo` (`crate::windows::process`).
 
 #[cfg(target_os = "linux")]
 fn system_processes() -> Vec<(i64, String)> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|n| n.parse::<i64>().ok())
-        else {
-            continue;
-        };
-        let name = process_name(pid).unwrap_or_default();
-        out.push((pid, name));
-    }
-    out.sort_by_key(|(pid, _)| *pid);
-    out
+    crate::linux::proc_support::system_processes()
+}
+
+#[cfg(target_os = "linux")]
+fn pid_alive(pid: i64) -> bool {
+    crate::linux::proc_support::pid_exists(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn read_memory(pid: i64) -> (Option<i64>, Option<i64>) {
+    crate::linux::proc_support::read_memory(pid)
 }
 
 #[cfg(windows)]
@@ -552,31 +545,26 @@ fn system_processes() -> Vec<(i64, String)> {
     crate::windows::process::system_processes()
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
-fn system_processes() -> Vec<(i64, String)> {
-    Vec::new()
-}
-
-/// `(VmRSS, VmHWM)` in bytes, from `/proc/<pid>/status` (Linux) or
-/// `K32GetProcessMemoryInfo` (Windows).
-#[cfg(target_os = "linux")]
-fn read_memory(pid: i64) -> (Option<i64>, Option<i64>) {
-    let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
-        return (None, None);
-    };
-    let field = |key: &str| -> Option<i64> {
-        text.lines()
-            .find(|l| l.starts_with(key))
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|v| v.parse::<i64>().ok())
-            .map(|kb| kb * 1024)
-    };
-    (field("VmRSS:"), field("VmHWM:"))
+#[cfg(windows)]
+fn pid_alive(pid: i64) -> bool {
+    crate::windows::process::system_processes()
+        .iter()
+        .any(|(p, _)| *p == pid)
 }
 
 #[cfg(windows)]
 fn read_memory(pid: i64) -> (Option<i64>, Option<i64>) {
     crate::windows::process::process_memory(pid)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn system_processes() -> Vec<(i64, String)> {
+    Vec::new()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn pid_alive(_pid: i64) -> bool {
+    false
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]

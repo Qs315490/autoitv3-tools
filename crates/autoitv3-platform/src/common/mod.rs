@@ -38,8 +38,11 @@
 //! * `FileGetTime` returns **UTC** (a local-time rendering would need a
 //!   timezone database); the `YYYY/MM/DD HH:MM:SS` layout matches AutoIt.
 //! * `FileGetAttrib` reports `D` for directories and `A` for regular files and
-//!   adds `R` when the file is read-only. The Windows-only `S` (system) and
-//!   `H` (hidden) attributes have no portable equivalent and are never set.
+//!   adds `R` when the file is read-only; `FileSetAttrib` only understands the
+//!   portable `R`/`N` flags. The Windows layer (`crate::windows`) overrides
+//!   both with the real `FILE_ATTRIBUTE_*` semantics (`S`, `H`, `+`/`-`), and
+//!   likewise answers `FileGetShortName` with a real 8.3 name and broadcasts
+//!   `EnvUpdate`'s `WM_SETTINGCHANGE`.
 //! * `Random` is deliberately **deterministic** by default (seed `0x2545F491`),
 //!   so deobfuscation results are reproducible; call `RandomSeed` for AutoIt's
 //!   behaviour.
@@ -363,7 +366,7 @@ impl CommonPlatform {
     fn file_read_line(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
         let handle = arg_int(args, 0);
         let line = arg_int(args, 1);
-        if self.entry(handle).is_none() || line < 1 {
+        if self.entry(handle).is_none() || line < 0 {
             ctx.set_error(1, 0);
             return Value::str("");
         }
@@ -372,20 +375,44 @@ impl CommonPlatform {
             return Value::str("");
         };
         let text = e.text.as_deref().unwrap_or("");
-        // AutoIt line endings are @CRLF, @LF or @CR.
-        let lines: Vec<&str> = text
-            .split('\n')
-            .map(|l| l.strip_suffix('\r').unwrap_or(l))
-            .collect();
-        match lines.get(line as usize - 1) {
-            Some(l) => {
-                ctx.set_error(0, 0);
-                Value::Str((*l).to_string())
+        let chars: Vec<char> = text.chars().collect();
+        if line >= 1 {
+            // An explicit line number reads that line (1-based), wherever the
+            // cursor happens to be. AutoIt line endings are @CRLF, @LF or @CR.
+            match chars
+                .split(|&c| c == '\n')
+                .map(|l: &[char]| {
+                    let l = if l.last() == Some(&'\r') { &l[..l.len() - 1] } else { l };
+                    l.iter().collect::<String>()
+                })
+                .nth(line as usize - 1)
+            {
+                Some(l) => {
+                    ctx.set_error(0, 0);
+                    Value::Str(l)
+                }
+                None => {
+                    ctx.set_error(1, 0);
+                    Value::str("")
+                }
             }
-            None => {
+        } else {
+            // `FileReadLine($handle)` reads the next line from the cursor and
+            // advances it; reading past the end of the file is `@error = 1`.
+            let start = e.cursor.min(chars.len());
+            if start >= chars.len() {
                 ctx.set_error(1, 0);
-                Value::str("")
+                return Value::str("");
             }
+            let end = chars[start..]
+                .iter()
+                .position(|&c| c == '\n')
+                .map_or(chars.len(), |i| start + i);
+            let l: String = chars[start..end].iter().collect();
+            let l = l.strip_suffix('\r').unwrap_or(&l).to_string();
+            e.cursor = (end + 1).min(chars.len());
+            ctx.set_error(0, 0);
+            Value::Str(l)
         }
     }
 
@@ -427,14 +454,26 @@ impl CommonPlatform {
     // ----- directories -----
 
     fn dir_size(path: &Path) -> u64 {
-        let Ok(meta) = fs::metadata(path) else { return 0 };
+        Self::dir_stats(path).0
+    }
+
+    /// `(bytes, files, directories)` under `path`, for `DirGetSize`.
+    fn dir_stats(path: &Path) -> (u64, u64, u64) {
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            return (0, 0, 0);
+        };
         if meta.is_file() {
-            return meta.len();
+            return (meta.len(), 1, 0);
         }
-        let Ok(entries) = fs::read_dir(path) else { return 0 };
-        let mut total = 0u64;
+        let Ok(entries) = fs::read_dir(path) else {
+            return (0, 0, 0);
+        };
+        let mut total = (0u64, 0u64, 0u64);
         for e in entries.flatten() {
-            total += Self::dir_size(&e.path());
+            let (s, f, d) = Self::dir_stats(&e.path());
+            total.0 += s;
+            total.1 += f;
+            total.2 += d + u64::from(e.file_type().map(|t| t.is_dir()).unwrap_or(false));
         }
         total
     }
@@ -962,7 +1001,18 @@ impl CommonPlatform {
             }
             "dirgetsize" => {
                 let path = arg_str(args, 0);
-                Value::Int(Self::dir_size(Path::new(&path)) as i64)
+                // flag 1 asks for the extended array: [size, file count, dir
+                // count], as AutoIt documents.
+                if arg_int(args, 1) == 1 {
+                    let (size, files, dirs) = Self::dir_stats(Path::new(&path));
+                    Value::array(vec![
+                        Value::Int(size as i64),
+                        Value::Int(files as i64),
+                        Value::Int(dirs as i64),
+                    ])
+                } else {
+                    Value::Int(Self::dir_size(Path::new(&path)) as i64)
+                }
             }
             "dircopy" | "dirmove" => {
                 if !Self::writes_allowed(ctx) {
@@ -1007,7 +1057,8 @@ impl CommonPlatform {
                 }
                 Value::Int(1)
             }
-            // There is no environment block to broadcast to on Unix.
+            // On Windows the system layer answers for real (a
+            // `WM_SETTINGCHANGE` broadcast); nothing to refresh elsewhere.
             "envupdate" => Value::Int(1),
 
             // ---------------- math ----------------
