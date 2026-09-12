@@ -9,8 +9,8 @@
 
 use autoitv3_gui::{Control, ControlKind, Window};
 use autoitv3_gui_egui::{
-    rasterize, record_drawn, show_autoit_window, window_area_id, LastWindow, MinimizeStyle,
-    Texture, WindowGeometry,
+    apply_textures, rasterize, record_drawn, show_autoit_window, window_area_id, LastWindow,
+    MinimizeStyle, Texture, WindowGeometry,
 };
 use egui::{vec2, Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 
@@ -62,6 +62,9 @@ struct Harness {
     controls: Option<Rect>,
     /// A resize the frame asked to report to the model.
     reported: Option<autoitv3_gui::GuiUpdate>,
+    /// The font atlas, kept across frames the way the offscreen renderer keeps
+    /// it (egui patches the atlas as new glyphs appear).
+    textures: std::collections::HashMap<egui::TextureId, Texture>,
     minimize: MinimizeStyle,
     /// Seconds; egui tells a double-click from a triple one by how long ago the
     /// previous click was, so a frozen clock turns the second gesture into a
@@ -82,6 +85,7 @@ impl Harness {
             requested: None,
             controls: None,
             reported: None,
+            textures: std::collections::HashMap::new(),
             minimize: MinimizeStyle::Hidden,
             time: 0.0,
         }
@@ -549,7 +553,6 @@ fn a_maximised_window_does_not_oscillate() {
 }
 
 /// One frame's pixels, for checking what the title bar actually looks like.
-#[allow(irrefutable_let_patterns)] // `ImageData` has one variant today; the loop mirrors `EguiBackend`
 fn rasterize_frame(harness: &mut Harness, events: Vec<Event>) -> (Vec<u8>, u32, u32) {
     let (width, height) = (900u32, 700u32);
     let last = harness.last;
@@ -577,27 +580,16 @@ fn rasterize_frame(harness: &mut Harness, events: Vec<Event>) -> (Vec<u8>, u32, 
 
     // What EguiBackend does to turn shapes into pixels.
     let pixels_per_point = output.pixels_per_point;
-    let mut textures = std::collections::HashMap::new();
-    for (id, deltas) in &output.textures_delta.set {
-        for delta in deltas {
-            if delta.pos.is_some() {
-                continue;
-            }
-            if let egui::ImageData::Color(image) = &delta.image {
-                textures.insert(
-                    *id,
-                    Texture {
-                        width: image.size[0],
-                        height: image.size[1],
-                        pixels: image.pixels.clone(),
-                    },
-                );
-            }
-        }
-    }
+    apply_textures(&mut harness.textures, &output.textures_delta);
     output.textures_delta.clear();
     let primitives = harness.ctx.tessellate(output.shapes, pixels_per_point);
-    let image = rasterize(&primitives, &textures, width, height, pixels_per_point);
+    let image = rasterize(
+        &primitives,
+        &harness.textures,
+        width,
+        height,
+        pixels_per_point,
+    );
     (image.rgba, image.width, image.height)
 }
 

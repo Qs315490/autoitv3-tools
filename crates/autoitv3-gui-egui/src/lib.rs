@@ -41,7 +41,7 @@ pub use live::LiveBackend;
 #[cfg(feature = "egui")]
 pub use png::write_png;
 #[cfg(feature = "egui")]
-pub use raster::{rasterize, Texture};
+pub use raster::{apply_textures, rasterize, Texture};
 #[cfg(feature = "egui")]
 pub use render::EguiBackend;
 #[cfg(feature = "egui")]

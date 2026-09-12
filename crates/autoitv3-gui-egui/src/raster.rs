@@ -48,6 +48,53 @@ fn edge(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
 }
 
 /// Rasterize `primitives` into a straight-alpha RGBA image.
+/// Fold a frame's texture deltas into the cache [`rasterize`] reads.
+///
+/// egui sends the whole font atlas once and then *patches* it as new glyphs
+/// appear, so a cache that only keeps whole updates renders text that was used
+/// early on and silently drops anything typed later (a Cyrillic name, an emoji,
+/// a character a script only reaches on page two).
+pub fn apply_textures(cache: &mut HashMap<TextureId, Texture>, delta: &egui::TexturesDelta) {
+    for (id, deltas) in &delta.set {
+        for image_delta in deltas {
+            let egui::ImageData::Color(image) = &image_delta.image;
+            let (width, height) = (image.size[0], image.size[1]);
+            match image_delta.pos {
+                None => {
+                    cache.insert(
+                        *id,
+                        Texture {
+                            width,
+                            height,
+                            pixels: image.pixels.clone(),
+                        },
+                    );
+                }
+                Some([x, y]) => {
+                    // A patch: copy it into the texture we already have.
+                    let Some(texture) = cache.get_mut(id) else {
+                        continue;
+                    };
+                    for row in 0..height {
+                        let (dst_y, src_y) = (y + row, row);
+                        if dst_y >= texture.height {
+                            break;
+                        }
+                        let (dst_start, src_start) =
+                            ((dst_y * texture.width + x) * 4, (src_y * width) * 4);
+                        let columns = width.min(texture.width.saturating_sub(x));
+                        let bytes = columns * 4;
+                        // `pixels` is `Color32`, four bytes each.
+                        let dst = &mut texture.pixels[dst_start / 4..(dst_start + bytes) / 4];
+                        let src = &image.pixels[src_start / 4..(src_start + bytes) / 4];
+                        dst.copy_from_slice(src);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn rasterize(
     primitives: &[ClippedPrimitive],
     textures: &HashMap<TextureId, Texture>,
@@ -154,5 +201,58 @@ pub fn rasterize(
         width,
         height,
         rgba,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Color32, ColorImage, ImageData, TextureId};
+
+    /// A one-image delta. Callers must `clear()` it: egui panics if a
+    /// `TexturesDelta` is dropped with unapplied deltas.
+    fn delta(image: ColorImage, pos: Option<[usize; 2]>) -> (TextureId, egui::TexturesDelta) {
+        let id = TextureId::Managed(0);
+        let mut deltas = egui::TexturesDelta::default();
+        deltas.set.insert(
+            id,
+            [egui::epaint::ImageDelta {
+                image: ImageData::Color(std::sync::Arc::new(image)),
+                pos,
+                options: Default::default(),
+            }]
+            .into_iter()
+            .collect(),
+        );
+        (id, deltas)
+    }
+
+    #[test]
+    fn a_patch_updates_only_its_rectangle() {
+        // egui sends the atlas once and patches it as new glyphs appear; a cache
+        // that ignores patches renders early text and drops everything later.
+        let mut cache = HashMap::new();
+        let (id, mut whole) = delta(
+            ColorImage::filled([4, 4], Color32::from_rgb(10, 10, 10)),
+            None,
+        );
+        apply_textures(&mut cache, &whole);
+        whole.clear();
+        assert_eq!(cache[&id].pixels.len(), 16);
+
+        let (_, mut patch) = delta(
+            ColorImage::filled([2, 1], Color32::from_rgb(200, 0, 0)),
+            Some([1, 2]),
+        );
+        apply_textures(&mut cache, &patch);
+        patch.clear();
+
+        let texture = &cache[&id];
+        let pixel = |x: usize, y: usize| texture.pixels[y * 4 + x];
+        assert_eq!(pixel(1, 2), Color32::from_rgb(200, 0, 0), "patched");
+        assert_eq!(pixel(2, 2), Color32::from_rgb(200, 0, 0), "patched");
+        assert_eq!(pixel(0, 2), Color32::from_rgb(10, 10, 10), "left alone");
+        assert_eq!(pixel(1, 3), Color32::from_rgb(10, 10, 10), "row below");
+        assert_eq!(pixel(3, 2), Color32::from_rgb(10, 10, 10), "column right");
     }
 }

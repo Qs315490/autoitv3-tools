@@ -832,6 +832,11 @@ let _emu = WindowsEmulation::new().with_gui_backend(Box::new(backend));
 也可直接拿 `EguiBackend::snapshot()`（RGBA）或 `screenshot(path)`；`with_screenshot` 只是把
 这一步挂到 `present()` 上，省去把仿真层再取回来。
 
+离屏渲染器自己维护字体图集缓存：egui 只在首帧发整张图集、之后用**局部补丁**加新字形，
+所以缓存必须把补丁贴回去——否则"前几帧用过的字"能画，"后面才出现的字"会静默丢失。
+这段逻辑现在是公开的 `apply_textures()`（与 `rasterize()`/`Texture` 一起导出，写自己的
+光栅器时直接复用）。
+
 egui 是**可选依赖**，默认 `cargo test` 不编译它：
 
 ```bash
