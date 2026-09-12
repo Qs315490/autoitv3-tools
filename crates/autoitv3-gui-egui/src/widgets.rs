@@ -164,6 +164,8 @@ pub struct LastWindow {
     /// rather than re-measured by the caller, so a frame that draws a window at
     /// some other size (minimised, maximised) cannot corrupt it.
     pub chrome: Option<egui::Vec2>,
+    /// Where the window was drawn.
+    pub pos: Option<egui::Pos2>,
 }
 
 /// The egui area id of an AutoIt window. Titles are not unique (two windows may
@@ -476,6 +478,7 @@ pub fn record_drawn(
         client,
         geometry: Some(geometry),
         chrome,
+        pos: drawn.pos,
     };
     let Some(client) = drawn.client else {
         // Nothing was drawn: keep the size for when the window comes back.
@@ -505,7 +508,15 @@ pub fn record_drawn(
         }
         if let Some(pos) = drawn.pos {
             let (x, y) = (pos.x.round() as i32, pos.y.round() as i32);
-            if (x - geometry.x).abs() > 1 || (y - geometry.y).abs() > 1 {
+            // Where the *user* put it is where it moved to since the last frame
+            // we drew. Comparing against the model instead would report the
+            // place a maximised window occupies while a border drag un-maximises
+            // it — (0, 0) — and wipe out the place the script restores to.
+            let moved = last
+                .pos
+                .map(|previous| (pos - previous).length() > 0.5)
+                .unwrap_or(false);
+            if moved {
                 updates.push(GuiUpdate::Move {
                     handle: window.handle,
                     x,

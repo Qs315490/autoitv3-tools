@@ -704,18 +704,20 @@ fn dragging_the_title_bar_moves_the_window_and_tells_the_model() {
 
     harness.frame(vec![Event::PointerMoved(from)]);
     harness.frame(vec![press(from, true)]);
+    // The move is reported on the frames the window actually moves.
+    let mut last = None;
     for step in 1..=4 {
-        harness.frame(vec![Event::PointerMoved(
-            from + (to - from) * (step as f32 / 4.0),
-        )]);
+        let to = from + (to - from) * (step as f32 / 4.0);
+        let (rect, _) = harness.frame(vec![Event::PointerMoved(to)]);
+        last = Some((rect, harness.reported.clone()));
     }
-    let (moved, _) = harness.frame(vec![]);
+    let (moved, reported) = last.expect("the drag ran");
     assert!(
         (moved.left() - start.left() - 60.0).abs() < 12.0
             && (moved.top() - start.top() - 40.0).abs() < 12.0,
         "the window followed the pointer: {start:?} -> {moved:?}"
     );
-    match harness.reported {
+    match reported {
         Some(autoitv3_gui::GuiUpdate::Move { x, y, .. }) => {
             assert!(
                 (x as f32 - moved.left()).abs() < 2.0 && (y as f32 - moved.top()).abs() < 2.0,
@@ -750,6 +752,7 @@ fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
             state: autoitv3_gui::WindowState::Maximized,
         }),
         chrome: Some(vec2(14.0, 48.0)),
+        pos: Some(Pos2::new(0.0, 0.0)),
     };
     let drawn = autoitv3_gui_egui::DrawnWindow {
         client: Some(vec2(700.0, 500.0)),
@@ -777,5 +780,59 @@ fn a_drag_that_pulls_a_window_out_of_a_state_is_reported() {
                 y: 30
             },
         ]
+    );
+}
+
+#[test]
+fn a_window_that_did_not_move_is_not_reported_as_moved() {
+    // A border drag out of a maximised state changes the state; the frame after
+    // that is drawn at the *restore* place (220, 140) while the window it is
+    // replacing was still at the maximised place, (0, 0). Reporting "the drawn
+    // place differs from the model" would send (0, 0) and wipe out the place the
+    // script is restoring to.
+    let mut window = Window::new(1, "W", 0, 0);
+    window.width = 900;
+    window.height = 700;
+    window.restore = Some((220, 140, 520, 300));
+    let mut effective = window.clone();
+    effective.state = autoitv3_gui::WindowState::Normal;
+    effective.x = 220;
+    effective.y = 140;
+    effective.width = 520;
+    effective.height = 300;
+
+    let last = LastWindow {
+        client: Some(vec2(900.0, 700.0)),
+        geometry: Some(WindowGeometry {
+            x: 0,
+            y: 0,
+            width: 900,
+            height: 700,
+            state: autoitv3_gui::WindowState::Maximized,
+        }),
+        chrome: Some(vec2(14.0, 48.0)),
+        // The window is still drawn at the maximised place on this frame.
+        pos: Some(Pos2::new(0.0, 0.0)),
+    };
+    let drawn = autoitv3_gui_egui::DrawnWindow {
+        client: Some(vec2(700.0, 500.0)),
+        pos: Some(Pos2::new(0.0, 0.0)),
+        ..Default::default()
+    };
+    let (_next, updates) = record_drawn(
+        &effective,
+        WindowGeometry::of(&effective),
+        last,
+        drawn,
+        true,
+    );
+    assert_eq!(
+        updates,
+        vec![autoitv3_gui::GuiUpdate::Resize {
+            handle: 1,
+            width: 700,
+            height: 500
+        }],
+        "a border drag resizes the window; it does not move it"
     );
 }
