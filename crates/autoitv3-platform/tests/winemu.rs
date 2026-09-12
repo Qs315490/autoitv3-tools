@@ -6,7 +6,7 @@
 
 #![cfg(not(windows))]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use autoitv3_platform::host_platform_with;
@@ -1055,6 +1055,58 @@ impl GuiBackend for TypingBackend {
             Vec::new()
         }
     }
+}
+
+/// A live-window backend that also records every value it is shown.
+#[derive(Default)]
+struct RecordingBackend {
+    pending: Vec<GuiUpdate>,
+    input_created: bool,
+    seen: Rc<RefCell<Vec<(i64, String)>>>,
+}
+
+impl GuiBackend for RecordingBackend {
+    fn on_control(&mut self, control: &Control) {
+        if control.kind == autoitv3_platform::winemu::ControlKind::Input {
+            self.input_created = true;
+        }
+        self.seen
+            .borrow_mut()
+            .push((control.id, control.text.clone()));
+    }
+    fn take_updates(&mut self) -> Vec<GuiUpdate> {
+        if self.input_created {
+            std::mem::take(&mut self.pending)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[test]
+fn an_applied_edit_is_reported_back_to_the_backend() {
+    // The window sends the edit; the model has to answer with the new value,
+    // or the next frame redraws the old text and the typed characters vanish.
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(RecordingBackend {
+        pending: vec![GuiUpdate::SetText {
+            id: 1,
+            text: "typed".to_string(),
+        }],
+        input_created: false,
+        seen: seen.clone(),
+    }));
+    let body = r#"
+GUICreate("T", 120, 80)
+Local $e = GUICtrlCreateInput("start", 0, 0)
+Return GUICtrlRead($e)
+"#;
+    assert_eq!(text(emu, body), "typed");
+    let seen = seen.borrow();
+    assert!(
+        seen.iter().any(|(id, text)| *id == 1 && text == "typed"),
+        "backend never saw the applied edit: {seen:?}"
+    );
 }
 
 #[test]
