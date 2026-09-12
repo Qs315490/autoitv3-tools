@@ -47,7 +47,8 @@ use std::time::Duration;
 use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window, WindowState};
 
 use crate::widgets::{
-    show_autoit_window, Action, Interaction, LastWindow, MinimizeStyle, WindowGeometry,
+    record_drawn, show_autoit_window, Action, Interaction, LastWindow, MinimizeStyle,
+    WindowGeometry,
 };
 
 /// The model copy the GUI thread reads.
@@ -457,59 +458,13 @@ impl eframe::App for LiveApp {
                 let _ = shared.events_tx.send(GuiEvent::Close(window.handle));
             }
 
-            match drawn.client {
-                Some(drawn) => {
-                    // A minimised window drawn as a title bar has a body of
-                    // height zero, and a maximised one is sized by the desktop:
-                    // neither is a user resize, so keep the real size.
-                    if geometry.state != WindowState::Normal {
-                        seen_windows.insert(
-                            window.handle,
-                            LastWindow {
-                                client: last.client,
-                                geometry: Some(geometry),
-                            },
-                        );
-                        continue;
-                    }
-                    // Only a drag is worth reporting back: a size the script
-                    // chose is already in the model, and echoing it is noise.
-                    let dragged = last.geometry == Some(geometry)
-                        && last
-                            .client
-                            .map(|previous| (drawn - previous).length() > 0.5)
-                            .unwrap_or(false);
-                    if dragged {
-                        let width = drawn.x.round() as i32;
-                        let height = drawn.y.round() as i32;
-                        if width > 0 && height > 0 {
-                            shared.updates.lock().unwrap().push(GuiUpdate::Resize {
-                                handle: window.handle,
-                                width,
-                                height,
-                            });
-                        }
-                    }
-                    seen_windows.insert(
-                        window.handle,
-                        LastWindow {
-                            client: Some(drawn),
-                            geometry: Some(geometry),
-                        },
-                    );
-                }
-                // Hidden or minimised: remember the geometry so restoring the
-                // window is not mistaken for the script moving it.
-                None => {
-                    seen_windows.insert(
-                        window.handle,
-                        LastWindow {
-                            client: last.client,
-                            geometry: Some(geometry),
-                        },
-                    );
-                }
+            // One place decides what to remember and whether the user resized
+            // the window; the same function is what the tests drive.
+            let (next, update) = record_drawn(window, geometry, last, drawn);
+            if let Some(update) = update {
+                shared.updates.lock().unwrap().push(update);
             }
+            seen_windows.insert(window.handle, next);
         }
 
         // Re-read the mirror a few times a second so script-side updates show.
