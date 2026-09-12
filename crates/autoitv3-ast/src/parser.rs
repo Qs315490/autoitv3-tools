@@ -143,8 +143,8 @@ impl Parser {
         self.at_expr_start()
             || matches!(
                 self.peek_kind(),
-                Return | Exit | ExitLoop | ContinueLoop | Local | Global | Const | Dim | Static
-                    | ReDim
+                Return | Exit | ExitLoop | ContinueLoop | ContinueCase | Local | Global | Const
+                    | Dim | Static | ReDim
             )
     }
 
@@ -319,6 +319,10 @@ impl Parser {
                 } else {
                     StmtKind::ExitLoop(e)
                 }
+            }
+            ContinueCase => {
+                self.bump();
+                StmtKind::ContinueCase
             }
             If => self.parse_if()?,
             While => self.parse_while()?,

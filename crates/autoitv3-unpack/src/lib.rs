@@ -1,4 +1,19 @@
-//! A resource-packed AutoIt payload: read it back out of its resources.
+//! Reading an AutoIt build's payloads back out of the build.
+//!
+//! Two different things hide inside an AutoIt executable, and this crate reads
+//! both:
+//!
+//! * the **compiled script** `aut2exe` embedded — the source the program was
+//!   built from, tokenised and compressed. The [`script`] module locates the
+//!   `AU3!EA05`/`AU3!EA06` chunk, decrypts and decompresses it, and
+//!   deassembles the token stream back into `.au3` text, so a build whose
+//!   source is lost can be read back.
+//! * a **resource-packed payload** some builds add on top, where the image's
+//!   `RT_RCDATA` resources hold an encrypted file set that only the program
+//!   itself can read. [`unpack`] decodes that without running anything.
+//!
+//! The resource-packed half is described below, because it needs the longer
+//! explanation; [`script`] documents its own format where it is defined.
 //!
 //! A build that keeps its payload in the image's `RT_RCDATA` resources can
 //! only be read back by the program that packed it, which is a problem when
@@ -17,20 +32,24 @@
 //! AES-192 password step) before the final double AES-128 + AES-256 decrypt,
 //! whose result is verified against the stored SHA-1.
 //!
-//! This module is deliberately *not* a general AutoIt facility: it is one
-//! packer's format, kept in its own crate so the interpreter stays generic.
-//! It exists because the same format is reused across builds with randomised
-//! resource names, and `au3 unpack` should work on any of them without needing
-//! the obfuscated script — let alone the multi-megabyte `.exe`.
+//! The resource-packer half is deliberately *not* a general AutoIt facility:
+//! it is one packer's format, kept in its own crate so the interpreter stays
+//! generic. It exists because the same format is reused across builds with
+//! randomised resource names, and `au3 unpack` should work on any of them
+//! without needing the obfuscated script — let alone the multi-megabyte `.exe`.
 //!
-//! Everything here follows the packing program's own logic, including that its
-//! `Dec` reads *hexadecimal* and that its `StringMid` clamps at the end of a
-//! string instead of failing.
+//! Everything below follows the packing program's own logic, including that
+//! its `Dec` reads *hexadecimal* and that its `StringMid` clamps at the end of
+//! a string instead of failing.
+
+pub mod script;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use autoitv3_platform::{CipherAlg, HashAlg, PeImage};
+
+pub use script::{CompiledScript, FileKind, ScriptFile, ScriptVersion};
 
 /// How many blocks the format splits its payload into.
 const BLOCKS: usize = 3;
@@ -44,6 +63,12 @@ const PASSWORD_MAX_LEN: usize = 128;
 pub enum Error {
     /// No resource set looked like a packed payload.
     NotAPackage,
+    /// No `AU3!EA05`/`AU3!EA06` chunk was found, so there is no compiled
+    /// script to read.
+    NoCompiledScript,
+    /// A chunk was decoded but it carries no script entry — only embedded
+    /// payloads, say.
+    NoScript,
     /// A resource set was found but a stage rejected its data.
     BadData(String),
     /// The index spec the caller asked for is not usable.
@@ -59,6 +84,15 @@ impl fmt::Display for Error {
                 f,
                 "no packed payload found (expected a derived-key loader plus \
                  three stream-cipher members among the resources)"
+            ),
+            Error::NoCompiledScript => write!(
+                f,
+                "no compiled script found (expected an AU3!EA05 or AU3!EA06 \
+                 chunk, a resource named SCRIPT, or a raw chunk)"
+            ),
+            Error::NoScript => write!(
+                f,
+                "the build carries no script entry (only embedded payloads)"
             ),
             Error::BadData(why) => write!(f, "the packed payload is malformed: {why}"),
             Error::BadIndex(why) => write!(f, "invalid index spec: {why}"),
@@ -645,112 +679,9 @@ fn parse_index(text: &str) -> Result<usize, Error> {
     }
 }
 
-
+// Unit tests live in `tests/unit/` so this file reads as implementation;
+// `#[path]` pulls them back in as a test module, which is what keeps their
+// access to the private state below.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_tail_marker_says_how_much_to_strip() {
-        // The marker's 1st, 3rd, 5th and 7th characters spell the length:
-        // `0A1B0C0D` reads as `0100`, so 256 characters come off the end.
-        let text = format!("{}{}", "AB".repeat(256), "0A1B0C0D");
-        let (taken, rest) = split_tail(&text).unwrap();
-        assert_eq!(taken.len(), 256);
-        assert_eq!(rest, "AB".repeat(128));
-        assert_eq!(taken, &text[256..512]);
-    }
-
-    #[test]
-    fn a_short_block_is_rejected_rather_than_panicking() {
-        assert!(split_tail("abc").is_err());
-    }
-
-    #[test]
-    fn wrapping_takes_the_front_of_the_dictionary() {
-        let dict: Vec<u8> = (b'a'..=b'e').collect();
-        assert_eq!(wrap_take(&dict, 3), b"abc");
-        assert_eq!(wrap_take(&dict, 7), b"abcdeab");
-        assert!(wrap_take(&[], 4).is_empty());
-    }
-
-    #[test]
-    fn dictionary_lookups_are_one_based_and_clamped() {
-        let dict = "abcdef";
-        assert_eq!(take_at(dict, 1, 3), "abc");
-        assert_eq!(take_at(dict, 4, 2), "de");
-        assert_eq!(take_at(dict, 5, 99), "ef");
-        assert_eq!(take_at(dict, 99, 2), "");
-    }
-
-    #[test]
-    fn dec_reads_hexadecimal_and_zeroes_what_is_not() {
-        assert_eq!(dec1('A'), 10);
-        assert_eq!(dec1('9'), 9);
-        assert_eq!(dec1('Z'), 0);
-        assert_eq!(from_hex("00E0"), Some(224));
-        assert_eq!(from_hex("FF"), Some(255));
-        assert_eq!(from_hex("xy"), None);
-    }
-
-    #[test]
-    fn entries_can_be_picked_by_the_index_a_disassembly_uses() {
-        let entries: Vec<String> = (1..=10).map(|n| format!("entry{n}")).collect();
-        let picked = select_entries(&entries, "152").unwrap_err();
-        assert!(matches!(picked, Error::BadIndex(_)), "152 is past the end");
-
-        let picked = select_entries(&entries, "3").unwrap();
-        assert_eq!(picked, vec![(3, "entry3".to_string())]);
-        let picked = select_entries(&entries, "2-4,4,1").unwrap();
-        assert_eq!(
-            picked.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-            vec![1, 2, 3, 4],
-            "ranges are inclusive and duplicates collapse"
-        );
-        assert!(matches!(
-            select_entries(&entries, "4-2").unwrap_err(),
-            Error::BadIndex(_)
-        ));
-        assert!(
-            matches!(select_entries(&entries, "0").unwrap_err(), Error::BadIndex(_)),
-            "0 is the count, not an entry"
-        );
-        assert!(matches!(
-            select_entries(&entries, "abc").unwrap_err(),
-            Error::BadIndex(_)
-        ));
-    }
-
-    #[test]
-    fn junk_is_not_mistaken_for_a_package() {
-        let candidates = vec![
-            ("A".to_string(), vec![0u8; 64]),
-            ("B".to_string(), vec![7u8; 96]),
-            ("C".to_string(), vec![9u8; 128]),
-            ("D".to_string(), vec![3u8; 160]),
-        ];
-        assert!(matches!(unpack(&candidates), Err(Error::NotAPackage)));
-    }
-
-    /// A real package, when one is available: `AU3_UNPACK_INPUT` may point
-    /// at a directory of staged resources or at the `.exe` that carried them.
-    #[test]
-    fn a_real_package_decodes_and_verifies_itself() {
-        let Some(path) = std::env::var("AU3_UNPACK_INPUT").ok().filter(|p| !p.is_empty()) else {
-            return;
-        };
-        let path = std::path::Path::new(&path);
-        let candidates = if path.is_dir() {
-            candidates_from_dir(path)
-        } else {
-            candidates_from_image(path)
-        }
-        .expect("resources are readable");
-        let decoded = unpack(&candidates).expect("a packed payload");
-        // The last stage checks a SHA-1 over the plaintext, so reaching this
-        // point already proves the decoding is authentic; the count is a
-        // sanity check on top.
-        assert!(decoded.entries.len() > 100, "only {} entries", decoded.entries.len());
-        assert!(!decoded.text.is_empty());
-    }
-}
+#[path = "../tests/unit/payload.rs"]
+mod tests;

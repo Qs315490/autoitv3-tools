@@ -141,3 +141,19 @@ fn a_short_array_literal_stays_on_one_line() {
     let mut pp = autoitv3_format::PrettyPrinter::new();
     assert_eq!(pp.print_program(&prog), "Local $a = [1, 2, 3]\n");
 }
+
+#[test]
+fn continue_case_is_printed_as_its_own_statement() {
+    // `ContinueCase` is a control transfer, not an expression, so printing it
+    // as a bare identifier (or dropping it) would change what the script does.
+    let src = "Switch $a\n    Case 1\n        ContinueCase\n    Case 2\n        $b = 1\nEndSwitch\n";
+    let prog = parse(src).expect("parses");
+    let mut pp = PrettyPrinter::new();
+    let out = pp.print_program(&prog);
+    assert!(out.contains("ContinueCase"), "{out}");
+
+    let reparsed = parse(&out).expect("printed output re-parses");
+    let ItemKind::Stmt(st) = &reparsed.items[0].kind else { panic!() };
+    let StmtKind::Switch(sw) = &st.kind else { panic!("{:?}", st.kind) };
+    assert!(matches!(sw.cases[0].body[0].kind, StmtKind::ContinueCase));
+}

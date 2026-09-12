@@ -17,6 +17,10 @@ pub enum Flow {
     Break(usize),
     /// `ContinueLoop n` — continue the `n`-th enclosing loop.
     Continue(usize),
+    /// `ContinueCase` — fall through to the next `Case` of the innermost
+    /// `Select`/`Switch`, which consumes it. Anything else it reaches (a loop,
+    /// a function boundary) passes it on rather than acting on it.
+    ContinueCase,
     /// `Exit [code]` — terminate the whole script.
     Exit(i32),
 }

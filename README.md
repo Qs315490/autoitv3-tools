@@ -20,12 +20,15 @@ autoitv3-tools/
         span.rs    位置(Pos)与区间(Span)——每个 AST 节点都带 Span，方便断点/源码映射
         token.rs   词法 token 定义（关键字、运算符、复合赋值、三元 ?:）
         lexer.rs   手写词法分析器：`#指令`整行、字符串""转义、0x 十六进制、$var/@macro
+        vocab.rs   关键字词表（AutoIt 的编译器编号顺序）+ 大小写还原；
+                   词法分析器与它交叉校验（唯一一份关键字表）
         ast.rs     AST 定义：Program / Item / FuncDef / Stmt / Expr / Lit / Call / IndexCall / Ternary / ArrayLit ...
         parser.rs 递归下降分析器：语句按行/冒号分隔，表达式用优先级爬升
         lib.rs    库入口，统一导出
       tests/
         integration.rs     库集成单元测试（25 项）
         syntax_coverage.rs 语法覆盖回归集（14 项，见下文「语法覆盖」）
+        unit/vocab.rs      vocab 的单元测试（4 项，`#[path]` 回挂，见「测试」）
     autoitv3-format/         # 库 crate——格式打印（原名 pretty）
       src/lib.rs    把 AST 重新打印为 AutoIt 源码（默认保留注释，可 strip；规范缩进）
       tests/
@@ -35,6 +38,8 @@ autoitv3-tools/
         value.rs      运行时值模型（Int/Float/Str/Array/Map/Binary/FuncRef）与 AutoIt 强制转换规则
         interp.rs     Runtime 解释器：加载程序、调用函数、求值表达式、执行语句、停机交还控制权
         builtins.rs   已实现的内置函数子集（字符串/数值/位运算/数组/Map/Execute/Call...）
+        vocab.rs      内置函数 / 宏词表（AutoIt 的编译器编号顺序）+ 大小写还原；
+                      解码编译脚本、校验平台层的 FUNCTIONS 都以它为准
         host.rs       Host trait——嵌入方接入原生函数的接口（优先级高于平台层）
         platform/     Platform trait（仅接口；实现见 autoitv3-platform）
         profile.rs    执行配置：忠实语义 vs 确定性分析语义（见下文「执行配置」）
@@ -45,6 +50,7 @@ autoitv3-tools/
       tests/
         runtime.rs    解释器/host/debug 接口 + 可选样本集成测试（32 项）
         regexp.rs     StringRegExp / StringRegExpReplace（27 项）
+        unit/vocab.rs 内置函数 / 宏词表的单元测试（3 项，`#[path]` 回挂）
     autoitv3-platform/       # 库 crate——平台层（分层：仿真 + 通用 + 系统）
       src/
         lib.rs        Platform 分层组合（CompositePlatform）、host_platform() /
@@ -105,9 +111,22 @@ autoitv3-tools/
       tests/
         deobf.rs      反混淆 pass 单元测试（30 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
-    autoitv3-unpack/         # 库 crate——资源打包载荷的解包（au3 unpack）
-      src/lib.rs            7 阶段解码 + 资源角色自动识别（loader/member 靠
-                            SHA1 校验确认，不做名字假设）
+    autoitv3-unpack/         # 库 crate——从编译产物里取回载荷（au3 unpack）
+      src/lib.rs            资源打包载荷的 7 阶段解码 + 资源角色自动识别
+                            （loader/member 靠 SHA1 校验确认，不做名字假设）
+      src/script/           编译脚本（AU3!EA05 / AU3!EA06）的解包
+        mod.rs              定位 chunk（SCRIPT 资源或签名扫描）+ 容器记录解析
+        keys.rs             EA06 的 LAME / EA05 的 MT 密钥流
+        lz.rs               AutoIt 自带的 LZ 解压
+        tokens.rs           token 流 → `.au3` 源码（含缩进重建）
+        symbols.rs          词表的唯一入口：re-export ast 的关键字、runtime 的函数/宏
+                            （表本身不在这里，见上面两个 crate 的 vocab.rs）
+      tests/unit/           各模块的单元测试（`#[path]` 回挂，见下文「测试」）
+        payload.rs          资源载荷：索引选择、AutoIt 语义助手、端到端样本
+        script_container.rs 容器记录读写、载荷构造与校验
+        script_keys.rs      密钥流对照参考向量
+        script_lz.rs        LZ 解压的字面量/回引/截断边界
+        script_tokens.rs    反汇编与浮点拼写
     au3-cli/                # CLI 二进制 crate（产物名为 au3，使用 clap 解析参数）
       src/
         main.rs     入口：Cli::parse() → dispatch → 把 CliError 转成退出码
@@ -373,7 +392,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 | `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--inline-tables` 顺带把表声明换成字面量；`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
 | `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数（同样接受 `--win-*` 开关） |
 | `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停） |
-| `unpack <PATH> [-o FILE]` | `unp` | 解包资源打包的载荷（目录或 PE 都行，自动认角色，`--raw` 输出整段文本） |
+| `unpack <PATH> [-o FILE]` | `unp` | 取回编译产物里的载荷：`--script` 输出编译进去的 `.au3` 源码（`AU3!EA05`/`AU3!EA06`；PE、裸 chunk 都行）；默认解资源打包的载荷（目录或 PE 都行，自动认角色，`--raw` 输出整段文本） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
 **缩写**：只要前缀无歧义即可使用，例如 `au3 deob`、`au3 pars`、`au3 pret`。
@@ -389,7 +408,7 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 
 ```bash
 # 运行库的单元测试
-cargo test                     # 全部（286 项，含 doctest）
+cargo test                     # 全部（420 项，含 doctest）
 cargo test -p autoitv3-ast
 cargo test -p autoitv3-runtime
 cargo test -p autoitv3-platform
@@ -420,6 +439,7 @@ let out = pp.print_program(&prog);    // 反混淆/规范化输出
 - 复合赋值 `+= -= *= /= ^= &=`、三元条件 `? :`
 - 语句：`If/ElseIf/Else/EndIf`（含单行 Then）、`While/WEnd`、`Do/Until`、
   `For ... To ... Step/Next` 与 `For ... In .../Next`、`Select/Case`、`Switch/Case`、
+  `ContinueCase`（`Select`/`Switch` 的贯穿，解释器按 AutoIt 语义实现）、
   `With/EndWith`、`Return/Exit/ExitLoop/ContinueLoop`、`#forceref` 等函数内指令
 - 声明：`Local/Global/Dim/Static/Const/ReDim`，多个作用域关键字叠加（如 `Static Local`，`Static` 优先级最高）
 
@@ -633,9 +653,9 @@ au3 debug a.au3 -x setup.au3dbg -c run -c quit # 文件 → -c → stdin，依�
 AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固化：
 一份 80+ 条构造的清单（预处理指令、行继续符、字面量、运算符、语句、声明、函数、
 对象/COM、宏与关键字），外加对**语义**敏感的定点断言（`=` 的上下文含义、
-`ContinueLoop`/`ExitLoop` 区分、`ReDim`、`Enum Step`、块注释、`Volatile`、
-`With` 隐式主语、成员/方法调用形状）。清单同时包含**必须被拒绝**的非法构造
-（嵌套 `Func`、单行 `If … Else`、孤立 `.`、未闭合字符串）。
+`ContinueLoop`/`ExitLoop` 区分、`ContinueCase` 是控制语句而不是标识符、`ReDim`、
+`Enum Step`、块注释、`Volatile`、`With` 隐式主语、成员/方法调用形状）。清单同时包含
+**必须被拒绝**的非法构造（嵌套 `Func`、单行 `If … Else`、孤立 `.`、未闭合字符串）。
 
 这样做的原因是：早期覆盖率是靠"能解析手头那一个样本"来推断的，而该样本恰好
 没用到若干构造。现在新增语法支持必须同时进清单，避免回归。
@@ -721,7 +741,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 原生调用 | `DllCall(dll, rettype, func, type, arg…)`，已实现 `GetVersionExW`/`A`、`RtlGetVersion`、`GetVersion`、`GetSystemInfo`/`GetNativeSystemInfo` 以及几个无副作用的查询。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
 | 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存、写立刻回写文件；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
 | 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
-| 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFilesystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配）；网络映射 `DriveMapAdd`/`DriveMapDel`/`DriveMapGet` 与 `DriveSetLabel` 维护本层的映射/卷标状态 |
+| 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFileSystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配）；网络映射 `DriveMapAdd`/`DriveMapDel`/`DriveMapGet` 与 `DriveSetLabel` 维护本层的映射/卷标状态 |
 | Windows 文件 | `FileGetVersion`（解析 PE `RT_VERSION`）、`FileCreateShortcut`/`FileGetShortcut`（读写真实 `.lnk` Shell Link）、`FileCreateNTFSLink`、`FileRecycle`/`FileRecycleEmpty`（落到 `.au3_recycle`，可用 `with_recycle_dir()` 改名）、`FileInstall`（磁盘文件或已加载模块的 `RT_RCDATA` 资源） |
 | 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
@@ -997,7 +1017,68 @@ backend.run(move |backend| {                    // 主线程；阻塞到窗口�
 cargo test -p autoitv3-gui-egui --features window   # 后端管线 + 交互映射测试
 ```
 
-## 解包资源（`au3 unpack`）
+## 解包编译脚本（`au3 unpack --script`）
+
+`aut2exe` 会把脚本本身——**源码**，先 token 化再压缩——塞进它生成的 exe 里。
+这个 chunk 自带全部信息，`au3 unpack --script` 不运行程序就能把它读回来，
+还原成可以直接 `au3 parse` 的 `.au3` 源码：
+
+```bash
+au3 unpack build.exe --script -o recovered.au3   # 从 PE 里取出编译进去的脚本
+au3 unpack chunk.bin  --script                   # 裸 chunk（已 dump 出来的段/资源）也行
+```
+
+只认**签名**，不认文件名。两种格式：
+
+| 格式 | 版本 | 名字编码 | 密钥流 |
+| ---- | ---- | -------- | ------ |
+| `AU3!EA06` | AutoIt v3.2.0+ | UTF-16 | LAME（17 字 lagged-Fibonacci，输出是拼出来的 double） |
+| `AU3!EA05` | 更早的 v3 | 单字节 | 改过的 Mersenne Twister（tempering / seeding 都不是教科书版） |
+
+`AutoIt3Wrapper` 的产物通常把整个 chunk 放在名为 `SCRIPT` 的 `RT_RCDATA` 资源里，
+所以**先看这个资源，找不到再扫全镜像的签名**；两种来源最后走同一条解码链。
+签名前面还有 16 字节每次构建都不同的盐，格式里用不到，按 `AU3!EAxx` 定位即可。
+
+解码链自上而下：
+
+1. **容器**：`FILE` 开头的记录序列（子类型、构建时的临时路径、压缩标志、大小、
+   Adler-32、两个 FILETIME、密文），读到不是 `FILE` 就结束；
+2. **密钥流**：每条记录的密文用常量种子 XOR 解开——字符串字段还会把自身长度加到
+   种子上（`script/keys.rs`）；
+3. **校验**：Adler-32 不符就判定"这不是要找的 chunk"，所以镜像里偶然撞见的签名
+   不会冒充成功；
+4. **解压**：`EA05`/`EA06` 头 + 大端长度 + LZ（字面量 / 15 位回引 / 变长匹配，
+   回引可以重叠，用来编码重复串）；
+5. **反汇编**：`>>>AUTOIT SCRIPT<<<` 记录是 token 流，按词表还原名字、按关键字重建
+   缩进（token 之间用空格连接，这是格式的原始样子）。词表不在解包 crate 里：
+   关键字表归 `autoitv3-ast::vocab`（词法分析器说了算），内置函数/宏表归
+   `autoitv3-runtime::vocab`（运行时说了算），`script/symbols.rs` 只是它们的
+   唯一入口——表是**语言**的，不是容器格式的，项目里只留一份。这三张表都是
+   「位置即 id」的（`FUNCTIONS[0]` 必须是 `Abs`），因为它们同时要解码 token 流里
+   的索引，顺序不能改。
+   `>AUTOIT UNICODE SCRIPT<` / `>AUTOIT SCRIPT<` 则是明文源码。
+
+`>>>AUTOIT NO CMDEXECUTE<<<` 是解释器自己跳过的占位记录、没有载荷，解码时跳过。
+`FileInstall` 的载荷在同一容器的其它记录里，`--script` 会把它们列到 stderr
+（子类型、路径、大小），但 stdout 只有脚本本身。
+
+> **与参考实现的对应**：这条链是 MIT 许可的
+> [AutoIt-Ripper](https://github.com/nazywam/AutoIt-Ripper) 的 Rust 移植
+> （`autoit_unpack.py` / `mt.py` / `lame.py` / `decompress.py` / `opcodes.py`）。
+> **逐字节对齐**是硬指标：对真实的编译产物，`au3 unpack --script` 的输出与参考
+> 实现的 SHA-1 完全一致。
+> 连浮点字面量的打印都照抄 Python 的 `repr`（定点/科学计数法的阈值、整数补 `.0`、
+> 指数字号），否则一位数字的差别就会破坏对齐。
+
+### 签名扫描为什么不会认错
+
+镜像里可能有多处 `AU3!EA06`（样本里就有两处，另一处在无关资源的密文里）。
+搜索的做法是"**每个候选都完整解析一遍**"，而记录链的每一步都带校验：错误候选
+要么第一条记录就不是 `FILE`（解出来为空 → 判失败），要么 Adler-32 过不去，于是
+自动落到真正的那个。反过来，一旦某个容器能一路解到脚本，校验也已经证明它确实是
+编译器写的 chunk，而不是巧合。
+
+## 解包资源载荷（`au3 unpack`）
 
 有些编译产物把载荷加密后放进 4 个 `RT_RCDATA` 资源（一个 loader + 三个 member），
 只有它自己的脚本能读回来。`au3 unpack` 直接按该格式解码，**不需要 `.au3`，
@@ -1121,6 +1202,20 @@ au3 run F --faithful sample.au3   # 真的 Sleep、真的随机、真的写文�
 
 ## 测试
 
+测试代码不进 `src/`：单元测试放在各 crate 的 `tests/unit/<模块>.rs`，源文件只留三行
+回挂声明：
+
+```rust
+#[cfg(test)]
+#[path = "../../tests/unit/script_keys.rs"]
+mod tests;
+```
+
+这样实现文件只有实现，测试也能像内联 `mod tests` 一样访问模块私有状态——`tests/unit/`
+是 `tests/` 的子目录，Cargo 只把 `tests/*.rs` 当集成测试目标，所以它不会变成一个只会
+编译失败的独立 target。需要**公开 API** 才测得了的行为（解析、打印、运行时语义、
+平台层）则照常写成 `tests/*.rs` 集成测试；两者都在 `cargo test` 的同一趟里跑。
+
 `crates/autoitv3-ast/tests/integration.rs` 覆盖：
 
 - 词法：token 种类、字符串转义、`#指令`整行（含 CRLF 处理）、复合赋值/三元
@@ -1143,12 +1238,28 @@ AU3_SAMPLE=/path/to/obfuscated.au3 cargo test --release
 函数表构建函数）。整份样本的解释执行在 debug 构建下要几分钟，所以配上 `--release`
 （8 秒左右）。脚本旁边的 `.exe` 会被自动发现，不需要额外设环境变量。
 
+解包也有一条同样的可选集成测试——而且它是**逐字节**的，不是"有输出就算过"：
+
+```bash
+AU3_UNPACK_SCRIPT=/path/to/build.exe \
+AU3_UNPACK_EXPECTED=/path/to/source.au3 \
+cargo test -p autoitv3-unpack
+```
+
+`AU3_UNPACK_SCRIPT` 可以是 `.exe`，也可以是已经 dump 出来的 chunk；
+`AU3_UNPACK_EXPECTED` 给出编译时用的 `.au3`，测试会断言解包结果与它完全相同。
+
 ## 验证
 
 对一份真实的混淆样本：
 
 - 解析成功，顶层条目与函数都识别出来
 - pretty 规范化输出可被重新解析（round-trip 一致）
+
+对一份真实的 `aut2exe` 产物（`AU3!EA06`）：
+
+- `au3 unpack build.exe --script` 输出与参考实现逐字节一致：**SHA-1 相同**
+- 取回的源码能被本项目自己的解析器吃下
 
 ## 命名对应
 

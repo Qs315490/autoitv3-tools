@@ -381,6 +381,8 @@ impl Analyzer {
             | StmtKind::Exit(Some(e))
             | StmtKind::ExitLoop(Some(e))
             | StmtKind::ContinueLoop(Some(e)) => self.expr(e, func),
+            // A bare control transfer that names nothing.
+            StmtKind::ContinueCase => {}
             StmtKind::If(if_) => {
                 self.expr(&if_.cond, func);
                 if let Some(ts) = &if_.then_stmt {
@@ -694,6 +696,8 @@ impl RenameCtx {
             | StmtKind::ContinueLoop(Some(e)) => {
                 self.visit_expr(e, func);
             }
+            // A bare control transfer that names nothing.
+            StmtKind::ContinueCase => {}
             StmtKind::If(if_) => {
                 self.visit_expr(&mut if_.cond, func);
                 if let Some(ts) = &mut if_.then_stmt {

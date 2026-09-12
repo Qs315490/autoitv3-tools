@@ -209,7 +209,7 @@ pub const FUNCTIONS: &[&str] = &[
     // drives
     "DriveGetDrive",
     "DriveGetType",
-    "DriveGetFilesystem",
+    "DriveGetFileSystem",
     "DriveGetLabel",
     "DriveGetSerial",
     "DriveSpaceTotal",
@@ -326,7 +326,7 @@ pub struct DriveSpec {
     /// What `DriveGetType` reports: `FIXED`, `REMOVABLE`, `CDROM`,
     /// `NETWORK`, `RAMDISK` or `UNKNOWN`.
     pub kind: String,
-    /// What `DriveGetFilesystem` reports, e.g. `NTFS`.
+    /// What `DriveGetFileSystem` reports, e.g. `NTFS`.
     pub filesystem: String,
     /// Volume label, or empty.
     pub label: String,

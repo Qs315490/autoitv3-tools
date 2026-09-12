@@ -309,6 +309,22 @@ fn volatile_function_is_flagged() {
 }
 
 #[test]
+fn continuecase_is_a_control_statement_not_an_identifier() {
+    // Parsing it as a bare identifier would silently turn a jump into a no-op
+    // expression, which is exactly the kind of thing this corpus exists to
+    // catch.
+    let prog = parse("Switch $a\n    Case 1\n        ContinueCase\n    Case 2\n        $b = 1\nEndSwitch\n")
+        .unwrap();
+    let ItemKind::Stmt(outer) = &prog.items[0].kind else { panic!() };
+    let StmtKind::Switch(sw) = &outer.kind else { panic!("{:?}", outer.kind) };
+    assert!(
+        matches!(sw.cases[0].body[0].kind, StmtKind::ContinueCase),
+        "{:?}",
+        sw.cases[0].body[0].kind
+    );
+}
+
+#[test]
 fn with_block_member_uses_the_implicit_subject() {
     let prog = parse("With $obj\n    .Value = 1\nEndWith\n").unwrap();
     let ItemKind::Stmt(st) = &prog.items[0].kind else { panic!() };

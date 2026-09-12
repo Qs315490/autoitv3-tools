@@ -10,6 +10,7 @@ pub mod lexer;
 pub mod parser;
 pub mod span;
 pub mod token;
+pub mod vocab;
 
 pub use ast::{Program, Stmt, StmtKind, Expr, ExprKind};
 pub use parser::{parse, ParseError, Parser};

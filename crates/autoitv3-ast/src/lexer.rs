@@ -513,7 +513,10 @@ impl<'a> Lexer<'a> {
 }
 
 /// Map a lowercase keyword string to its token kind.
-fn keyword(s: &str) -> Option<TokenKind> {
+///
+/// `pub(crate)` so `vocab`'s test can check the two against each other; this
+/// match and the vocabulary table are the same list written two ways.
+pub(crate) fn keyword(s: &str) -> Option<TokenKind> {
     use TokenKind::*;
     Some(match s.to_ascii_lowercase().as_str() {
         "func" => Func,
@@ -546,6 +549,7 @@ fn keyword(s: &str) -> Option<TokenKind> {
         "return" => Return,
         "exitloop" => ExitLoop,
         "continueloop" => ContinueLoop,
+        "continuecase" => ContinueCase,
         "exit" => Exit,
         "with" => With,
         "endwith" => EndWith,

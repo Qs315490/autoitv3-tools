@@ -5,6 +5,10 @@ edition.workspace = true
 description.workspace = true
 
 [dependencies]
+# The keyword / function / macro tables the token stream is decoded against
+# live with the crates that own those concepts, not here.
+autoitv3-ast = { path = "../autoitv3-ast" }
+autoitv3-runtime = { path = "../autoitv3-runtime" }
 autoitv3-platform = { path = "../autoitv3-platform" }
 
 [lib]
