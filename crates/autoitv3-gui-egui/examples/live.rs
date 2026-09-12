@@ -1,5 +1,5 @@
-//! Live-window PoC: a Label, an Input and a Button, with clicks fed back into
-//! `GUIGetMsg` and typed text read back by `GUICtrlRead`.
+//! Live-window example: a Label, an Input and a Button, with clicks fed back
+//! into `GUIGetMsg` and typed text read back by `GUICtrlRead`.
 //!
 //! Needs a display server. Run it with:
 //!
@@ -9,10 +9,26 @@
 //!
 //! Click **Greet** to print `Hello, <typed name>!` on stdout; close the window
 //! (or its X) to let the script's `GUIGetMsg` loop exit.
+//!
+//! Pass `--auto` to run a script that creates the controls and returns at once:
+//! the window then closes itself, which is handy for checking the plumbing
+//! without a user.
+//!
+//! Note the shape of `main`: `LiveBackend::run` must own the main thread
+//! because winit insists on creating the event loop there. It starts the script
+//! on a worker thread and blocks until the window closes.
 
 use autoitv3_gui_egui::LiveBackend;
 use autoitv3_platform::winemu::WindowsEmulation;
 use autoitv3_runtime::Runtime;
+
+const CONTROLS: &str = r#"
+GUICreate("AutoIt PoC", 380, 170)
+GUICtrlCreateLabel("Type a name, then press Greet:", 12, 12)
+$edit = GUICtrlCreateInput("world", 12, 36, 220, 24)
+$btn = GUICtrlCreateButton("Greet", 12, 74, 110, 30)
+GUISetState()
+"#;
 
 const SCRIPT: &str = r#"
 GUICreate("AutoIt PoC", 380, 170)
@@ -29,13 +45,21 @@ WEnd
 "#;
 
 fn main() {
-    let backend = LiveBackend::new("AutoIt GUI PoC");
-    let emulation = WindowsEmulation::new().with_gui_backend(Box::new(backend));
+    let auto = std::env::args().any(|arg| arg == "--auto");
+    let source = if auto { CONTROLS } else { SCRIPT };
 
-    let program = autoitv3_ast::parse(SCRIPT).expect("PoC script parses");
-    let mut runtime = Runtime::with_program(&program);
-    runtime.set_platform(autoitv3_platform::host_platform_with(emulation));
-    runtime.run_script().expect("PoC script runs");
+    let backend = LiveBackend::new("AutoIt GUI PoC");
+    backend
+        .run(move |backend| {
+            let emulation = WindowsEmulation::new().with_gui_backend(Box::new(backend));
+            let program = autoitv3_ast::parse(source).expect("PoC script parses");
+            let mut runtime = Runtime::with_program(&program);
+            runtime.set_platform(autoitv3_platform::host_platform_with(emulation));
+            if let Err(error) = runtime.run_script() {
+                eprintln!("[live] script stopped: {error}");
+            }
+        })
+        .expect("the window loop failed to start");
 
     println!("window closed; exiting");
 }

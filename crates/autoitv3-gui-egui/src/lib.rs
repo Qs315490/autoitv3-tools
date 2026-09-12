@@ -17,7 +17,12 @@
 //! backend in through `WindowsEmulation::with_egui_backend()`.
 //!
 //! The `window` feature adds [`LiveBackend`]: a real eframe window whose button
-//! clicks and text edits are fed back into `GUIGetMsg`/`GUICtrlRead`.
+//! clicks, menu picks, text edits and list selections are fed back into
+//! `GUIGetMsg`/`GUICtrlRead`. Both backends draw through `widgets.rs`, so all 29
+//! control kinds look the same on screen and off it.
+//!
+//! winit insists on creating the event loop on the main thread, so
+//! [`LiveBackend::run`] owns that thread and runs the script on a worker.
 
 #[cfg(feature = "window")]
 mod live;
