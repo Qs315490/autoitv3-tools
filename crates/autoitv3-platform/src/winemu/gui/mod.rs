@@ -157,11 +157,12 @@ impl GuiState {
     /// Apply edits a live window queued (typed text, toggled checkbox).
     fn apply_updates(&mut self) {
         for update in self.backend.take_updates() {
-            match update {
+            let id = match update {
                 GuiUpdate::SetText { id, text } => {
                     if let Some(control) = self.model.control_mut(id) {
                         control.text = text;
                     }
+                    id
                 }
                 GuiUpdate::SetChecked { id, checked } => {
                     if let Some(control) = self.model.control_mut(id) {
@@ -171,13 +172,19 @@ impl GuiState {
                             control.state &= !0x01;
                         }
                     }
+                    id
                 }
                 GuiUpdate::Select { id, index } => {
                     if let Some(control) = self.model.control_mut(id) {
                         control.selection = Some(index);
                     }
+                    id
                 }
-            }
+            };
+            // Tell the backend what the model now holds. Without this the
+            // window that sent the edit keeps drawing the old value, so typed
+            // text snaps back on the next frame.
+            self.notify_control(id);
         }
     }
 

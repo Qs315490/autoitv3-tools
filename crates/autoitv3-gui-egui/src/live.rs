@@ -39,7 +39,7 @@
 //! window. Instead it puts the event loop where every platform wants it and
 //! moves the interpreter to a worker thread, which is plain Rust and portable.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -127,6 +127,7 @@ impl LiveBackend {
         let app = LiveApp {
             shared: self.shared.clone(),
             closed: std::collections::HashSet::new(),
+            pending: Pending::new(),
             ever_had_window: false,
             empty_frames: 0,
         };
@@ -259,11 +260,26 @@ fn dispatch(shared: &Shared, interaction: Interaction) {
     }
 }
 
+/// How long a live-window edit is shown before the script's version wins.
+/// 40 frames is ~2 s at the 50 ms repaint the window asks for, and every
+/// keystroke repaints sooner than that.
+const PENDING_FRAMES: u8 = 40;
+
+/// Text edits the user made that the script has not echoed back yet.
+///
+/// A `TextEdit` draws from the string it is handed, so the frame right after a
+/// keystroke would otherwise redraw the model's older value and the character
+/// would vanish. Each edit is shown until the model agrees (or the entry
+/// expires, in case the script rewrites the text to something else).
+type Pending = HashMap<i64, (String, u8)>;
+
 struct LiveApp {
     shared: Arc<Shared>,
     /// Windows the user closed, so they are not drawn again while the script
     /// keeps running (egui's `open` flag is app-owned, not persisted by egui).
     closed: std::collections::HashSet<i64>,
+    /// In-flight text edits; see [`Pending`].
+    pending: Pending,
     /// Set once the mirror has held a visible window, so a slow script is not
     /// mistaken for a finished one.
     ever_had_window: bool,
@@ -280,6 +296,7 @@ impl eframe::App for LiveApp {
             (mirror.windows.clone(), mirror.controls.clone())
         };
         self.closed.retain(|handle| windows.contains_key(handle));
+        expire_pending(&mut self.pending, &controls);
 
         if windows.values().any(|window| window.visible) {
             self.ever_had_window = true;
@@ -295,6 +312,10 @@ impl eframe::App for LiveApp {
             return;
         }
 
+        // Disjoint field borrows: the closure draws with `shared` while
+        // recording in-flight edits in `pending`.
+        let shared = &self.shared;
+        let pending = &mut self.pending;
         for window in windows.values() {
             if !window.visible || self.closed.contains(&window.handle) {
                 continue;
@@ -312,13 +333,17 @@ impl eframe::App for LiveApp {
                 .show(&ctx, |ui| {
                     // Snapshot this window's controls (in creation order) so
                     // the shared widget layer can lay them out.
-                    let body: Vec<Control> = window
+                    let mut body: Vec<Control> = window
                         .controls
                         .iter()
                         .filter_map(|id| controls.get(id).cloned())
                         .collect();
+                    overlay_pending(&mut body, pending);
                     for interaction in draw_window_body(ui, &body) {
-                        dispatch(&self.shared, interaction);
+                        if let Action::Text(text) = &interaction.action {
+                            pending.insert(interaction.id, (text.clone(), PENDING_FRAMES));
+                        }
+                        dispatch(shared, interaction);
                     }
                 });
             if !open {
@@ -332,5 +357,73 @@ impl eframe::App for LiveApp {
 
         // Re-read the mirror a few times a second so script-side updates show.
         ctx.request_repaint_after(Duration::from_millis(50));
+    }
+}
+
+/// Show in-flight edits on top of the model the window just read.
+fn overlay_pending(controls: &mut [Control], pending: &Pending) {
+    for control in controls {
+        if let Some((text, _)) = pending.get(&control.id) {
+            control.text = text.clone();
+        }
+    }
+}
+
+/// Drop edits the script has applied (or that aged out) and count the rest down.
+fn expire_pending(pending: &mut Pending, controls: &BTreeMap<i64, Control>) {
+    pending.retain(|id, (text, frames)| {
+        *frames = frames.saturating_sub(1);
+        *frames > 0 && controls.get(id).map(|control| &control.text) != Some(text)
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autoitv3_gui::ControlKind;
+
+    fn input(id: i64, text: &str) -> Control {
+        let mut control = Control::new(id, 1, ControlKind::Input);
+        control.text = text.to_string();
+        control
+    }
+
+    #[test]
+    fn an_in_flight_edit_is_shown_until_the_script_echoes_it() {
+        let mut controls = BTreeMap::new();
+        controls.insert(1, input(1, "world"));
+
+        let mut pending = Pending::new();
+        pending.insert(1, ("world!".to_string(), PENDING_FRAMES));
+
+        // The window draws what the user typed, not the model's stale text.
+        let mut body = vec![input(1, "world")];
+        overlay_pending(&mut body, &pending);
+        assert_eq!(body[0].text, "world!");
+
+        // The script has not applied it yet, so it stays pending.
+        expire_pending(&mut pending, &controls);
+        assert_eq!(pending.len(), 1);
+
+        // Once GUICtrlRead's write-back reaches the model, the overlay is gone.
+        controls.insert(1, input(1, "world!"));
+        expire_pending(&mut pending, &controls);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn an_edit_the_script_never_echoes_expires() {
+        let mut controls = BTreeMap::new();
+        controls.insert(1, input(1, "world"));
+
+        let mut pending = Pending::new();
+        pending.insert(1, ("typed".to_string(), 2));
+        expire_pending(&mut pending, &controls);
+        assert_eq!(pending.len(), 1, "still fresh");
+        expire_pending(&mut pending, &controls);
+        assert!(
+            pending.is_empty(),
+            "the script rewrote it to something else"
+        );
     }
 }
