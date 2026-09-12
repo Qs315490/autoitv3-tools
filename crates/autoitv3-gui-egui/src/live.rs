@@ -47,8 +47,8 @@ use std::time::Duration;
 use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window, WindowState};
 
 use crate::widgets::{
-    record_drawn, show_autoit_window, Action, Interaction, LastWindow, MinimizeStyle,
-    WindowGeometry,
+    effective_window, fold_user_update, record_drawn, show_autoit_window, Action, Interaction,
+    LastWindow, MinimizeStyle, WindowGeometry,
 };
 
 /// The model copy the GUI thread reads.
@@ -297,33 +297,6 @@ impl GuiBackend for LiveBackend {
     }
 }
 
-/// The window to draw this frame: the model's, with the state the user asked
-/// for (and the rectangle the script is about to restore it to) applied.
-///
-/// Using the restore rectangle matters: a window that was maximised sits at
-/// (0, 0) with the desktop's size, so drawing it from the model until the script
-/// catches up would put it in the wrong place and size for a frame.
-fn effective_window(window: &Window, requested: Option<(WindowState, u8)>) -> Window {
-    let mut effective = window.clone();
-    let Some((state, frames)) = requested else {
-        return effective;
-    };
-    if window.state == state || frames == 0 {
-        return effective;
-    }
-    effective.state = state;
-    if state == WindowState::Normal {
-        // Where the script is about to put it back.
-        if let Some((x, y, width, height)) = window.restore {
-            effective.x = x;
-            effective.y = y;
-            effective.width = width;
-            effective.height = height;
-        }
-    }
-    effective
-}
-
 /// Marks the script as finished, on the normal path *and* on a panic.
 struct FinishGuard(Arc<Shared>);
 
@@ -569,6 +542,15 @@ impl eframe::App for LiveApp {
             let geometry = WindowGeometry::of(&effective);
             let (next, updates) = record_drawn(&effective, geometry, last, drawn, user_state);
             if !updates.is_empty() {
+                // The mirror first: the frame after this one must not read the
+                // place the drag just left as news and snap the window back.
+                let mut mirror = shared.mirror.lock().unwrap();
+                if let Some(held) = mirror.windows.get_mut(&window.handle) {
+                    for update in &updates {
+                        fold_user_update(held, update);
+                    }
+                }
+                drop(mirror);
                 shared.updates.lock().unwrap().extend(updates);
             }
             seen_windows.insert(window.handle, next);
@@ -578,7 +560,8 @@ impl eframe::App for LiveApp {
         if ctx.input(|input| input.pointer.any_down()) {
             ctx.request_repaint();
         }
-        // Re-read the mirror a few times a second so script-side updates show.
+        // Fallback cadence for anything the backend did not announce (a script
+        // that changes the model without touching the window, say).
         ctx.request_repaint_after(Duration::from_millis(50));
     }
 }
@@ -675,34 +658,6 @@ mod tests {
             ctx.has_requested_repaint(),
             "the change should ask for a frame"
         );
-    }
-
-    #[test]
-    fn a_window_the_user_un_maximised_is_drawn_where_it_will_be_restored_to() {
-        let mut window = Window::new(1, "W", 960, 540);
-        window.x = 0;
-        window.y = 0;
-        window.state = WindowState::Maximized;
-        window.restore = Some((220, 140, 520, 300));
-
-        // While the script has not applied the state yet, draw the rectangle it
-        // is about to restore to — not the maximised one at (0, 0), which would
-        // both look wrong and be reported back as the window's place.
-        let effective = effective_window(&window, Some((WindowState::Normal, PENDING_FRAMES)));
-        assert_eq!((effective.x, effective.y), (220, 140));
-        assert_eq!((effective.width, effective.height), (520, 300));
-        assert_eq!(effective.state, WindowState::Normal);
-
-        // A script that never applies the state cannot pin the window: the
-        // frame budget expiring falls back to the model.
-        let expired = effective_window(&window, Some((WindowState::Normal, 0)));
-        assert_eq!((expired.x, expired.y), (0, 0));
-        assert_eq!(expired.state, WindowState::Maximized);
-
-        // Nothing requested: the model is the truth.
-        let plain = effective_window(&window, None);
-        assert_eq!((plain.x, plain.y), (0, 0));
-        assert_eq!(plain.state, WindowState::Maximized);
     }
 
     #[test]
