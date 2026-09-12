@@ -1083,6 +1083,58 @@ impl GuiBackend for RecordingBackend {
     }
 }
 
+/// A backend that reports one window resize once the window exists.
+#[derive(Default)]
+struct ResizingBackend {
+    pending: Vec<GuiUpdate>,
+    window_created: bool,
+    seen: Rc<RefCell<Vec<(i64, i32, i32)>>>,
+}
+
+impl GuiBackend for ResizingBackend {
+    fn on_window(&mut self, window: &Window) {
+        self.window_created = true;
+        self.seen
+            .borrow_mut()
+            .push((window.handle, window.width, window.height));
+    }
+    fn take_updates(&mut self) -> Vec<GuiUpdate> {
+        if self.window_created {
+            std::mem::take(&mut self.pending)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[test]
+fn a_user_resize_reaches_wingetpos_and_guigetmsg() {
+    // What a live window sends after the user drags an edge.
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(ResizingBackend {
+        pending: vec![GuiUpdate::Resize {
+            handle: 0x1_0000,
+            width: 500,
+            height: 400,
+        }],
+        window_created: false,
+        seen: seen.clone(),
+    }));
+    let body = r#"
+GUICreate("T", 380, 170)
+Local $pos = WinGetPos("T")
+Local $client = WinGetClientSize("T")
+Local $msg = GUIGetMsg()
+Return $pos[2] & "x" & $pos[3] & " client " & $client[0] & "x" & $client[1] & " msg " & $msg
+"#;
+    assert_eq!(text(emu, body), "500x400 client 500x400 msg -12");
+    assert!(
+        seen.borrow().iter().any(|(_, w, h)| *w == 500 && *h == 400),
+        "the model's new size never reached the backend: {:?}",
+        seen.borrow()
+    );
+}
+
 #[test]
 fn an_applied_edit_is_reported_back_to_the_backend() {
     // The window sends the edit; the model has to answer with the new value,

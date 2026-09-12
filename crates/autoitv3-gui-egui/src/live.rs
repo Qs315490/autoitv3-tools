@@ -46,7 +46,7 @@ use std::time::Duration;
 
 use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window};
 
-use crate::widgets::{draw_window_body, Action, Interaction};
+use crate::widgets::{show_autoit_window, Action, Interaction};
 
 /// The model copy the GUI thread reads.
 #[derive(Default)]
@@ -128,6 +128,7 @@ impl LiveBackend {
             shared: self.shared.clone(),
             closed: std::collections::HashSet::new(),
             pending: Pending::new(),
+            clients: HashMap::new(),
             ever_had_window: false,
             empty_frames: 0,
         };
@@ -280,6 +281,9 @@ struct LiveApp {
     closed: std::collections::HashSet<i64>,
     /// In-flight text edits; see [`Pending`].
     pending: Pending,
+    /// Client size last drawn per window handle. Only the user can resize an
+    /// egui window, so a change here is a drag the script should hear about.
+    clients: HashMap<i64, egui::Vec2>,
     /// Set once the mirror has held a visible window, so a slow script is not
     /// mistaken for a finished one.
     ever_had_window: bool,
@@ -296,6 +300,8 @@ impl eframe::App for LiveApp {
             (mirror.windows.clone(), mirror.controls.clone())
         };
         self.closed.retain(|handle| windows.contains_key(handle));
+        self.clients
+            .retain(|handle, _| windows.contains_key(handle));
         expire_pending(&mut self.pending, &controls);
 
         if windows.values().any(|window| window.visible) {
@@ -312,46 +318,64 @@ impl eframe::App for LiveApp {
             return;
         }
 
-        // Disjoint field borrows: the closure draws with `shared` while
-        // recording in-flight edits in `pending`.
+        // Disjoint field borrows: the widget layer draws with `shared`, the
+        // overlay edits live in `pending`, and resizes are tracked in `clients`.
         let shared = &self.shared;
         let pending = &mut self.pending;
+        let clients = &mut self.clients;
         for window in windows.values() {
             if !window.visible || self.closed.contains(&window.handle) {
                 continue;
             }
-            let title = if window.title.is_empty() {
-                "AutoIt"
-            } else {
-                window.title.as_str()
-            };
             let mut open = true;
-            egui::Window::new(title)
-                .default_pos([window.x as f32, window.y as f32])
-                .default_size([window.width.max(80) as f32, window.height.max(60) as f32])
-                .open(&mut open)
-                .show(&ctx, |ui| {
-                    // Snapshot this window's controls (in creation order) so
-                    // the shared widget layer can lay them out.
-                    let mut body: Vec<Control> = window
-                        .controls
-                        .iter()
-                        .filter_map(|id| controls.get(id).cloned())
-                        .collect();
-                    overlay_pending(&mut body, pending);
-                    for interaction in draw_window_body(ui, &body) {
-                        if let Action::Text(text) = &interaction.action {
-                            pending.insert(interaction.id, (text.clone(), PENDING_FRAMES));
-                        }
-                        dispatch(shared, interaction);
-                    }
-                });
+            let mut actions = Vec::new();
+            // Snapshot this window's controls (in creation order) so the shared
+            // widget layer can lay them out.
+            let mut body: Vec<Control> = window
+                .controls
+                .iter()
+                .filter_map(|id| controls.get(id).cloned())
+                .collect();
+            overlay_pending(&mut body, pending);
+            let last = clients.get(&window.handle).copied();
+            let client = show_autoit_window(&ctx, window, &body, &mut open, last, &mut actions);
+
+            for interaction in actions {
+                if let Action::Text(text) = &interaction.action {
+                    pending.insert(interaction.id, (text.clone(), PENDING_FRAMES));
+                }
+                dispatch(shared, interaction);
+            }
             if !open {
                 // The user closed this window; the script decides what to do
                 // with `$GUI_EVENT_CLOSE` (if it keeps running, the window
                 // stays closed rather than reappearing).
                 self.closed.insert(window.handle);
-                let _ = self.shared.events_tx.send(GuiEvent::Close(window.handle));
+                let _ = shared.events_tx.send(GuiEvent::Close(window.handle));
+            }
+
+            // A changed client size means the user dragged an edge; report it so
+            // WinGetPos/WinGetClientSize and $GUI_EVENT_RESIZED agree with the
+            // screen. The first frame only records the size.
+            if let Some(client) = client {
+                match clients.get(&window.handle).copied() {
+                    None => {
+                        clients.insert(window.handle, client);
+                    }
+                    Some(previous) if (client - previous).length() > 0.5 => {
+                        clients.insert(window.handle, client);
+                        let width = client.x.round() as i32;
+                        let height = client.y.round() as i32;
+                        if width > 0 && height > 0 {
+                            shared.updates.lock().unwrap().push(GuiUpdate::Resize {
+                                handle: window.handle,
+                                width,
+                                height,
+                            });
+                        }
+                    }
+                    Some(_) => {}
+                }
             }
         }
 
