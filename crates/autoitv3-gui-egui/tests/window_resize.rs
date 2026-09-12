@@ -9,8 +9,8 @@
 
 use autoitv3_gui::{Control, ControlKind, Window};
 use autoitv3_gui_egui::{
-    apply_textures, rasterize, record_drawn, show_autoit_window, window_area_id, LastWindow,
-    MinimizeStyle, Texture, WindowGeometry,
+    apply_textures, effective_window, rasterize, record_drawn, show_autoit_window, window_area_id,
+    LastWindow, MinimizeStyle, Texture, WindowGeometry,
 };
 use egui::{vec2, Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 
@@ -56,19 +56,19 @@ struct Harness {
     /// What the last frame drew; `None` when the window was not on screen.
     drawn: Option<Vec2>,
     /// A state change the user asked for (double-clicking the title bar, or a
-    /// title-bar control).
+    /// title-bar control), this frame.
     requested: Option<autoitv3_gui::WindowState>,
+    /// The state the user asked for that the script has not applied yet, with
+    /// the frame budget the live window keeps — the frames in between are drawn
+    /// from `Window::restore`, the way `LiveBackend` does it.
+    pending: Option<(autoitv3_gui::WindowState, u8)>,
+    /// Every state the user asked for, in order: what `GUIGetMsg` would hear.
+    requests: Vec<autoitv3_gui::WindowState>,
     /// Where the title-bar controls were drawn.
     controls: Option<Rect>,
     /// A resize the frame asked to report to the model.
     reported: Option<autoitv3_gui::GuiUpdate>,
-    /// Everything the last frame reported, to apply on the next one.
-    pending_echo: Vec<autoitv3_gui::GuiUpdate>,
-    /// Whether the "script" applies what a frame reported, one frame later —
-    /// what the live window's script thread does. Leaving it off would drag a
-    /// window the model never hears about, hiding the fight between the drag
-    /// and the model's echo of it.
-    echo: bool,
+
     /// The font atlas, kept across frames the way the offscreen renderer keeps
     /// it (egui patches the atlas as new glyphs appear).
     textures: std::collections::HashMap<egui::TextureId, Texture>,
@@ -90,10 +90,10 @@ impl Harness {
             last: LastWindow::default(),
             drawn: None,
             requested: None,
+            pending: None,
+            requests: Vec::new(),
             controls: None,
             reported: None,
-            pending_echo: Vec::new(),
-            echo: false,
             textures: std::collections::HashMap::new(),
             minimize: MinimizeStyle::Hidden,
             time: 0.0,
@@ -102,26 +102,16 @@ impl Harness {
 
     /// One frame: returns the window's outer rect and the client size.
     fn frame(&mut self, events: Vec<Event>) -> (Rect, Vec2) {
-        // This frame's script read happens before it is drawn, so last frame's
-        // report is in the model by now — one round trip behind the pointer.
-        if self.echo {
-            for update in std::mem::take(&mut self.pending_echo) {
-                match update {
-                    autoitv3_gui::GuiUpdate::Move { x, y, .. } => {
-                        self.window.x = x;
-                        self.window.y = y;
-                    }
-                    autoitv3_gui::GuiUpdate::Resize { width, height, .. } => {
-                        self.window.width = width;
-                        self.window.height = height;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // A state the user asked for last frame and the script has not applied
-        // yet — the live window only records the request *after* it draws.
-        let asked_last_frame = self.requested.is_some();
+        // A state the user asked for that the script has not applied yet, with
+        // its frame budget counted down the way `LiveBackend` counts it.
+        self.pending = self.pending.and_then(|(state, frames)| {
+            let frames = frames.saturating_sub(1);
+            (self.window.state != state && frames > 0).then_some((state, frames))
+        });
+        let asked_last_frame = self.pending.is_some();
+        // The window the frames in between are drawn from: the model's, with
+        // the state the user asked for (and the place it will restore to).
+        let effective = effective_window(&self.window, self.pending);
         let last = self.last;
         let minimize = self.minimize;
         self.time += 0.05;
@@ -131,7 +121,7 @@ impl Harness {
             let mut actions = Vec::new();
             drawn = show_autoit_window(
                 ui.ctx(),
-                &self.window,
+                &effective,
                 &controls(),
                 &mut open,
                 last,
@@ -144,12 +134,27 @@ impl Harness {
         self.requested = drawn.state_request;
         self.controls = drawn.controls;
         self.drawn = client;
+        // What `LiveBackend` does with the state the user asked for: hand it to
+        // the script and keep drawing the request until the script applies it.
+        if let Some(state) = drawn.state_request {
+            self.requests.push(state);
+            if Some(state) != self.pending.map(|(pending, _)| pending) && self.window.state != state
+            {
+                self.pending = Some((state, 40));
+            }
+        }
         // Exactly what LiveBackend does with a frame, so the two cannot drift.
-        let geometry = WindowGeometry::of(&self.window);
+        let geometry = WindowGeometry::of(&effective);
         let user_state = asked_last_frame || drawn.pointer_owns;
-        let (next, updates) = record_drawn(&self.window, geometry, last, drawn, user_state);
+        let (next, updates) = record_drawn(&effective, geometry, last, drawn, user_state);
         self.reported = updates.first().cloned();
-        self.pending_echo = updates;
+        // Fold the user's own change into the model at once, exactly like
+        // `LiveBackend` (the same function): the script may not poll for
+        // another second, and until it does the model has to agree with what
+        // the window shows.
+        for update in &updates {
+            autoitv3_gui_egui::fold_user_update(&mut self.window, update);
+        }
         self.last = next;
         let rect = self
             .ctx
@@ -551,8 +556,8 @@ fn clicking_a_window_control_is_not_a_title_double_click() {
     let (minimise, _) = window_controls(&harness);
     double_click(&mut harness, minimise);
     assert_eq!(
-        harness.requested,
-        Some(autoitv3_gui::WindowState::Minimized),
+        harness.requests,
+        vec![autoitv3_gui::WindowState::Minimized],
         "the button wins over the title-bar double-click"
     );
 }
@@ -707,8 +712,8 @@ fn dragging_a_maximised_window_leaves_the_maximised_state() {
         );
     }
     assert_eq!(
-        harness.requested,
-        Some(autoitv3_gui::WindowState::Normal),
+        harness.requests,
+        vec![autoitv3_gui::WindowState::Normal],
         "the drag should ask to leave the maximised state"
     );
 
@@ -877,7 +882,6 @@ fn a_dragged_window_tracks_the_pointer_while_the_script_echoes_it() {
     // pointer. The window must still sit under the pointer: taking the model's
     // place on those frames is what made the drag lag and stutter.
     let mut harness = Harness::new();
-    harness.echo = true;
     let start = harness.frame(vec![]).0;
     let from = Pos2::new(start.center().x, start.top() + 8.0);
     harness.frame(vec![Event::PointerMoved(from)]);
@@ -909,5 +913,77 @@ fn a_dragged_window_tracks_the_pointer_while_the_script_echoes_it() {
             "step {step}: the model is {behind:?} behind the window, more than the one \
              frame the script takes to apply a report"
         );
+    }
+}
+
+#[test]
+fn restoring_a_maximised_window_puts_it_back_where_it_came_from() {
+    // The emulator remembers the rectangle a window was maximised from and puts
+    // it back on `@SW_RESTORE`; the window has to follow — also when the user
+    // asked, by double-clicking the title bar or by clicking the restore
+    // control, whose release frame still has the pointer down on the window.
+    for how in ["double-clicking the title bar", "the restore control"] {
+        let mut harness = Harness::new();
+        harness.frame(vec![]);
+        harness.window.restore = Some((20, 20, WIDTH, HEIGHT));
+        harness.window.state = autoitv3_gui::WindowState::Maximized;
+        // One frame to take the maximised rectangle, one for egui to report the
+        // window controls the restore case clicks.
+        harness.frame(vec![]);
+        let maximised = harness.frame(vec![]).0;
+        assert!(
+            maximised.left().abs() < 2.0 && maximised.top().abs() < 2.0,
+            "a maximised window sits at the viewport's top left: {maximised:?}"
+        );
+
+        if how == "the restore control" {
+            let (_, restore) = window_controls(&harness);
+            assert_eq!(
+                click_at(&mut harness, restore),
+                Some(autoitv3_gui::WindowState::Normal),
+                "{how} asks to restore"
+            );
+        } else {
+            let title = Pos2::new(maximised.center().x, maximised.top() + 8.0);
+            double_click(&mut harness, title);
+        }
+        assert_eq!(
+            harness.pending.map(|(state, _)| state),
+            Some(autoitv3_gui::WindowState::Normal),
+            "{how} leaves the restore pending until the script applies it"
+        );
+
+        // The script has not applied it yet: the window is drawn from
+        // `Window::restore`, not from the maximised rectangle it still holds.
+        // The size comes back on the first frame; the place can take one more,
+        // because egui re-asserts a drag pivot for one frame after a click.
+        let (_, client) = harness.frame(vec![]);
+        assert!(
+            (client - vec2(WIDTH as f32, HEIGHT as f32)).length() < 2.0,
+            "{how}: a pending restore must bring the size back, got {client:?}"
+        );
+        for frame in 0..4 {
+            let (rect, _) = harness.frame(vec![]);
+            assert!(
+                rect.min.distance(Pos2::new(20.0, 20.0)) < 2.0,
+                "{how}: frame {frame} must not leave the window at {rect:?} \
+                 instead of where it came from"
+            );
+        }
+
+        // `@SW_RESTORE` reaches the model: the window stays where it came from.
+        harness.window.state = autoitv3_gui::WindowState::Normal;
+        harness.window.x = 20;
+        harness.window.y = 20;
+        harness.window.width = WIDTH;
+        harness.window.height = HEIGHT;
+        harness.window.restore = None;
+        for frame in 0..3 {
+            let (rect, _) = harness.frame(vec![]);
+            assert!(
+                rect.min.distance(Pos2::new(20.0, 20.0)) < 2.0,
+                "{how}: frame {frame} after the script applied the restore: {rect:?}"
+            );
+        }
     }
 }

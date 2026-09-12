@@ -236,7 +236,21 @@ pub fn show_autoit_window(
     };
     let geometry = WindowGeometry::of(window);
     let wanted = geometry.client();
-    let script_moved = last.geometry != Some(geometry);
+    // Is the model's geometry news since the frame we drew? The live backend
+    // folds what the user dragged *into the model* right away, and the script's
+    // echo carries the same numbers back, so "what we drew last" is what the
+    // model now says: an echo is not news, a `WinMove` is.
+    //
+    // Comparing the *drawn* place and size (rather than the geometry that frame
+    // was drawn from) is what lets a place the pointer skipped be applied later:
+    // a frame that skipped it still records where the window really is, so the
+    // next frame sees it as news instead of leaving the window behind.
+    let place_is_news = last
+        .pos
+        .is_none_or(|drawn| drawn.distance(geometry.pos()) > 0.5);
+    let size_is_news = last
+        .client
+        .is_none_or(|drawn| (drawn - wanted).length() > 0.5);
 
     // Title bar + frame, as measured on an earlier frame.
     let chrome = last.chrome.unwrap_or(DEFAULT_CHROME);
@@ -273,22 +287,32 @@ pub fn show_autoit_window(
         // A floating egui window cannot really be maximised, so fill the
         // viewport less the title bar and frame.
         let screen = ctx.content_rect();
+        let news = last
+            .pos
+            .is_none_or(|drawn| drawn.distance(screen.min) > 0.5);
         (
             (screen.size() - chrome).max(vec2(80.0, 80.0)),
-            // Only on the frame the state changed: moving it every frame would
-            // mean switching the drag mode every frame, and egui only creates
-            // the title-bar widget (the double-click target) in title-bar mode.
-            (script_moved && !pointer_owns_geometry).then_some(screen.min),
+            // Only when the window is not already there: moving it every frame
+            // would mean switching the drag mode every frame, and egui only
+            // creates the title-bar widget (the double-click target) in
+            // title-bar mode.
+            (news && !pointer_owns_geometry).then_some(screen.min),
         )
-    } else if script_moved && !pointer_owns_geometry {
+    } else if pointer_owns_geometry {
+        // The pointer owns a normal window: egui's own drag handling decides
+        // the place (we must not move it back to the model's), and `dragging`
+        // below releases the size for the drag to decide.
+        (last.client.unwrap_or(wanted), None)
+    } else if place_is_news || size_is_news {
         (
             wanted,
             // AutoIt uses a negative coordinate for "leave that axis alone".
-            (geometry.x >= 0 && geometry.y >= 0)
+            (place_is_news && geometry.x >= 0 && geometry.y >= 0)
                 .then(|| Pos2::new(geometry.x as f32, geometry.y as f32)),
         )
     } else {
-        // What we drew last; the first frame falls back to `GUICreate`.
+        // Nothing new: keep what we drew; the first frame falls back to
+        // `GUICreate`.
         (last.client.unwrap_or(wanted), None)
     };
     let area_id = window_area_id(window.handle);
@@ -484,6 +508,57 @@ pub fn show_autoit_window(
                     .map(|rect| rect.size() - client)
             })
             .or(last.chrome),
+    }
+}
+
+/// The window to draw this frame: the model's, with the state the user asked
+/// for (and the rectangle the script is about to restore it to) applied.
+///
+/// Using the restore rectangle matters: a window that was maximised sits at
+/// (0, 0) with the desktop's size, so drawing it from the model until the script
+/// catches up would put it in the wrong place and size for a frame.
+pub fn effective_window(window: &Window, requested: Option<(WindowState, u8)>) -> Window {
+    let mut effective = window.clone();
+    let Some((state, frames)) = requested else {
+        return effective;
+    };
+    if window.state == state || frames == 0 {
+        return effective;
+    }
+    effective.state = state;
+    if state == WindowState::Normal {
+        // Where the script is about to put it back.
+        if let Some((x, y, width, height)) = window.restore {
+            effective.x = x;
+            effective.y = y;
+            effective.width = width;
+            effective.height = height;
+        }
+    }
+    effective
+}
+
+/// Fold what the user just did into the window the model holds, at once.
+///
+/// The live backend does this the moment a frame reports a drag: the script may
+/// not poll for another second, and until it does the model has to agree with
+/// what the window shows — otherwise the next frame reads the place the drag
+/// just left as the model's and snaps the window back to it.
+pub fn fold_user_update(window: &mut Window, update: &GuiUpdate) {
+    match *update {
+        GuiUpdate::Move { handle, x, y } if handle == window.handle => {
+            window.x = x;
+            window.y = y;
+        }
+        GuiUpdate::Resize {
+            handle,
+            width,
+            height,
+        } if handle == window.handle => {
+            window.width = width;
+            window.height = height;
+        }
+        _ => {}
     }
 }
 
@@ -1189,5 +1264,32 @@ mod tests {
             disabled.is_empty(),
             "a disabled control produced {disabled:?}"
         );
+    }
+    #[test]
+    fn a_window_the_user_un_maximised_is_drawn_where_it_will_be_restored_to() {
+        let mut window = Window::new(1, "W", 960, 540);
+        window.x = 0;
+        window.y = 0;
+        window.state = WindowState::Maximized;
+        window.restore = Some((220, 140, 520, 300));
+
+        // While the script has not applied the state yet, draw the rectangle it
+        // is about to restore to — not the maximised one at (0, 0), which would
+        // both look wrong and be reported back as the window's place.
+        let effective = effective_window(&window, Some((WindowState::Normal, 40)));
+        assert_eq!((effective.x, effective.y), (220, 140));
+        assert_eq!((effective.width, effective.height), (520, 300));
+        assert_eq!(effective.state, WindowState::Normal);
+
+        // A script that never applies the state cannot pin the window: the
+        // frame budget expiring falls back to the model.
+        let expired = effective_window(&window, Some((WindowState::Normal, 0)));
+        assert_eq!((expired.x, expired.y), (0, 0));
+        assert_eq!(expired.state, WindowState::Maximized);
+
+        // Nothing requested: the model is the truth.
+        let plain = effective_window(&window, None);
+        assert_eq!((plain.x, plain.y), (0, 0));
+        assert_eq!(plain.state, WindowState::Maximized);
     }
 }

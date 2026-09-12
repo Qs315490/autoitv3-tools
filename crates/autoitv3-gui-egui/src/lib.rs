@@ -48,6 +48,7 @@ pub use raster::{apply_textures, rasterize, Texture};
 pub use render::EguiBackend;
 #[cfg(feature = "egui")]
 pub use widgets::{
-    draw_control, draw_window_body, record_drawn, show_autoit_window, window_area_id, Action,
-    DrawnWindow, Interaction, LastWindow, MinimizeStyle, WindowGeometry,
+    draw_control, draw_window_body, effective_window, fold_user_update, record_drawn,
+    show_autoit_window, window_area_id, Action, DrawnWindow, Interaction, LastWindow,
+    MinimizeStyle, WindowGeometry,
 };
