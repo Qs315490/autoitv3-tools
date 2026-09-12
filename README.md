@@ -832,6 +832,14 @@ let _emu = WindowsEmulation::new().with_gui_backend(Box::new(backend));
 也可直接拿 `EguiBackend::snapshot()`（RGBA）或 `screenshot(path)`；`with_screenshot` 只是把
 这一步挂到 `present()` 上，省去把仿真层再取回来。
 
+**中文（及其它 CJK）文字**：egui 自带的字体只有拉丁/希腊/西里尔与 emoji，没有汉字，
+所以脚本控件里的中文会画成方块。这里**不打包**几 MB 的 CJK 字体，而是用机器上已有的：
+先看 `AU3_GUI_FONT`（`.ttc` 合集用 `AU3_GUI_FONT_INDEX` 指定第几个面），否则依次试
+`C:\Windows\Fonts\msyh.ttc`（微软雅黑）等 Windows 路径、Linux 的 `NotoSansCJK-*.ttc`/
+`wqy-microhei.ttc`、macOS 的 `PingFang.ttc`，最后浅扫 `/usr/share/fonts` 等目录。
+字体作为**最低优先级回退**装入，所以拉丁文字仍用 egui 自带字体。找不到时会打印一条提示
+（"Chinese text will draw as boxes. Set AU3_GUI_FONT ..."）。实时窗口与离屏渲染器都会装它。
+
 离屏渲染器自己维护字体图集缓存：egui 只在首帧发整张图集、之后用**局部补丁**加新字形，
 所以缓存必须把补丁贴回去——否则"前几帧用过的字"能画，"后面才出现的字"会静默丢失。
 这段逻辑现在是公开的 `apply_textures()`（与 `rasterize()`/`Texture` 一起导出，写自己的

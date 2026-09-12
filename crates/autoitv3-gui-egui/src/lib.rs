@@ -24,6 +24,8 @@
 //! winit insists on creating the event loop on the main thread, so
 //! [`LiveBackend::run`] owns that thread and runs the script on a worker.
 
+#[cfg(feature = "egui")]
+pub mod fonts;
 #[cfg(feature = "window")]
 mod live;
 #[cfg(feature = "egui")]
