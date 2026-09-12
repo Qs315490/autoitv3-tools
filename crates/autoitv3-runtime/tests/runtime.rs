@@ -413,7 +413,7 @@ EndFunc
 "#;
     assert_eq!(
         call(src, "F", vec![]).to_autoit_string(),
-        "3:Integer 3:String 3:upper::110"
+        "3:Integer 3:String 3:upper::TrueTrueFalse"
     );
 }
 
