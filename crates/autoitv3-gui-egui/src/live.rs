@@ -261,6 +261,33 @@ impl GuiBackend for LiveBackend {
     }
 }
 
+/// The window to draw this frame: the model's, with the state the user asked
+/// for (and the rectangle the script is about to restore it to) applied.
+///
+/// Using the restore rectangle matters: a window that was maximised sits at
+/// (0, 0) with the desktop's size, so drawing it from the model until the script
+/// catches up would put it in the wrong place and size for a frame.
+fn effective_window(window: &Window, requested: Option<(WindowState, u8)>) -> Window {
+    let mut effective = window.clone();
+    let Some((state, frames)) = requested else {
+        return effective;
+    };
+    if window.state == state || frames == 0 {
+        return effective;
+    }
+    effective.state = state;
+    if state == WindowState::Normal {
+        // Where the script is about to put it back.
+        if let Some((x, y, width, height)) = window.restore {
+            effective.x = x;
+            effective.y = y;
+            effective.width = width;
+            effective.height = height;
+        }
+    }
+    effective
+}
+
 /// Marks the script as finished, on the normal path *and* on a panic.
 struct FinishGuard(Arc<Shared>);
 
@@ -442,13 +469,7 @@ impl eframe::App for LiveApp {
             // state keeps that state locally until the script applies it,
             // instead of snapping back for a frame.
             let requested = requested_states.get(&window.handle).copied();
-            let mut effective = window.clone();
-            if let Some((state, frames)) = requested {
-                if window.state != state && frames > 0 {
-                    effective.state = state;
-                }
-            }
-            let geometry = WindowGeometry::of(&effective);
+            let effective = effective_window(window, requested);
 
             let mut open = true;
             let mut actions = Vec::new();
@@ -505,6 +526,7 @@ impl eframe::App for LiveApp {
             // A state the user asked for makes the frame's geometry theirs to
             // report, even though the model has not caught up yet.
             let user_state = requested_states.contains_key(&window.handle);
+            let geometry = WindowGeometry::of(&effective);
             let (next, updates) = record_drawn(&effective, geometry, last, drawn, user_state);
             if !updates.is_empty() {
                 shared.updates.lock().unwrap().extend(updates);
@@ -584,6 +606,34 @@ mod tests {
         // A degenerate size is not a desktop.
         backend.shared.set_desktop(egui::vec2(0.0, 0.0));
         assert_eq!(backend.desktop_size(), Some((1024, 640)));
+    }
+
+    #[test]
+    fn a_window_the_user_un_maximised_is_drawn_where_it_will_be_restored_to() {
+        let mut window = Window::new(1, "W", 960, 540);
+        window.x = 0;
+        window.y = 0;
+        window.state = WindowState::Maximized;
+        window.restore = Some((220, 140, 520, 300));
+
+        // While the script has not applied the state yet, draw the rectangle it
+        // is about to restore to — not the maximised one at (0, 0), which would
+        // both look wrong and be reported back as the window's place.
+        let effective = effective_window(&window, Some((WindowState::Normal, PENDING_FRAMES)));
+        assert_eq!((effective.x, effective.y), (220, 140));
+        assert_eq!((effective.width, effective.height), (520, 300));
+        assert_eq!(effective.state, WindowState::Normal);
+
+        // A script that never applies the state cannot pin the window: the
+        // frame budget expiring falls back to the model.
+        let expired = effective_window(&window, Some((WindowState::Normal, 0)));
+        assert_eq!((expired.x, expired.y), (0, 0));
+        assert_eq!(expired.state, WindowState::Maximized);
+
+        // Nothing requested: the model is the truth.
+        let plain = effective_window(&window, None);
+        assert_eq!((plain.x, plain.y), (0, 0));
+        assert_eq!(plain.state, WindowState::Maximized);
     }
 
     #[test]
