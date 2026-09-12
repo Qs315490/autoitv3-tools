@@ -17,7 +17,7 @@
 //!   shows every item. Tab items are drawn as a row of tabs.
 //! * Colors are read as AutoIt documents them, `0xRRGGBB`.
 
-use autoitv3_gui::{Control, ControlKind, DrawCmd};
+use autoitv3_gui::{Control, ControlKind, DrawCmd, Window};
 use egui::{
     vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
     TextStyle,
@@ -82,6 +82,66 @@ pub fn draw_control(ui: &mut egui::Ui, control: &Control) -> Vec<Interaction> {
             action,
         })
         .collect()
+}
+
+/// Draw one AutoIt window as a floating egui window.
+///
+/// `last_client` is the client size drawn on the previous frame, or `None` on
+/// the first. Returns the client size drawn now — what `WinGetClientSize`
+/// reports — or `None` while the window is hidden.
+///
+/// # Why the sizing is done by hand
+///
+/// `egui::Window` takes its size from its *content*: `Resize::end` falls back to
+/// the content size for windows, so a window whose body does not fill it snaps
+/// back on the frame after a drag. A short body therefore could be widened (the
+/// inner `ScrollArea` fills the width) but never made taller. The fix is to give
+/// the content a minimum size:
+///
+/// * first frame: the size the script passed to `GUICreate`, so the client area
+///   is exactly what the script asked for instead of shrinking to its controls;
+/// * afterwards: whatever we drew last, which keeps the window stable;
+/// * while the pointer is down: nothing, so a drag — including one that shrinks
+///   the window — is in charge.
+///
+/// A drag that changes the result is meant to be reported back to the model; the
+/// caller does that, and the model's size is what the next first frame would use.
+pub fn show_autoit_window(
+    ctx: &egui::Context,
+    window: &Window,
+    controls: &[Control],
+    open: &mut bool,
+    last_client: Option<egui::Vec2>,
+    actions: &mut Vec<Interaction>,
+) -> Option<egui::Vec2> {
+    if !window.visible {
+        return None;
+    }
+    let title = if window.title.is_empty() {
+        "AutoIt"
+    } else {
+        window.title.as_str()
+    };
+    let wanted = vec2(window.width.max(1) as f32, window.height.max(1) as f32);
+    let mut drawn = None;
+    egui::Window::new(title)
+        // Titles are not unique (two windows may share one), the handle is.
+        .id(egui::Id::new(("autoit-window", window.handle)))
+        .default_pos([window.x as f32, window.y as f32])
+        .default_size(wanted)
+        .open(open)
+        .show(ctx, |ui| {
+            let dragging = ui.ctx().input(|input| input.pointer.any_down());
+            let floor = if dragging {
+                egui::Vec2::ZERO
+            } else {
+                last_client.unwrap_or(wanted)
+            };
+            ui.set_min_size(ui.available_size().max(floor));
+            actions.append(&mut draw_window_body(ui, controls));
+            drawn = Some(ui.min_rect().size());
+        });
+    drawn
 }
 
 /// Draw an entire window body: the menu bar, then the controls that are not

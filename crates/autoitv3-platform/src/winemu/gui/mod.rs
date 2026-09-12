@@ -180,6 +180,28 @@ impl GuiState {
                     }
                     id
                 }
+                GuiUpdate::Resize {
+                    handle,
+                    width,
+                    height,
+                } => {
+                    // The user dragged a window edge. AutoIt scripts see this
+                    // through WinGetPos/WinGetClientSize and $GUI_EVENT_RESIZED.
+                    let changed = match self.model.window_mut(handle) {
+                        Some(window) => {
+                            let changed = window.width != width || window.height != height;
+                            window.width = width.max(1);
+                            window.height = height.max(1);
+                            changed
+                        }
+                        None => false,
+                    };
+                    if changed {
+                        self.notify_window(handle);
+                        self.events.push_back(GuiEvent::System(GUI_EVENT_RESIZED));
+                    }
+                    continue;
+                }
             };
             // Tell the backend what the model now holds. Without this the
             // window that sent the edit keeps drawing the old value, so typed

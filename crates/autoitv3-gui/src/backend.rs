@@ -48,6 +48,12 @@ pub enum GuiUpdate {
     SetChecked { id: i64, checked: bool },
     /// A list-like control (List/Combo/ListView/TreeView) selected an item.
     Select { id: i64, index: usize },
+    /// The user resized a window; `width`/`height` are its client area.
+    Resize {
+        handle: i64,
+        width: i32,
+        height: i32,
+    },
 }
 
 /// A renderer/event source for the GUI model.
