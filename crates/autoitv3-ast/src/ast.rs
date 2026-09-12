@@ -94,6 +94,12 @@ pub enum StmtKind {
     /// Kept distinct from `ExitLoop` because an interpreter must know which
     /// control transfer to perform.
     ContinueLoop(Option<Expr>),
+    /// `ContinueCase` — fall through to the next `Case` of the enclosing
+    /// `Select`/`Switch` without testing it.
+    ///
+    /// Kept as its own statement for the same reason as `ContinueLoop`: it is
+    /// a control transfer, and one that is only meaningful inside a `Case`.
+    ContinueCase,
     /// `If cond Then stmt` (single-line).
     If(IfStmt),
     /// `While cond ... WEnd`

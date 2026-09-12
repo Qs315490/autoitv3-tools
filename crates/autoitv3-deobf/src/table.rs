@@ -275,6 +275,8 @@ impl ResolveCtx {
             | StmtKind::ContinueLoop(Some(e)) => {
                 self.rewrite_expr(e, tv);
             }
+            // A bare control transfer with nothing to rewrite.
+            StmtKind::ContinueCase => {}
             StmtKind::If(if_) => {
                 self.rewrite_expr(&mut if_.cond, tv);
                 if let Some(ts) = &mut if_.then_stmt {

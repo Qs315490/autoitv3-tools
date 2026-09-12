@@ -108,6 +108,7 @@ pub enum TokenKind {
     ExitLoop,
     ContinueLoop,
     Exit,
+    ContinueCase,
     With,
     EndWith,
     And,

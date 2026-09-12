@@ -44,6 +44,7 @@ pub mod platform;
 pub mod profile;
 pub mod regexp;
 pub mod value;
+pub mod vocab;
 
 pub use debug::{
     Breakpoint, Breakpoints, DebugAction, Debugger, FrameInfo, StopReason, TracingDebugger,

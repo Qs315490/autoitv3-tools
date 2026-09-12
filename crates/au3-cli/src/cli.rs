@@ -57,7 +57,8 @@ pub enum Command {
     #[command(visible_aliases = ["dbg"])]
     Debug(commands::debug::DebugArgs),
 
-    /// Decode a resource-packed payload out of a directory or a PE image
+    /// Recover a build's payload: its compiled script (`--script`) or a
+    /// resource-packed payload
     #[command(visible_aliases = ["unp"])]
     Unpack(commands::unpack::UnpackArgs),
 }

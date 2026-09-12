@@ -144,6 +144,8 @@ impl Simplify {
             | StmtKind::Exit(Some(e))
             | StmtKind::ExitLoop(Some(e))
             | StmtKind::ContinueLoop(Some(e)) => self.expr(e),
+            // A bare control transfer with nothing to simplify.
+            StmtKind::ContinueCase => {}
             StmtKind::If(if_) => {
                 self.expr(&mut if_.cond);
                 if let Some(ts) = &mut if_.then_stmt {

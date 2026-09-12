@@ -573,7 +573,7 @@ fn clipboard_round_trips_through_a_file() {
 #[test]
 fn drive_queries_answer_for_the_emulated_c_drive() {
     let body = r#"Local $d = DriveGetDrive("FIXED")
-    Return $d[0] & "|" & DriveGetType("C:\") & "|" & DriveGetFilesystem("C:\") & "|" & _
+    Return $d[0] & "|" & DriveGetType("C:\") & "|" & DriveGetFileSystem("C:\") & "|" & _
         (DriveSpaceTotal("C:\") > 0) & "|" & (DriveSpaceFree("C:\") > 0) & "|" & DriveStatus("C:\")"#;
     assert_eq!(
         text(win10(), body),

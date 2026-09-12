@@ -155,6 +155,8 @@ impl FoldCtx<'_> {
             | StmtKind::ContinueLoop(Some(e)) => {
                 self.fold_expr_ctx(e);
             }
+            // A bare control transfer with nothing to fold.
+            StmtKind::ContinueCase => {}
             StmtKind::If(if_) => {
                 self.fold_expr_ctx(&mut if_.cond);
                 if let Some(ts) = &mut if_.then_stmt {

@@ -772,3 +772,38 @@ fn proxy_and_user_agent_settings_are_accepted() {
     let body = r#"Return HttpSetUserAgent("test") & HttpSetProxy(2, "http://127.0.0.1:1") & FtpSetProxy(2, "http://127.0.0.1:1")"#;
     assert_eq!(text(body), "111");
 }
+
+/// Every name a layer answers to has to be a function AutoIt actually has.
+///
+/// A layer's list is what `Platform::provides` reports and what `IsFunc` ends
+/// up consulting, so a name AutoIt's vocabulary does not contain is either a
+/// spelling nothing will ever match or a function that does not exist. The
+/// vocabulary lives in `autoitv3_runtime::vocab`; checking the layers against
+/// it is the point of having one table instead of one per layer.
+#[test]
+fn every_layer_answers_only_autoit_function_names() {
+    // One deviation, recorded rather than silently skipped: `RandomSeed` is
+    // this project's modern spelling of `SRandom`, and the vocabulary is AutoIt
+    // v3.3.x's, which predates it. Both are answered.
+    const KNOWN_DEVIATIONS: &[&str] = &["RandomSeed"];
+
+    let layers: [(&str, &[&str]); 6] = [
+        ("common", autoitv3_platform::common::FUNCTIONS),
+        ("common::proc", autoitv3_platform::common::proc::FUNCTIONS),
+        ("common::net", autoitv3_platform::common::net::FUNCTIONS),
+        ("linux", autoitv3_platform::linux::FUNCTIONS),
+        ("winemu", autoitv3_platform::winemu::FUNCTIONS),
+        ("winemu::gui", autoitv3_platform::winemu::gui::FUNCTIONS),
+    ];
+    for (layer, names) in layers {
+        for name in names {
+            if KNOWN_DEVIATIONS.contains(name) {
+                continue;
+            }
+            assert!(
+                autoitv3_runtime::vocab::canonical_function(name).is_some(),
+                "{layer} answers {name:?}, which is not an AutoIt function"
+            );
+        }
+    }
+}

@@ -549,7 +549,9 @@ dependencies = [
 name = "autoitv3-unpack"
 version = "0.1.0"
 dependencies = [
+ "autoitv3-ast",
  "autoitv3-platform",
+ "autoitv3-runtime",
 ]
 
 [[package]]

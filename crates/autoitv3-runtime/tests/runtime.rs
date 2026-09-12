@@ -1041,3 +1041,83 @@ fn adlib_registration_stops_at_autoits_limit() {
     );
     assert_eq!(r.adlib_handlers().len(), 10);
 }
+
+// ---------------------------------------------------------------------------
+// ContinueCase
+// ---------------------------------------------------------------------------
+
+/// `Switch` fall-through: `ContinueCase` runs the *next* case's body without
+/// testing it, and a case that matches on its own is unaffected.
+#[test]
+fn continue_case_falls_through_in_a_switch() {
+    let src = r#"
+Func F($x)
+    Local $out = ""
+    Switch $x
+        Case 1
+            $out = $out & "one"
+            ContinueCase
+        Case 2
+            $out = $out & "two"
+        Case Else
+            $out = $out & "else"
+    EndSwitch
+    Return $out
+EndFunc
+"#;
+    assert_eq!(call(src, "F", vec![Value::Int(1)]).to_autoit_string(), "onetwo");
+    assert_eq!(call(src, "F", vec![Value::Int(2)]).to_autoit_string(), "two");
+    assert_eq!(call(src, "F", vec![Value::Int(9)]).to_autoit_string(), "else");
+}
+
+/// The same fall-through applies to `Select`, whose cases are truth tests
+/// rather than comparisons.
+#[test]
+fn continue_case_falls_through_in_a_select() {
+    let src = r#"
+Func F($x)
+    Local $out = ""
+    Select
+        Case $x = 1
+            $out = $out & "one"
+            ContinueCase
+        Case $x = 2
+            $out = $out & "two"
+        Case Else
+            $out = $out & "else"
+    EndSelect
+    Return $out
+EndFunc
+"#;
+    assert_eq!(call(src, "F", vec![Value::Int(1)]).to_autoit_string(), "onetwo");
+    assert_eq!(call(src, "F", vec![Value::Int(2)]).to_autoit_string(), "two");
+    assert_eq!(call(src, "F", vec![Value::Int(9)]).to_autoit_string(), "else");
+}
+
+/// Falling through from the last case just ends the block, as AutoIt
+/// documents — it does not run the whole thing again.
+#[test]
+fn continue_case_in_the_last_case_ends_the_block() {
+    let src = r#"
+Func F()
+    Local $out = ""
+    Switch 1
+        Case 1
+            $out = $out & "only"
+            ContinueCase
+    EndSwitch
+    $out = $out & "-after"
+    Return $out
+EndFunc
+"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "only-after");
+}
+
+/// A `ContinueCase` that never reaches a `Select`/`Switch` is a script bug;
+/// reporting it beats silently returning early.
+#[test]
+fn continue_case_outside_a_case_is_reported() {
+    let src = "Func F()\n    ContinueCase\nEndFunc\n";
+    let err = rt(src).call_function("F", vec![]).unwrap_err();
+    assert!(err.to_string().contains("case control"), "{err}");
+}

@@ -597,11 +597,11 @@ impl Runtime {
                     result = Ok(Value::Null);
                     break;
                 }
-                // A loop-control signal escaping a function is a script bug;
-                // stop unwinding and report it.
-                Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) => {
+                // A loop- or case-control signal escaping a function is a
+                // script bug; stop unwinding and report it.
+                Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) | Ok(Flow::ContinueCase) => {
                     result = Err(RuntimeError::Unsupported {
-                        what: format!("loop control outside loop in {display}"),
+                        what: format!("loop or case control outside its block in {display}"),
                         span,
                     });
                     break;
@@ -1138,27 +1138,19 @@ impl Runtime {
             }
             StmtKind::ExitLoop(e) => Ok(Flow::Break(loop_levels(self, e)?)),
             StmtKind::ContinueLoop(e) => Ok(Flow::Continue(loop_levels(self, e)?)),
+            // The innermost Select/Switch consumes this; a loop passes it on
+            // untouched, and a function boundary reports it as a mistake.
+            StmtKind::ContinueCase => Ok(Flow::ContinueCase),
             StmtKind::If(if_) => self.exec_if(if_),
             StmtKind::While(w) => self.exec_while(w),
             StmtKind::DoUntil(d) => self.exec_do_until(d),
             StmtKind::For(f) => self.exec_for(f),
-            StmtKind::Select(cases) => self.exec_cases(cases),
+            // `Select` tests each case for truth; `Switch` compares against a
+            // subject. Both share the fall-through, so both share the runner.
+            StmtKind::Select(cases) => self.exec_case_list(cases, None),
             StmtKind::Switch(sw) => {
                 let subject = self.eval_expr(&sw.expr)?;
-                for c in &sw.cases {
-                    let mut matched = false;
-                    for v in &c.values {
-                        let cv = self.eval_expr(v)?;
-                        if c.is_else || subject.eq_loose(&cv) {
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if matched || c.is_else {
-                        return self.exec_block(&c.body);
-                    }
-                }
-                Ok(Flow::Normal)
+                self.exec_case_list(&sw.cases, Some(&subject))
             }
             StmtKind::With(w) => {
                 self.eval_expr(&w.expr)?;
@@ -1502,19 +1494,48 @@ impl Runtime {
         Ok(Flow::Normal)
     }
 
-    fn exec_cases(&mut self, cases: &[CaseClause]) -> Result<Flow, RuntimeError> {
-        for c in cases {
-            if c.is_else {
-                return self.exec_block(&c.body);
+    /// Run the cases of a `Switch` (with `subject`) or `Select` (`None`).
+    ///
+    /// A body that ends in `ContinueCase` re-enters at the **next** case
+    /// without testing it — the fall-through AutoIt documents — so the search
+    /// for the first match happens once and the running loop only advances.
+    /// `ContinueCase` in the last case ends the block, as does running out.
+    fn exec_case_list(
+        &mut self,
+        cases: &[CaseClause],
+        subject: Option<&Value>,
+    ) -> Result<Flow, RuntimeError> {
+        let mut first = None;
+        'cases: for (index, case) in cases.iter().enumerate() {
+            if case.is_else {
+                first = Some(index);
+                break;
             }
-            for v in &c.values {
-                let cv = self.eval_expr(v)?;
-                if cv.is_truthy() {
-                    return self.exec_block(&c.body);
+            for value in &case.values {
+                let tested = self.eval_expr(value)?;
+                let matched = match subject {
+                    Some(subject) => subject.eq_loose(&tested),
+                    None => tested.is_truthy(),
+                };
+                if matched {
+                    first = Some(index);
+                    break 'cases;
                 }
             }
         }
-        Ok(Flow::Normal)
+        let Some(mut index) = first else {
+            return Ok(Flow::Normal);
+        };
+        loop {
+            let flow = self.exec_block(&cases[index].body)?;
+            if !matches!(flow, Flow::ContinueCase) {
+                return Ok(flow);
+            }
+            index += 1;
+            if index >= cases.len() {
+                return Ok(Flow::Normal);
+            }
+        }
     }
 
     /// Execute a list of statements, propagating the first non-`Normal` flow.

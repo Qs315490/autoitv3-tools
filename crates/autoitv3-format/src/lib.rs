@@ -225,6 +225,10 @@ impl PrettyPrinter {
                     self.print_expr(e);
                 }
             }
+            StmtKind::ContinueCase => {
+                self.pad();
+                let _ = write!(self.out, "ContinueCase");
+            }
             StmtKind::If(if_) => {
                 let is_single = if_.then_stmt.is_some()
                     && if_.then_block.is_empty()
@@ -456,6 +460,9 @@ impl PrettyPrinter {
                     let _ = write!(tmp.out, " ");
                     tmp.print_expr(e);
                 }
+            }
+            StmtKind::ContinueCase => {
+                let _ = write!(tmp.out, "ContinueCase");
             }
             _ => {
                 let _ = write!(tmp.out, "[inline-stmt]");
