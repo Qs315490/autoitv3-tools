@@ -29,6 +29,7 @@ use std::collections::{HashMap, HashSet};
 use autoitv3_ast::ast::*;
 use autoitv3_ast::span::Span;
 use autoitv3_runtime::profile::ExecutionProfile;
+use autoitv3_runtime::value::MapKey;
 use autoitv3_runtime::{Runtime, Value};
 
 /// What an [`evaluate`] run achieved.
@@ -530,7 +531,7 @@ impl SubstituteCtx<'_> {
                         LitKind::Bool(b) => Value::Bool(*b),
                         LitKind::Null | LitKind::Default => return None,
                     };
-                    m.borrow().get(&key_value.to_autoit_string()).cloned()?
+                    m.borrow().get(&MapKey::from_value(&key_value)).cloned()?
                 }
                 _ => return None,
             };

@@ -26,7 +26,7 @@ use crate::error::{Flow, RuntimeError};
 use crate::host::{Host, HostContext};
 use crate::platform::Platform;
 use crate::profile::ExecutionProfile;
-use crate::value::Value;
+use crate::value::{MapKey, Value};
 
 /// Default runaway-loop guard.
 pub const DEFAULT_MAX_STEPS: u64 = 5_000_000;
@@ -954,7 +954,7 @@ impl Runtime {
                     arr[i as usize].clone()
                 }
                 Value::Map(m) => {
-                    let k = key.to_autoit_string();
+                    let k = MapKey::from_value(&key);
                     m.borrow().get(&k).cloned().unwrap_or(Value::Null)
                 }
                 Value::Str(s) => {
@@ -1004,7 +1004,7 @@ impl Runtime {
                     arr[i as usize].clone()
                 }
                 Value::Map(m) => {
-                    let k = key.to_autoit_string();
+                    let k = MapKey::from_value(&key);
                     m.borrow().get(&k).cloned().unwrap_or(Value::Null)
                 }
                 other => {
@@ -1033,7 +1033,7 @@ impl Runtime {
                 Ok(())
             }
             Value::Map(m) => {
-                m.borrow_mut().insert(key.to_autoit_string(), value);
+                m.borrow_mut().insert(MapKey::from_value(&key), value);
                 Ok(())
             }
             other => Err(RuntimeError::Type {

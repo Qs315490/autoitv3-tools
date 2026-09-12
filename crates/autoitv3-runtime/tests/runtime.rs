@@ -398,6 +398,47 @@ EndFunc
 }
 
 #[test]
+fn map_integer_and_string_keys_are_distinct_entries() {
+    // Per the AutoIt docs: `$m[3]` and `$m["3"]` are separate keys, and
+    // string keys are case sensitive.
+    let src = r#"
+Func F()
+    Local $m[]
+    $m[3] = "Integer 3"
+    $m["3"] = "String 3"
+    $m["Key"] = "upper"
+    Return UBound($m) & ":" & $m[3] & ":" & $m["3"] & ":" & $m["Key"] & ":" & $m["key"] _
+        & ":" & MapExists($m, 3) & MapExists($m, "3") & MapExists($m, 4)
+EndFunc
+"#;
+    assert_eq!(
+        call(src, "F", vec![]).to_autoit_string(),
+        "3:Integer 3:String 3:upper::110"
+    );
+}
+
+#[test]
+fn mapremove_and_mapkeys_distinguish_key_kinds() {
+    let src = r#"
+Func F()
+    Local $m[]
+    $m[1] = "a"
+    $m["1"] = "s"
+    $m["B"] = "b"
+    MapRemove($m, 1)
+    Local $ks = MapKeys($m)
+    Return (UBound($ks) - 1) & ":" & $ks[1] & ":" & $ks[2] & ":" & $m[1] & ":" & $m["1"]
+EndFunc
+"#;
+    // MapRemove with the integer key spares the string key; MapKeys echoes
+    // the integer key back as an integer.
+    assert_eq!(
+        call(src, "F", vec![]).to_autoit_string(),
+        "2:1:B::s"
+    );
+}
+
+#[test]
 fn execute_runs_generated_source() {
     let src = r#"
 Func F()

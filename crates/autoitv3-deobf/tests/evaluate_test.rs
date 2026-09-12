@@ -296,6 +296,12 @@ fn without_the_emulation_layer_the_version_query_is_the_boundary() {
         ExecutionProfile::deterministic(),
         platform,
     );
+    if cfg!(windows) {
+        // The native Windows layer answers the DllStruct*/DllCall family even
+        // with the emulation disabled, so the query completes.
+        assert!(report.completed, "stopped at: {:?}", report.stopped);
+        return;
+    }
     assert!(!report.completed);
     let stopped = report.stopped.expect("a reason");
     assert!(stopped.contains("undefined function"), "got: {stopped}");
