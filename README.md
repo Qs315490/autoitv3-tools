@@ -843,8 +843,10 @@ cargo test -p autoitv3-platform --features gui-egui # 平台接线（脚本建�
 
 #### 实时窗口（feature `window`）
 
-`LiveBackend` 是交互版后端：eframe 在**独立线程**跑真窗口，解释器仍同步调用
-`GuiBackend`。两边靠一个模型镜像 + 两个通道通信：
+`LiveBackend` 是交互版后端。winit 要求事件循环必须在**主线程**上创建（放到别的线程上会
+直接 panic："Initializing the event loop outside of the main thread is a significant
+cross-platform compatibility hazard"），所以 `LiveBackend::run` **占用主线程**跑 eframe，
+把解释器放到工作线程——两边靠一个模型镜像 + 两个通道通信：
 
 - **脚本 → 窗口**：`on_window`/`on_control` 更新镜像，窗口每帧读取；
 - **窗口 → 脚本**：点击/菜单/列表选择进入 `poll()`（`GUIGetMsg` 消费），输入框/复选框/
@@ -852,13 +854,17 @@ cargo test -p autoitv3-platform --features gui-egui # 平台接线（脚本建�
   于是 `GUICtrlRead` 能读到用户刚输入/选中的内容。
 
 窗口画什么、怎么交互都由 `widgets.rs` 决定，和离屏渲染完全一致；`LiveBackend::simulate`
-可以脱离窗口喂一条交互，便于测试。
+可以脱离窗口喂一条交互，便于测试。脚本线程结束时窗口会自己关闭，因此 `run()` 一定返回，
+不会留下一个没人更新的空窗口。
 
 示例（需要显示服务器）：
 
 ```bash
 cargo run -p autoitv3-gui-egui --features window --example live
 # 窗口里：Label + Input + Button；点 Greet 打印 "Hello, <输入>!"，关窗结束脚本
+
+cargo run -p autoitv3-gui-egui --features window --example live -- --auto
+# 不用人操作：脚本建完控件就返回，窗口自动关闭（验证接线用）
 ```
 
 ```rust
@@ -866,8 +872,10 @@ use autoitv3_gui_egui::LiveBackend;
 use autoitv3_platform::winemu::WindowsEmulation;
 
 let backend = LiveBackend::new("AutoIt GUI PoC");
-let _emu = WindowsEmulation::new().with_gui_backend(Box::new(backend));
-// 脚本里 GUISetState() 会触发 present() → 打开真窗口
+backend.run(move |backend| {                    // 主线程；阻塞到窗口关闭
+    let emu = WindowsEmulation::new().with_gui_backend(Box::new(backend));
+    // … 在 emu 上跑脚本；GUISetState() 之后窗口出现
+})?;
 ```
 
 **已知近似**（不是 bug，是模型里没有的信息）：控件按创建顺序纵向排列而不是按脚本的
