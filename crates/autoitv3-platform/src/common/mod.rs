@@ -21,7 +21,11 @@
 //!   `Log`, `Exp`, `Floor`, `Ceiling`, `Random`, `RandomSeed`
 //! * **timing** — `TimerInit`, `TimerDiff`
 //! * **console** — `ConsoleWrite`, `ConsoleWriteError`, `ConsoleRead`
-//! * **processes** — the `Run`/`StdoutRead` family in [`proc`]
+//! * **processes** — the `Run`/`StdoutRead` family in [`proc`]. The common
+//!   layer is the *unified interface* for the family; the per-OS observation
+//!   points are implemented in the system modules
+//!   ([`crate::linux::proc_support`], [`crate::windows::process`]) and called
+//!   from here behind three per-host hooks
 //! * **network** — `Inet*`/`TCP*`/`UDP*`/`Ping` in [`net`]
 //!
 //! The process and network services are delegated to the [`proc`] and [`net`]

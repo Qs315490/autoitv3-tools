@@ -58,7 +58,8 @@ autoitv3-tools/
         common/       通用层：文件/目录 I/O、INI、环境变量、数学、计时器、控制台
                       + 进程执行与网络 —— Linux 与 Windows 都安装
           mod.rs        CommonPlatform：直接分发 + 委托给下面两个服务
-          proc.rs       Run/RunWait/ProcessWait*/StdoutRead…（std::process）
+          proc.rs       Run 家族统一接口（std::process 机制）；平台差异的探测点
+                        （进程表/存活/内存）在各系统模块实现，这里按平台调用
           net.rs        Inet*/TCP*/UDP*/Ping/代理设置（std::net）
         linux/        系统层（Linux）：/proc 进程查询、OS 标识宏
           mod.rs
@@ -722,7 +723,12 @@ AutoIt v3 的语法覆盖由 `crates/autoitv3-ast/tests/syntax_coverage.rs` 固�
 ### 通用层的进程与网络（`common/proc.rs` + `common/net.rs`）
 
 `CommonPlatform` 除了直接分发上面的文件/环境/数学函数，还把进程与网络委托给
-`common/proc.rs`、`common/net.rs` 两个子服务，因此它们是**同一个通用层**的一部分：
+`common/proc.rs`、`common/net.rs` 两个子服务，因此它们是**同一个通用层**的一部分。
+其中 `proc.rs` 的语义是**统一接口**：`Run` 家族的接口与 `std::process` 机制在
+common 定义；平台差异（进程表、存活探测、内存）在各平台模块实现——Linux 在
+`linux/proc_support.rs` 走 `/proc`，Windows 在 `windows/process.rs` 走
+Toolhelp/`K32GetProcessMemoryInfo`——由 common 的三个按平台分派的钩子调用。
+新增宿主只需在其系统模块实现这三个钩子，不动家族接口：
 
 | 类别 | 函数 | 说明 |
 | ---- | ---- | ---- |
