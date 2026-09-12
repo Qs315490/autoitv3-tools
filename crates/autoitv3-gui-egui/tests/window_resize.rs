@@ -9,7 +9,8 @@
 
 use autoitv3_gui::{Control, ControlKind, Window};
 use autoitv3_gui_egui::{
-    record_drawn, show_autoit_window, window_area_id, LastWindow, MinimizeStyle, WindowGeometry,
+    rasterize, record_drawn, show_autoit_window, window_area_id, LastWindow, MinimizeStyle,
+    Texture, WindowGeometry,
 };
 use egui::{vec2, Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 
@@ -453,7 +454,8 @@ fn click_at(harness: &mut Harness, pos: Pos2) -> Option<autoitv3_gui::WindowStat
     harness.requested
 }
 
-/// The two window controls, (minimise, maximise), as `DrawnWindow` laid them out.
+/// The two window controls, (minimise, maximise), as `DrawnWindow` laid them out:
+/// square glyphs with the maximiser on the right.
 ///
 /// They only appear from the second frame: egui reports a widget's response on
 /// the frame after it was created.
@@ -462,10 +464,7 @@ fn window_controls(harness: &Harness) -> (Pos2, Pos2) {
     let side = rect.height();
     let maximise =
         Rect::from_min_size(Pos2::new(rect.right() - side, rect.top()), vec2(side, side));
-    let minimise = Rect::from_min_size(
-        Pos2::new(rect.right() - 2.0 * side, rect.top()),
-        vec2(side, side),
-    );
+    let minimise = Rect::from_min_size(Pos2::new(rect.left(), rect.top()), vec2(side, side));
     (minimise.center(), maximise.center())
 }
 
@@ -546,5 +545,110 @@ fn a_maximised_window_does_not_oscillate() {
             harness.reported
         );
         let _ = client;
+    }
+}
+
+/// One frame's pixels, for checking what the title bar actually looks like.
+#[allow(irrefutable_let_patterns)] // `ImageData` has one variant today; the loop mirrors `EguiBackend`
+fn rasterize_frame(harness: &mut Harness, events: Vec<Event>) -> (Vec<u8>, u32, u32) {
+    let (width, height) = (900u32, 700u32);
+    let last = harness.last;
+    let minimize = harness.minimize;
+    harness.time += 0.05;
+    let mut drawn = autoitv3_gui_egui::DrawnWindow::default();
+    let mut output = harness.ctx.run_ui(raw(harness.time, events), |ui| {
+        let mut open = true;
+        let mut actions = Vec::new();
+        drawn = show_autoit_window(
+            ui.ctx(),
+            &harness.window,
+            &controls(),
+            &mut open,
+            last,
+            minimize,
+            &mut actions,
+        );
+    });
+    harness.requested = drawn.state_request;
+    harness.controls = drawn.controls;
+    let geometry = WindowGeometry::of(&harness.window);
+    let (next, _) = record_drawn(&harness.window, geometry, last, drawn);
+    harness.last = next;
+
+    // What EguiBackend does to turn shapes into pixels.
+    let pixels_per_point = output.pixels_per_point;
+    let mut textures = std::collections::HashMap::new();
+    for (id, deltas) in &output.textures_delta.set {
+        for delta in deltas {
+            if delta.pos.is_some() {
+                continue;
+            }
+            if let egui::ImageData::Color(image) = &delta.image {
+                textures.insert(
+                    *id,
+                    Texture {
+                        width: image.size[0],
+                        height: image.size[1],
+                        pixels: image.pixels.clone(),
+                    },
+                );
+            }
+        }
+    }
+    output.textures_delta.clear();
+    let primitives = harness.ctx.tessellate(output.shapes, pixels_per_point);
+    let image = rasterize(&primitives, &textures, width, height, pixels_per_point);
+    (image.rgba, image.width, image.height)
+}
+
+/// How many pixels of `rect` differ from the title bar behind it.
+///
+/// The reference colour is taken from just *above* the glyph: sampling inside
+/// it would call a filled box "background" and see no ink at all.
+fn ink_in(image: &[u8], width: u32, rect: Rect) -> (usize, usize) {
+    let pixel = |x: i32, y: i32| {
+        let i = ((y as u32 * width + x as u32) * 4) as usize;
+        [image[i], image[i + 1], image[i + 2], image[i + 3]]
+    };
+    let corner = pixel(rect.center().x as i32, rect.top() as i32 - 4);
+    let mut ink = 0;
+    let mut total = 0;
+    for y in rect.top() as i32..rect.bottom() as i32 {
+        for x in rect.left() as i32..rect.right() as i32 {
+            let here = pixel(x, y);
+            total += 1;
+            let far = here
+                .iter()
+                .zip(corner.iter())
+                .any(|(a, b)| a.abs_diff(*b) > 12);
+            if far {
+                ink += 1;
+            }
+        }
+    }
+    (ink, total)
+}
+
+#[test]
+fn the_window_controls_are_line_art_like_the_close_button() {
+    // egui's own close button is a stroked cross with no background; ours have
+    // to look like it, not like little filled boxes.
+    let mut harness = Harness::new();
+    let _ = rasterize_frame(&mut harness, vec![]);
+    let (image, width, _) = rasterize_frame(&mut harness, vec![]);
+    let (minimise, maximise) = window_controls(&harness);
+    let side = harness.controls.expect("controls drawn").height();
+    let square = |centre: Pos2| Rect::from_center_size(centre, vec2(side, side));
+
+    for (name, centre) in [("minimise", minimise), ("maximise", maximise)] {
+        let (ink, total) = ink_in(&image, width, square(centre));
+        assert!(ink > 0, "the {name} glyph painted nothing");
+        // Line art lands around 4-10% of the square; a filled button box was
+        // measured at 33%, so a quarter is the line between the two.
+        assert!(
+            ink * 4 < total,
+            "the {name} glyph covers {ink}/{total} pixels: it should be line art, \
+             not a filled box"
+        );
     }
 }
