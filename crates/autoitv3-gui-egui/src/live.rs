@@ -538,7 +538,9 @@ impl eframe::App for LiveApp {
             // A state the user asked for — or a window they are dragging right
             // now — makes the frame's geometry theirs to report, even though
             // the model has not caught up (a drag's echo is not a script move).
-            let user_state = requested_states.contains_key(&window.handle) || drawn.pointer_owns;
+            let user_state = requested_states.contains_key(&window.handle)
+                || drawn.pointer_owns
+                || drawn.title_drag;
             let geometry = WindowGeometry::of(&effective);
             let (next, updates) = record_drawn(&effective, geometry, last, drawn, user_state);
             if !updates.is_empty() {

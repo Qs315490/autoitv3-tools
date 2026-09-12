@@ -20,7 +20,7 @@
 use autoitv3_gui::{Control, ControlKind, DrawCmd, GuiUpdate, Window, WindowState};
 use egui::{
     vec2, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, StrokeKind,
-    TextStyle,
+    TextStyle, Vec2,
 };
 
 /// What the user did to a control while it was drawn.
@@ -153,6 +153,10 @@ pub struct DrawnWindow {
     /// the user's: the caller must report a change as theirs even when the
     /// model looks like it moved (the model is only echoing the last report).
     pub pointer_owns: bool,
+    /// The pointer is dragging this window's title bar *for us*: it grabbed a
+    /// maximised window and the window is being carried by the drag (see
+    /// `show_autoit_window`).
+    pub title_drag: bool,
 }
 
 /// What the previous frame drew for one window; the caller keeps one per handle.
@@ -174,6 +178,10 @@ pub struct LastWindow {
     /// is released — a fast drag can leave the pointer outside the rectangle
     /// the last frame drew, and the drag must not change hands mid-way.
     pub pointer_owns: bool,
+    /// The title-bar drag that took this window out of a maximised state is
+    /// still going: it belongs to us until the pointer is released, because
+    /// after the restore the grab point is no longer over the window at all.
+    pub title_drag: bool,
 }
 
 /// The egui area id of an AutoIt window. Titles are not unique (two windows may
@@ -278,9 +286,67 @@ pub fn show_autoit_window(
                         .expand(4.0)
                         .contains(pointer)
                 }));
+    let area_id = window_area_id(window.handle);
+
+    // Is the pointer dragging this window by its *title bar*? The pointer's own
+    // state says so (a click or a double-click does not move it), and the grab
+    // point has to be in the title-bar band of the window we drew last. egui's
+    // `Response` for the title is only registered inside `Window::show`, so
+    // asking for it here would be a frame late.
+    let title_grab = ctx
+        .input(|input| {
+            let press = input.pointer.press_origin()?;
+            let pointer = input.pointer.interact_pos()?;
+            (input.pointer.is_decidedly_dragging() && input.pointer.any_down())
+                .then_some((press, pointer))
+        })
+        .filter(|(press, _)| {
+            last.pos.zip(last.client).is_some_and(|(pos, client)| {
+                let outer = Rect::from_min_size(pos, client + chrome);
+                let title_bar =
+                    Rect::from_min_max(outer.min, egui::pos2(outer.max.x, outer.min.y + chrome.y));
+                title_bar.contains(*press)
+            })
+        });
+
+    // Windows restores a maximised window as soon as its title bar is dragged:
+    // it takes the size the script will restore it to, and puts the window where
+    // the pointer keeps the relative spot it grabbed.
+    //
+    // The drag then belongs to us (`title_drag`) until the pointer is released:
+    // after the restore the grab point is not over the window any more, and egui
+    // cannot carry a window that is still as big as the viewport (it clamps it
+    // back into the corner), so we place it ourselves — under the pointer, at
+    // the relative spot it grabbed.
+    let restoring_by_title_bar = title_grab.is_some_and(|_| {
+        last.geometry
+            .is_some_and(|previous| previous.state == WindowState::Maximized)
+            || geometry.state == WindowState::Maximized
+    });
+    let title_drag = (restoring_by_title_bar || last.title_drag) && dragging;
+    let title_place = (title_drag || restoring_by_title_bar)
+        .then(|| {
+            ctx.input(|input| Some((input.pointer.press_origin()?, input.pointer.interact_pos()?)))
+        })
+        .flatten()
+        .map(|(press, pointer)| {
+            let screen = ctx.content_rect();
+            // The size the window is restored to: the model's once it has it,
+            // the rectangle stored for the restore until then.
+            let (width, height) = window
+                .restore
+                .map(|(_, _, width, height)| (width as f32, height as f32))
+                .unwrap_or((wanted.x, wanted.y));
+            let size = vec2(width, height);
+            let grabbed =
+                ((press - screen.min) / screen.size()).clamp(Vec2::ZERO, Vec2::splat(1.0));
+            (size, pointer - grabbed * (size + chrome))
+        });
 
     // How big the client area should be this frame, and where the window goes.
-    let (decided, pos) = if minimized {
+    let (decided, pos) = if let Some((size, place)) = title_place {
+        (size, Some(place))
+    } else if minimized {
         // Title-bar style: keep the window where it is, with no body.
         (vec2(wanted.x, 0.0), None)
     } else if geometry.state == WindowState::Maximized {
@@ -315,7 +381,6 @@ pub fn show_autoit_window(
         // `GUICreate`.
         (last.client.unwrap_or(wanted), None)
     };
-    let area_id = window_area_id(window.handle);
     // Where the window controls end up; a click there is theirs, not the title
     // bar's (which would read it as a double-click).
     let mut controls_rect = None;
@@ -325,8 +390,26 @@ pub fn show_autoit_window(
     // that, so without this a window that was maximised once keeps the width
     // even after the script restores it. It is in *outer* coordinates, hence
     // adding the chrome we measured.
-    let max_size = if dragging {
-        egui::Vec2::splat(f32::INFINITY)
+    if let Some((_, anchor)) = title_place {
+        // egui recomputes a dragged window's place as "where the drag started,
+        // plus everything it has dragged since" (`Area` keeps that start in its
+        // own temp data), so re-positioning the window now would be undone on
+        // the next frame. Move the drag's start instead — to where the window
+        // belongs now, minus the drag so far — and the drag carries on from the
+        // restored title bar.
+        let dragged = ctx
+            .input(|input| input.pointer.total_drag_delta())
+            .unwrap_or_default();
+        ctx.data_mut(|data| {
+            data.insert_temp(area_id.with("pivot_at_drag_start"), anchor - dragged);
+        });
+    }
+
+    // While the pointer is down the drag decides the size; a title-bar drag that
+    // took a maximised window is the exception — that size comes from the model.
+    let drag_decides_size = dragging && title_place.is_none();
+    let max_size = if drag_decides_size {
+        Vec2::splat(f32::INFINITY)
     } else {
         decided + chrome
     };
@@ -348,6 +431,12 @@ pub fn show_autoit_window(
         // `Anywhere` on this one frame lets the new position win; the next
         // frame goes back to title-bar dragging, from the new spot.
         frame = frame.current_pos(pos).drag_area(egui::WindowDrag::Anywhere);
+        if title_place.is_some() {
+            // A window still as big as the viewport cannot be moved at all —
+            // egui clamps it back into the corner — and the place is ours for
+            // the whole drag anyway.
+            frame = frame.constrain(false);
+        }
     }
     frame.open(open).show(ctx, |ui| {
         // Pin the content to the intended client size in *both* directions: the
@@ -355,7 +444,7 @@ pub fn show_autoit_window(
         // content from stretching the window — AutoIt clips what does not fit,
         // it does not grow the window. While the pointer is down the drag is in
         // charge instead, which is what lets the user shrink the window.
-        let target = if dragging {
+        let target = if drag_decides_size {
             ui.available_size()
         } else {
             decided
@@ -501,6 +590,7 @@ pub fn show_autoit_window(
         controls: controls_rect,
         pos,
         pointer_owns: pointer_owns_geometry,
+        title_drag,
         // Outer minus what we drew: exact, whatever the window's state.
         chrome: drawn
             .and_then(|client| {
@@ -547,6 +637,15 @@ pub fn effective_window(window: &Window, requested: Option<(WindowState, u8)>) -
 pub fn fold_user_update(window: &mut Window, update: &GuiUpdate) {
     match *update {
         GuiUpdate::Move { handle, x, y } if handle == window.handle => {
+            // The user took the window somewhere the pending restore would not
+            // have put it: the rectangle it came from is history, or the frame
+            // after the pointer lets go would pull the window back there.
+            if window
+                .restore
+                .is_some_and(|(rx, ry, ..)| (x, y) != (rx, ry))
+            {
+                window.restore = None;
+            }
             window.x = x;
             window.y = y;
         }
@@ -587,6 +686,7 @@ pub fn record_drawn(
         chrome,
         pos: drawn.pos,
         pointer_owns: drawn.pointer_owns,
+        title_drag: drawn.title_drag,
     };
     let Some(client) = drawn.client else {
         // Nothing was drawn: keep the size for when the window comes back.
@@ -597,7 +697,9 @@ pub fn record_drawn(
     // sized by its state and the desktop rather than by the pointer.
     //
     let script_moved = last.geometry != Some(geometry);
-    let user_dragged = geometry.state == WindowState::Normal
+    // A window we are carrying ourselves (`title_drag`) is the user's even when
+    // the model still calls it maximised: the drag has already restored it.
+    let user_dragged = (geometry.state == WindowState::Normal || drawn.title_drag)
         && (user_state || !script_moved)
         && last.client.is_some();
     let mut updates = Vec::new();
