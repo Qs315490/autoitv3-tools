@@ -340,6 +340,7 @@ fn the_default_registry_is_a_file_whose_writes_persist() {
     let body = r#"RegWrite("HKCU\Software\Persist", "Value", 1, "kept")
     Return RegRead("HKCU\Software\Persist", "Value")"#;
     assert_eq!(text(emu, body), "kept");
+    // `text()` consumes the emulation, whose drop flushes the store to disk.
     assert!(file.exists(), "a write should have created the registry file");
     let stored = std::fs::read_to_string(&file).unwrap();
     assert!(stored.starts_with("# au3-registry v1"), "{stored}");
@@ -440,6 +441,8 @@ fn a_registry_file_round_trips_every_value_type() {
     // A key with no values has to survive a round trip too.
     store.write(r"HKCU\Software\EmptyKey", "", RegistryData::Sz(String::new()));
 
+    // Writes batch in memory; flush (or drop) puts them on disk.
+    store.flush();
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains(&format!("REG_EXPAND_SZ\t{}", r"%TEMP%\\x")), "{text}");
     assert!(text.contains("REG_DWORD\t4294967295"), "{text}");

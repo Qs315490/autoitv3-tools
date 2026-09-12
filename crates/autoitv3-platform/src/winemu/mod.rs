@@ -90,7 +90,7 @@ pub use crate::winfmt::WindowsArch;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use autoitv3_runtime::error::RuntimeError;
 use autoitv3_runtime::host::HostContext;
@@ -396,6 +396,10 @@ pub struct WindowsEmulation {
     registry_kind: RegistryKind,
     /// Clipboard backing file; a relative path is resolved at call time.
     clipboard: PathBuf,
+    /// Cached clipboard state so `ClipGet` polls do not re-read the file (and
+    /// re-run `current_dir`) every call: resolved path, its mtime at last
+    /// read, and the text.
+    clipboard_cache: std::cell::RefCell<Option<(PathBuf, Option<SystemTime>, String)>>,
     drives: Vec<DriveSpec>,
     /// Allocated `DllStruct`s, addressed by 1-based handle.
     structs: Vec<Option<DllStruct>>,
@@ -467,6 +471,7 @@ impl WindowsEmulation {
             registry,
             registry_kind: RegistryKind::File(registry_path),
             clipboard: PathBuf::from(DEFAULT_CLIPBOARD_FILE),
+            clipboard_cache: std::cell::RefCell::new(None),
             drives: vec![DriveSpec::default()],
             structs: Vec::new(),
             module: None,
@@ -1480,9 +1485,23 @@ impl WindowsEmulation {
     }
 
     fn clip_get(&self, ctx: &mut dyn HostContext) -> Value {
+        // Cache by (path, mtime): a script polling ClipGet in a loop must not
+        // pay a file read plus a `current_dir` syscall per iteration, while an
+        // external edit of the backing file is still picked up.
         let path = self.clipboard_path();
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        {
+            let cache = self.clipboard_cache.borrow();
+            if let Some((cp, cm, ctext)) = cache.as_ref() {
+                if cp == &path && cm == &mtime {
+                    ctx.set_error(0, 0);
+                    return Value::Str(ctext.clone());
+                }
+            }
+        }
         match std::fs::read_to_string(&path) {
             Ok(text) => {
+                *self.clipboard_cache.borrow_mut() = Some((path, mtime, text.clone()));
                 ctx.set_error(0, 0);
                 Value::Str(text)
             }
@@ -1499,7 +1518,15 @@ impl WindowsEmulation {
             return Value::Int(0);
         }
         let text = arg_str(args, 0);
-        let ok = std::fs::write(self.clipboard_path(), text).is_ok();
+        let path = self.clipboard_path();
+        let ok = std::fs::write(&path, text.clone()).is_ok();
+        if ok {
+            // Write through: the cache matches what is on disk.
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            *self.clipboard_cache.borrow_mut() = Some((path, mtime, text));
+        } else {
+            self.clipboard_cache.borrow_mut().take();
+        }
         ctx.set_error(if ok { 0 } else { 1 }, 0);
         Value::Int(i64::from(ok))
     }

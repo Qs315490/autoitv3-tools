@@ -307,9 +307,11 @@ impl RegistryStore for MemoryRegistry {
 /// A [`RegistryStore`] whose state lives in a text file.
 ///
 /// This is the default backing store. Reads are served from the in-memory copy
-/// loaded at construction; every write is flushed back to the file, so a
-/// script's `RegWrite` / `RegDelete` outlives the run and the emulated registry
-/// can be inspected, edited, diffed or committed.
+/// loaded at construction; writes batch in memory and the file is written once
+/// when the store is dropped (or on [`FileRegistry::flush`]), so a script's
+/// `RegWrite` / `RegDelete` outlives the run and the emulated registry can be
+/// inspected, edited, diffed or committed — without a full serialisation per
+/// `RegWrite`.
 ///
 /// The file holds **records, not a dump of the seed**: the per-version seed is
 /// laid down first and the file's records are overlaid on top, so dropping a
@@ -353,6 +355,10 @@ pub struct FileRegistry {
     /// [`WindowsVersion`] later re-seeds every key the file does not mention.
     stored: MemoryRegistry,
     path: PathBuf,
+    /// Mutations since the last save. Writes are batched in memory and flushed
+    /// once — on drop or [`FileRegistry::flush`] — instead of serialising the
+    /// whole file per `RegWrite`.
+    dirty: std::cell::Cell<bool>,
 }
 
 impl FileRegistry {
@@ -362,6 +368,7 @@ impl FileRegistry {
             inner: MemoryRegistry::new(),
             stored: MemoryRegistry::new(),
             path: path.into(),
+            dirty: std::cell::Cell::new(false),
         }
     }
 
@@ -376,6 +383,7 @@ impl FileRegistry {
             inner: MemoryRegistry::seeded(version, arch, paths),
             stored: MemoryRegistry::new(),
             path: path.into(),
+            dirty: std::cell::Cell::new(false),
         };
         // A malformed/unreadable file must not take the emulation down; the
         // seed alone is still a usable registry.
@@ -478,17 +486,37 @@ impl FileRegistry {
     ///
     /// `recorded` says whether the *file's* records changed: deleting a value
     /// that only ever came from the per-version seed touches nothing on disk,
-    /// so no file is created for it. Returns whether the caller's mutation
-    /// stands — `false` when it did not happen, or when the record could not be
-    /// written (which the `Reg*` functions surface as `@error = 1`).
+    /// so no file is created for it. The file itself is written on the next
+    /// [`FileRegistry::flush`] (or on drop), so a script that writes 500
+    /// values serialises the store once, not 500 times. Returns whether the
+    /// caller's mutation stands — `false` when it did not happen.
     fn persisted(&mut self, changed: bool, recorded: bool) -> bool {
         if !changed {
             return false;
         }
         if recorded {
-            return self.save().is_ok();
+            self.dirty.set(true);
         }
         true
+    }
+
+    /// Write the store out now if anything changed since the last flush.
+    ///
+    /// Called automatically on drop; the return mirrors [`Self::save`].
+    pub fn flush(&self) -> io::Result<()> {
+        if !self.dirty.get() {
+            return Ok(());
+        }
+        self.dirty.set(false);
+        self.save()
+    }
+}
+
+impl Drop for FileRegistry {
+    fn drop(&mut self) {
+        // A failed final flush is surfaced nowhere at this point — the
+        // per-write path already validated the directory exists.
+        let _ = self.flush();
     }
 }
 
