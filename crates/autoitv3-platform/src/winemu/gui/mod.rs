@@ -38,7 +38,7 @@ use std::collections::VecDeque;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::value::Value;
 
-use autoitv3_gui::{GUI_DISABLE, GUI_HIDE, WIN_ENABLED, WIN_MAXIMIZED, WIN_MINIMIZED, WIN_VISIBLE};
+use autoitv3_gui::{GUI_DISABLE, GUI_HIDE};
 
 /// Every GUI function this layer answers.
 pub const FUNCTIONS: &[&str] = &[
@@ -313,22 +313,10 @@ impl GuiState {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 };
+                let (visible, window_state) = show_flag(state);
                 if let Some(window) = self.model.window_mut(handle) {
-                    match state {
-                        0 => window.visible = false,
-                        6 => {
-                            window.visible = true;
-                            window.state = WindowState::Minimized;
-                        }
-                        3 => {
-                            window.visible = true;
-                            window.state = WindowState::Maximized;
-                        }
-                        _ => {
-                            window.visible = true;
-                            window.state = WindowState::Normal;
-                        }
-                    }
+                    window.visible = visible;
+                    window.state = window_state;
                 }
                 self.notify_window(handle);
                 self.backend.present();
@@ -709,25 +697,29 @@ impl GuiState {
                 }
             }
             "winmove" => {
+                // `WinMove("title", "text", x, y [, width [, height]])`. A
+                // missing argument, or `-1`, leaves that part of the geometry
+                // alone — the text argument is why the coordinates start at 2.
                 if let Some(handle) = self.window_arg(args, 0) {
-                    let (x, y, w, h) = (
-                        arg_int(args, 1) as i32,
-                        arg_int(args, 2) as i32,
-                        arg_int(args, 3) as i32,
-                        arg_int(args, 4) as i32,
-                    );
+                    let coordinate = |i: usize| match args.get(i) {
+                        Some(value) => match value.to_int() {
+                            -1 => None,
+                            number => Some(number),
+                        },
+                        None => None,
+                    };
                     if let Some(window) = self.model.window_mut(handle) {
-                        if arg_int(args, 1) != -1 {
-                            window.x = x;
+                        if let Some(x) = coordinate(2) {
+                            window.x = x as i32;
                         }
-                        if arg_int(args, 2) != -1 {
-                            window.y = y;
+                        if let Some(y) = coordinate(3) {
+                            window.y = y as i32;
                         }
-                        if arg_int(args, 3) != -1 {
-                            window.width = w;
+                        if let Some(width) = coordinate(4) {
+                            window.width = width as i32;
                         }
-                        if arg_int(args, 4) != -1 {
-                            window.height = h;
+                        if let Some(height) = coordinate(5) {
+                            window.height = height as i32;
                         }
                     }
                     self.notify_window(handle);
@@ -774,26 +766,26 @@ impl GuiState {
                 }
             }
             "winsetstate" => {
-                let state = arg_int(args, 2);
-                if let Some(handle) = self.window_arg(args, 0) {
-                    if let Some(window) = self.model.window_mut(handle) {
-                        if state & WIN_VISIBLE != 0 {
-                            window.visible = true;
+                // `WinSetState` takes a `@SW_*` flag; the `WIN_*` bits belong to
+                // `WinGetState`, which keeps reporting those.
+                let flag = arg_int(args, 2);
+                match self.window_arg(args, 0) {
+                    Some(handle) => {
+                        let (visible, state) = show_flag(flag);
+                        if let Some(window) = self.model.window_mut(handle) {
+                            window.visible = visible;
+                            window.state = state;
                         }
-                        if state & 0x10 == 0 && state & GUI_HIDE != 0 {
-                            window.visible = false;
-                        }
-                        window.enabled = state & WIN_ENABLED != 0 || state & GUI_DISABLE == 0;
-                        if state & WIN_MINIMIZED != 0 {
-                            window.state = WindowState::Minimized;
-                        }
-                        if state & WIN_MAXIMIZED != 0 {
-                            window.state = WindowState::Maximized;
-                        }
+                        self.notify_window(handle);
+                        self.backend.present();
+                        ctx.set_error(0, 0);
+                        Value::Int(1)
                     }
-                    self.notify_window(handle);
+                    None => {
+                        ctx.set_error(1, 0);
+                        Value::Int(0)
+                    }
                 }
-                Value::Int(1)
             }
             "winsettitle" => {
                 if let Some(handle) = self.window_arg(args, 0) {
@@ -1389,6 +1381,27 @@ impl GuiState {
         let text = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
         let id = self.model.find_control(window, &text)?;
         self.model.control(id)
+    }
+}
+
+/// How a `@SW_*` show flag maps onto the model: whether the window is visible
+/// and in which state.
+///
+/// `GUISetState` and `WinSetState` both take these flags. The values are the
+/// Win32 `SW_*` ones, which is what AutoIt's `@SW_*` macros expand to — note
+/// that they are *not* the `WinGetState` bit flags (`WIN_MINIMIZED` is 16, but
+/// `@SW_MINIMIZE` is 6).
+fn show_flag(flag: i64) -> (bool, WindowState) {
+    match flag {
+        // @SW_HIDE
+        0 => (false, WindowState::Normal),
+        // @SW_SHOWMAXIMIZED
+        3 => (true, WindowState::Maximized),
+        // @SW_SHOWMINIMIZED / @SW_MINIMIZE / @SW_SHOWMINNOACTIVE / @SW_FORCEMINIMIZE
+        2 | 6 | 7 | 11 => (true, WindowState::Minimized),
+        // @SW_SHOWNORMAL and the other "just show it" flags (@SW_SHOW,
+        // @SW_SHOWNOACTIVATE, @SW_SHOWNA, @SW_SHOWDEFAULT, @SW_RESTORE, ...).
+        _ => (true, WindowState::Normal),
     }
 }
 

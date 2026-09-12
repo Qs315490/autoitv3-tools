@@ -46,7 +46,7 @@ use std::time::Duration;
 
 use autoitv3_gui::{Control, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window};
 
-use crate::widgets::{show_autoit_window, Action, Interaction};
+use crate::widgets::{show_autoit_window, Action, Interaction, LastWindow, WindowGeometry};
 
 /// The model copy the GUI thread reads.
 #[derive(Default)]
@@ -128,7 +128,7 @@ impl LiveBackend {
             shared: self.shared.clone(),
             closed: std::collections::HashSet::new(),
             pending: Pending::new(),
-            clients: HashMap::new(),
+            seen: HashMap::new(),
             ever_had_window: false,
             empty_frames: 0,
         };
@@ -281,9 +281,8 @@ struct LiveApp {
     closed: std::collections::HashSet<i64>,
     /// In-flight text edits; see [`Pending`].
     pending: Pending,
-    /// Client size last drawn per window handle. Only the user can resize an
-    /// egui window, so a change here is a drag the script should hear about.
-    clients: HashMap<i64, egui::Vec2>,
+    /// What we last drew for each window handle; see [`LastWindow`].
+    seen: HashMap<i64, LastWindow>,
     /// Set once the mirror has held a visible window, so a slow script is not
     /// mistaken for a finished one.
     ever_had_window: bool,
@@ -300,8 +299,7 @@ impl eframe::App for LiveApp {
             (mirror.windows.clone(), mirror.controls.clone())
         };
         self.closed.retain(|handle| windows.contains_key(handle));
-        self.clients
-            .retain(|handle, _| windows.contains_key(handle));
+        self.seen.retain(|handle, _| windows.contains_key(handle));
         expire_pending(&mut self.pending, &controls);
 
         if windows.values().any(|window| window.visible) {
@@ -319,14 +317,20 @@ impl eframe::App for LiveApp {
         }
 
         // Disjoint field borrows: the widget layer draws with `shared`, the
-        // overlay edits live in `pending`, and resizes are tracked in `clients`.
+        // overlay edits live in `pending`, and geometry is in `seen`.
         let shared = &self.shared;
         let pending = &mut self.pending;
-        let clients = &mut self.clients;
+        let seen_windows = &mut self.seen;
         for window in windows.values() {
             if !window.visible || self.closed.contains(&window.handle) {
                 continue;
             }
+            let last = seen_windows
+                .get(&window.handle)
+                .copied()
+                .unwrap_or_default();
+            let geometry = WindowGeometry::of(window);
+
             let mut open = true;
             let mut actions = Vec::new();
             // Snapshot this window's controls (in creation order) so the shared
@@ -337,8 +341,7 @@ impl eframe::App for LiveApp {
                 .filter_map(|id| controls.get(id).cloned())
                 .collect();
             overlay_pending(&mut body, pending);
-            let last = clients.get(&window.handle).copied();
-            let client = show_autoit_window(&ctx, window, &body, &mut open, last, &mut actions);
+            let drawn = show_autoit_window(&ctx, window, &body, &mut open, last, &mut actions);
 
             for interaction in actions {
                 if let Action::Text(text) = &interaction.action {
@@ -354,18 +357,18 @@ impl eframe::App for LiveApp {
                 let _ = shared.events_tx.send(GuiEvent::Close(window.handle));
             }
 
-            // A changed client size means the user dragged an edge; report it so
-            // WinGetPos/WinGetClientSize and $GUI_EVENT_RESIZED agree with the
-            // screen. The first frame only records the size.
-            if let Some(client) = client {
-                match clients.get(&window.handle).copied() {
-                    None => {
-                        clients.insert(window.handle, client);
-                    }
-                    Some(previous) if (client - previous).length() > 0.5 => {
-                        clients.insert(window.handle, client);
-                        let width = client.x.round() as i32;
-                        let height = client.y.round() as i32;
+            match drawn {
+                Some(drawn) => {
+                    // Only a drag is worth reporting back: a size the script
+                    // chose is already in the model, and echoing it is noise.
+                    let dragged = last.geometry == Some(geometry)
+                        && last
+                            .client
+                            .map(|previous| (drawn - previous).length() > 0.5)
+                            .unwrap_or(false);
+                    if dragged {
+                        let width = drawn.x.round() as i32;
+                        let height = drawn.y.round() as i32;
                         if width > 0 && height > 0 {
                             shared.updates.lock().unwrap().push(GuiUpdate::Resize {
                                 handle: window.handle,
@@ -374,7 +377,24 @@ impl eframe::App for LiveApp {
                             });
                         }
                     }
-                    Some(_) => {}
+                    seen_windows.insert(
+                        window.handle,
+                        LastWindow {
+                            client: Some(drawn),
+                            geometry: Some(geometry),
+                        },
+                    );
+                }
+                // Hidden or minimised: remember the geometry so restoring the
+                // window is not mistaken for the script moving it.
+                None => {
+                    seen_windows.insert(
+                        window.handle,
+                        LastWindow {
+                            client: last.client,
+                            geometry: Some(geometry),
+                        },
+                    );
                 }
             }
         }

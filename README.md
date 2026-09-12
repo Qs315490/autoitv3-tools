@@ -878,11 +878,17 @@ backend.run(move |backend| {                    // 主线程；阻塞到窗口�
 })?;
 ```
 
-**窗口尺寸**：每个模拟窗口就是脚本 `GUICreate` 的**客户区大小**（第一次画时按它铺开，
-不再缩成内容大小），四个边和右下角的拖拽都能用，横竖都能拉。用户拖出来的新尺寸会
-**回写模型**：`WinGetPos`/`WinGetClientSize` 立刻反映出来，`GUIGetMsg` 也会收到
-`$GUI_EVENT_RESIZED`（-12）。反方向（脚本 `WinMove` 改变大小 → 屏幕上的窗口跟着变）
-还没接。
+**窗口尺寸与状态**：每个模拟窗口就是脚本 `GUICreate` 的**客户区大小**（第一次画时按它
+铺开，不再缩成内容大小），四个边和右下角的拖拽都能用，横竖都能拉。两个方向都通：
+
+- **用户拖拽 → 脚本**：新尺寸回写模型，`WinGetPos`/`WinGetClientSize` 立刻反映，`GUIGetMsg`
+  收到 `$GUI_EVENT_RESIZED`（-12）；
+- **脚本 → 屏幕**：`WinMove`（`WinMove($h, "", x, y [, w [, h]])`，`-1` 表示那一维不动）
+  真的会移动/缩放窗口，`WinSetState`/`GUISetState` 的 `@SW_HIDE`/`@SW_MINIMIZE`/
+  `@SW_MAXIMIZE`/`@SW_RESTORE` 也照做——最小化的窗口不画，最大化的窗口铺满视口。
+
+`@SW_*`（0…11）现在是真正的宏，`WinSetState` 按 AutoIt 的 `@SW_*` 解释（注意它**不是**
+`WinGetState` 的位标志：`@SW_MINIMIZE` 是 6，而 `WIN_MINIMIZED` 位是 16）。
 
 > egui 的 `Window` 是按**内容**决定尺寸的（`Resize::end` 对窗口回退到内容尺寸），
 > 所以内容不填满窗口时，拖动那一维会在下一帧弹回去——这正是"能左右拉、不能拉高"的
