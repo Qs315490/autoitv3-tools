@@ -613,3 +613,17 @@ run
     assert!(has_line(&out, "\"tick 1\""), "{out}");
     assert!(has_line(&out, "\"tick 2\""), "{out}");
 }
+
+#[test]
+fn until_is_an_alias_of_tbreak() {
+    let path = script("until-alias", SCRIPT);
+    // `until` creates the same one-shot, self-deleting breakpoint: it stops
+    // once at the line, is gone afterwards, and works with a function target
+    // resolution too.
+    let out = shell(
+        &path,
+        &["break 2", "run", "until 11", "delete 1", "info breakpoints"],
+    );
+    assert!(has_line(&out, "run-to target reached, line 11"), "{out}");
+    assert!(has_line(&out, "no breakpoints"), "{out}");
+}
