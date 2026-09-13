@@ -404,15 +404,15 @@ fn a_logpoint_prints_without_stopping() {
     let out = shell(
         &path,
         &[
-            "break 11 nostop do \"hit \" & $counter", // inside the For loop
+            "break 11 nostop do p \"hit \" & $counter", // inside the For loop
             "run",
         ],
     );
     // Three loop iterations -> three log lines, and the run finishes without
     // ever stopping.
-    assert!(has_line(&out, "[bp 1] \"hit \" & $counter = \"hit 0\""), "{out}");
-    assert!(has_line(&out, "[bp 1] \"hit \" & $counter = \"hit 1\""), "{out}");
-    assert!(has_line(&out, "[bp 1] \"hit \" & $counter = \"hit 2\""), "{out}");
+    assert!(has_line(&out, "\"hit 0\""), "{out}");
+    assert!(has_line(&out, "\"hit 1\""), "{out}");
+    assert!(has_line(&out, "\"hit 2\""), "{out}");
     assert!(has_line(&out, "[script finished]"), "{out}");
     assert!(!out.contains("Breakpoint 1, line"), "{out}");
 }
@@ -454,8 +454,8 @@ fn on_hit_actions_can_assign_and_run_multiple_times() {
     let out = shell(
         &path,
         &[
-            "break 11 nostop do $total = $total + 100",
-            "commands 1 do $counter = $counter",
+            "break 11 nostop do eval $total = $total + 100",
+            "commands 1 do eval $counter = $counter",
             "run",
             "print $total",
         ],
@@ -491,11 +491,11 @@ fn a_function_breakpoint_stops_at_the_first_statement() {
 }
 
 #[test]
-fn jmp_runs_to_a_line_and_removes_itself() {
+fn tbreak_runs_to_a_line_and_removes_itself() {
     let path = script("jmp", SCRIPT);
     let out = shell(
         &path,
-        &["break 2", "run", "jmp 11", "delete 1", "info breakpoints"],
+        &["break 2", "run", "tbreak 11", "delete 1", "info breakpoints"],
     );
     assert!(has_line(&out, "run-to target reached, line 11"), "{out}");
     // The temporary breakpoint is gone: `info breakpoints` shows none.
@@ -503,10 +503,55 @@ fn jmp_runs_to_a_line_and_removes_itself() {
 }
 
 #[test]
-fn jmp_works_from_the_top_level_before_a_run() {
+fn tbreak_works_from_the_top_level_before_a_run() {
     let path = script("jmp-func", SCRIPT);
-    let out = shell(&path, &["jmp Main"]);
+    let out = shell(&path, &["tbreak Main"]);
     // Main's first statement is the For line (10); the target resolves and
     // the run stops there.
     assert!(has_line(&out, "run-to target reached, line 10"), "{out}");
+}
+
+#[test]
+fn jmp_skips_statements_unconditionally() {
+    let path = script(
+        "jmp-skip",
+        "Global $a = 1
+$a = $a + 5
+$a = $a + 10
+",
+    );
+    // Stop before line 2, then jump over it: only line 3 runs, so $a is
+    // 1 + 10 instead of 16.
+    let out = shell(&path, &["break 2", "run", "jmp 3", "print $a"]);
+    assert!(has_line(&out, "jumping to line 3"), "{out}");
+    assert!(has_line(&out, "11"), "{out}");
+}
+
+#[test]
+fn jmp_inside_a_function_skips_to_the_target() {
+    let path = script("jmp-fn", SCRIPT);
+    // Stop before $counter += 1, jump straight to $total += Add($i, 10):
+    // the first iteration never increments $counter, but the loop itself
+    // keeps running, so $counter ends at 2 and $total at 36.
+    let out = shell(
+        &path,
+        &[
+            "break 11",
+            "run",
+            "disable 1",
+            "jmp 12",
+            "print $counter",
+            "print $total",
+        ],
+    );
+    assert!(has_line(&out, "jumping to line 12"), "{out}");
+    assert!(has_line(&out, "2"), "{out}");
+    assert!(has_line(&out, "36"), "{out}");
+}
+
+#[test]
+fn jmp_rejects_targets_outside_the_current_frame() {
+    let path = script("jmp-bad", SCRIPT);
+    let out = shell(&path, &["break 2", "run", "jmp 40", "continue"]);
+    assert!(out.contains("cannot jump"), "{out}");
 }

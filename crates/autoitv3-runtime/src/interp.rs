@@ -72,6 +72,11 @@ pub struct Runtime {
     max_depth: usize,
     /// Set when a debugger asked to stop, read by [`Runtime::take_pause`].
     paused: Option<StopReason>,
+    /// Pending unconditional jump (`jmp`): statements whose start line does
+    /// not match are skipped without running until the target is reached.
+    jump_target: Option<u32>,
+    /// First..last line of the top-level statements, for `jump_to` validation.
+    script_span: Option<(u32, u32)>,
     /// True while a debugger callback is running.
     ///
     /// The callback may evaluate expressions, which re-enters [`Runtime::exec_stmt`];
@@ -199,6 +204,30 @@ impl DebugHost for Runtime {
     fn set_breakpoint_actions(&mut self, id: u32, actions: Vec<String>) -> bool {
         self.breakpoints.set_actions(id, actions)
     }
+
+    fn jump_to(&mut self, line: u32) -> Result<(), RuntimeError> {
+        // The target must live in the frame that will resume: the innermost
+        // function call, or the script body at the top level.
+        let in_range = match self.frames.last().and_then(|f| f.function.clone()) {
+            Some(name) => self
+                .funcs
+                .get(&name.to_ascii_lowercase())
+                .map(|d| line >= d.span.start.line && line <= d.span.end.line)
+                .unwrap_or(false),
+            None => self
+                .script_span
+                .map(|(lo, hi)| line >= lo && line <= hi)
+                .unwrap_or(false),
+        };
+        if !in_range {
+            return Err(RuntimeError::Unsupported {
+                what: format!("jump target line {line} is outside the current frame"),
+                span: None,
+            });
+        }
+        self.jump_target = Some(line);
+        Ok(())
+    }
 }
 
 impl Runtime {
@@ -219,6 +248,8 @@ impl Runtime {
             max_steps: DEFAULT_MAX_STEPS,
             max_depth: DEFAULT_MAX_DEPTH,
             paused: None,
+            jump_target: None,
+            script_span: None,
             in_debugger: false,
             error_reported: false,
             exit_code: None,
@@ -348,6 +379,7 @@ impl Runtime {
             }
         }
         self.script = stmts;
+        self.jump_target = None;
         self.notify_stop(StopReason::Finished);
         Ok(flow)
     }
@@ -359,7 +391,11 @@ impl Runtime {
                 self.func_names.insert(key.clone(), f.name.name.clone());
                 self.funcs.insert(key, f.clone());
             }
-            ItemKind::Stmt(st) => self.script.push(st.clone()),
+            ItemKind::Stmt(st) => {
+                let (lo, hi) = self.script_span.unwrap_or((u32::MAX, 0));
+                self.script_span = Some((lo.min(st.span.start.line), hi.max(st.span.end.line)));
+                self.script.push(st.clone());
+            }
             ItemKind::Region(r) => {
                 for it in &r.items {
                     self.load_item(it);
@@ -683,6 +719,7 @@ impl Runtime {
         if let Some(dbg) = self.debugger.as_mut() {
             dbg.on_call_exit(&display, result.as_ref().ok());
         }
+        self.jump_target = None;
         result
     }
 
@@ -1213,12 +1250,28 @@ impl Runtime {
     fn exec_stmt_inner(&mut self, s: &Stmt) -> Result<Flow, RuntimeError> {
         self.tick()?;
 
+        // An unconditional jump skips every statement until the target line
+        // is reached; the matching statement runs and clears the target.
+        if let Some(target) = self.jump_target {
+            if s.span.start.line != target {
+                return Ok(Flow::Normal);
+            }
+            self.jump_target = None;
+        }
         // The frame's span is the statement being executed, so a debugger
         // inspecting a stopped frame sees the line it is stopped on.
         if let Some(f) = self.frames.last_mut() {
             f.span = Some(s.span);
         }
         self.debug_hook(s.span)?;
+        // A `jmp` typed at the stop we just returned from targets *this*
+        // statement onward: skip the current statement unless it is the target.
+        if let Some(target) = self.jump_target {
+            if s.span.start.line != target {
+                return Ok(Flow::Normal);
+            }
+            self.jump_target = None;
+        }
 
         match &s.kind {
             StmtKind::Directive(_) => Ok(Flow::Normal),
@@ -1416,7 +1469,7 @@ impl Runtime {
         // hit rules allow it (skips first, then every-n). Ask before counting
         // the hit, so a guarded breakpoint's counter means what it says.
         let mut stopped = None;
-        let mut action_report: Option<(Breakpoint, Vec<Result<Value, RuntimeError>>)> = None;
+        let mut action_bp: Option<Breakpoint> = None;
         if let Some(bp) = self.breakpoints.matching(span) {
             let (id, line, condition) = (bp.id, bp.line, bp.condition.clone());
             let fires = match &condition {
@@ -1437,26 +1490,14 @@ impl Runtime {
                     b.hits = 1;
                     b
                 });
-                // On-hit actions (print/eval/assignments): evaluated in the
-                // current frame whether or not the breakpoint stops.
+                // On-hit actions are debugger commands (`print`, `eval`, ...),
+                // run by the debugger with the live host.
                 if !bp.actions.is_empty() {
-                    self.in_debugger = true;
-                    let results = bp
-                        .actions
-                        .iter()
-                        .map(|a| self.evaluate(a))
-                        .collect::<Vec<_>>();
-                    self.in_debugger = false;
-                    action_report = Some((bp.clone(), results));
+                    action_bp = Some(bp.clone());
                 }
                 if bp.stop {
                     stopped = Some(StopReason::Breakpoint { id, line });
                 }
-            }
-        }
-        if let Some((bp, results)) = &action_report {
-            if let Some(dbg) = self.debugger.as_mut() {
-                dbg.on_breakpoint_action(bp, results);
             }
         }
 
@@ -1467,6 +1508,9 @@ impl Runtime {
             return Ok(());
         };
         self.in_debugger = true;
+        if let Some(bp) = &action_bp {
+            dbg.on_breakpoint_action(bp, self);
+        }
         let action = dbg.on_statement(span, depth, self);
 
         if stopped.is_none() && matches!(action, DebugAction::Pause) {
