@@ -240,8 +240,6 @@ enum StepMode {
     Over(usize),
     /// Stop once the current frame has been left.
     Out(usize),
-    /// Stop when this source line is reached again.
-    Until(u32),
 }
 
 /// A breakpoint edit a command recorded, waiting for the host to apply it.
@@ -508,7 +506,9 @@ impl Shell {
             "s" | "step" => self.step_command("step"),
             "n" | "next" => self.step_command("next"),
             "fin" | "finish" => self.step_command("finish"),
-            "until" | "u" => self.until_command(rest.trim()),
+            // gdb's `until` collapses into the one-shot breakpoint: with no
+            // frame-boundary semantics it was a duplicate of `tbreak <line>`.
+            "until" | "u" => self.tbreak_command(rest.trim(), host),
             "b" | "break" => self.break_command(rest.trim(), host),
             "jmp" | "j" => self.jmp_command(rest.trim(), host),
             "tbreak" | "tb" => self.tbreak_command(rest.trim(), host),
@@ -567,19 +567,6 @@ impl Shell {
             (Some((_, depth)), true, "finish") => StepMode::Out(depth),
             _ => StepMode::Step,
         };
-        Outcome::Resume
-    }
-
-    fn until_command(&mut self, rest: &str) -> Outcome {
-        let Ok(line) = rest.parse::<u32>() else {
-            println!("usage: until <line>");
-            return Outcome::Stay;
-        };
-        if !self.paused {
-            println!("the script is not stopped; use `run` first");
-            return Outcome::Stay;
-        }
-        self.step = StepMode::Until(line);
         Outcome::Resume
     }
 
@@ -992,6 +979,8 @@ impl Shell {
             }
         }
         // Keep the specs in step with the host, so a restart can restore them.
+        // Unfired one-shot (`tbreak`) breakpoints are carried across a
+        // restart; fired ones self-deleted and are already gone.
         self.saved_breakpoints = host
             .breakpoints()
             .iter()
@@ -1261,7 +1250,7 @@ Commands (`help <cmd>` describes one)
   step, s                run the next statement, entering calls
   next, n                run to the next statement in this frame
   finish, fin            run until the current function returns
-  until <line>           run until that line is reached
+  until <line>           alias of `tbreak <line>`
   break <line> [if E]    set a breakpoint, optionally conditional
   delete [id]            remove one breakpoint, or all of them
   enable/disable <id>    toggle a breakpoint
@@ -1343,7 +1332,6 @@ impl Debugger for Shell {
             StepMode::Step => true,
             StepMode::Over(d) => depth <= d,
             StepMode::Out(d) => depth < d,
-            StepMode::Until(line) => span.start.line == line,
         };
         self.current = Some((span, depth));
         if stop || watch_fired {
@@ -1580,7 +1568,7 @@ fn help_for(topic: &str) -> String {
             "next — run until the next statement in this frame or shallower".to_string()
         }
         "finish" => "finish — run until the current function returns".to_string(),
-        "until" => "until <line> — run until that source line is reached".to_string(),
+        "until" | "u" => "until <line> — alias of `tbreak <line>`".to_string(),
         "break" | "b" => {
             "break <line|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit".to_string()
         }
