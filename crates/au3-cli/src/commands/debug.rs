@@ -39,9 +39,9 @@ use std::rc::Rc;
 
 use autoitv3_ast::span::Span;
 use autoitv3_ast::Program;
-use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
+use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::RuntimeError;
-use autoitv3_runtime::{ExecutionProfile, Runtime};
+use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 use clap::Args;
 
 use crate::args::{load_program, CliError, CliResult, EffectArgs, WinEmuArgs};
@@ -203,6 +203,22 @@ impl Debugger for SharedShell {
             shell.on_stop(reason, host);
         }
     }
+
+    fn on_breakpoint_action(
+        &mut self,
+        bp: &Breakpoint,
+        results: &[Result<Value, RuntimeError>],
+    ) {
+        if let Ok(mut shell) = self.0.try_borrow_mut() {
+            shell.on_breakpoint_action(bp, results);
+        }
+    }
+
+    fn on_variable_write(&mut self, name: &str, value: &autoitv3_runtime::Value) {
+        if let Ok(mut shell) = self.0.try_borrow_mut() {
+            shell.on_variable_write(name, value);
+        }
+    }
 }
 
 /// What a command asked the caller to do next.
@@ -238,9 +254,46 @@ enum StepMode {
 /// it are written as a small pending action so that the command parser stays
 /// free of the host, and applied in one place at the end of [`Shell::execute`].
 enum Edit {
-    Add(u32, Option<String>),
+    Add(BpSpec),
     Remove(Option<u32>),
     Enable(u32, bool),
+}
+
+/// Everything `break`/`jmp` can put on one breakpoint.
+struct BpSpec {
+    line: u32,
+    condition: Option<String>,
+    skip: u64,
+    every: u64,
+    stop: bool,
+    actions: Vec<String>,
+    /// Display label for function breakpoints (`"func Foo"`).
+    label: Option<String>,
+    /// `jmp` target: delete the breakpoint once it fires.
+    temp: bool,
+}
+
+impl BpSpec {
+    fn line(line: u32) -> Self {
+        Self {
+            line,
+            condition: None,
+            skip: 0,
+            every: 1,
+            stop: true,
+            actions: Vec::new(),
+            label: None,
+            temp: false,
+        }
+    }
+}
+
+/// One `watch` expression and the value it had when last observed
+/// (the `Debug` rendering; `None` = no baseline yet).
+struct Watch {
+    id: u32,
+    expr: String,
+    last: Option<String>,
 }
 
 /// The interactive session: the debugger, the command loop, and the source.
@@ -282,7 +335,18 @@ struct Shell {
     /// over rather than simply resuming.
     restart: bool,
     /// Breakpoint specs remembered so `run` can restart with them intact.
-    saved_breakpoints: Vec<(u32, Option<String>)>,
+    saved_breakpoints: Vec<(Breakpoint, Option<String>)>,
+    /// Active `watch` expressions.
+    watches: Vec<Watch>,
+    next_watch: u32,
+    /// `jmp` targets: temporary breakpoint ids, deleted when they fire.
+    jmp_pending: Vec<u32>,
+    /// Display labels for function breakpoints, by breakpoint id.
+    bp_labels: Vec<(u32, String)>,
+    /// A variable was written while running: re-observe the watches at the
+    /// next statement (`on_variable_write` has no host, so the check happens
+    /// in [`Shell::on_statement`], which does).
+    pending_watch_check: bool,
 }
 
 impl Shell {
@@ -309,6 +373,11 @@ impl Shell {
             pending: None,
             restart: false,
             saved_breakpoints: Vec::new(),
+            watches: Vec::new(),
+            next_watch: 1,
+            jmp_pending: Vec::new(),
+            bp_labels: Vec::new(),
+            pending_watch_check: false,
         }
     }
 
@@ -323,8 +392,22 @@ impl Shell {
     /// takes the new one and the old list.
     fn restore_breakpoints(&mut self, host: &mut dyn DebugHost) {
         let specs = std::mem::take(&mut self.saved_breakpoints);
-        for (line, condition) in specs {
-            host.add_breakpoint(line, condition);
+        for (bp, label) in specs {
+            let id = host.add_breakpoint_full(
+                bp.line,
+                bp.condition.clone(),
+                bp.skip_remaining,
+                bp.every,
+                bp.stop,
+                bp.actions.clone(),
+            );
+            if let Some(label) = label {
+                self.bp_labels.push((id, label));
+            }
+        }
+        // Watch baselines are stale after a restart: re-observe from scratch.
+        for w in &mut self.watches {
+            w.last = None;
         }
     }
 
@@ -333,6 +416,8 @@ impl Shell {
         self.current = None;
         self.paused = false;
         self.restart = false;
+        // `jmp_pending` survives: a `jmp` typed before `run` is exactly the
+        // case where the target must still be pending when the run starts.
         self.step = if self.stop_at_start { StepMode::Step } else { StepMode::Run };
     }
 
@@ -424,7 +509,14 @@ impl Shell {
             "n" | "next" => self.step_command("next"),
             "fin" | "finish" => self.step_command("finish"),
             "until" | "u" => self.until_command(rest.trim()),
-            "b" | "break" => self.break_command(rest.trim()),
+            "b" | "break" => self.break_command(rest.trim(), host),
+            "jmp" | "j" => self.jmp_command(rest.trim(), host),
+            "ignore" => self.ignore_command(rest.trim(), host),
+            "commands" => self.commands_command(rest.trim(), host),
+            "nostop" => self.stop_toggle_command(rest.trim(), false, host),
+            "stop" => self.stop_toggle_command(rest.trim(), true, host),
+            "watch" => self.watch_command(rest.trim(), host),
+            "unwatch" => self.unwatch_command(rest.trim()),
             "d" | "del" | "delete" => self.delete_command(rest.trim()),
             "enable" => self.toggle_command(rest.trim(), true),
             "disable" => self.toggle_command(rest.trim(), false),
@@ -489,27 +581,278 @@ impl Shell {
         Outcome::Resume
     }
 
-    fn break_command(&mut self, rest: &str) -> Outcome {
-        let (line, condition) = match rest.split_once(" if ") {
-            Some((line, cond)) => (line.trim(), Some(cond.trim().to_string())),
-            None => match rest.split_once("if ") {
-                Some((line, cond)) => (line.trim(), Some(cond.trim().to_string())),
-                None => (rest.trim(), None),
+    fn break_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
+        match self.resolve_break_target(rest, host) {
+            Some(spec) => {
+                self.pending = Some(Edit::Add(spec));
+                Outcome::Stay
+            }
+            None => Outcome::Stay,
+        }
+    }
+
+    /// Parse `break`/`jmp` syntax:
+    /// `<line|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <stmt>]`.
+    /// The `do` clause takes the rest of the line; the other options are
+    /// stripped from the tail before the `if` condition is split off.
+    fn resolve_break_target(&mut self, rest: &str, host: &mut dyn DebugHost) -> Option<BpSpec> {
+        let (head, action) = match rest.split_once(" do ") {
+            Some((h, a)) => (h.trim(), Some(a.trim().to_string())),
+            None => (rest.trim(), None),
+        };
+        let mut skip = 0u64;
+        let mut every = 1u64;
+        let mut stop = true;
+        let mut head = head.to_string();
+        loop {
+            let trimmed = head.trim_end();
+            if let Some(t) = trimmed.strip_suffix(" nostop") {
+                stop = false;
+                head = t.to_string();
+            } else if let Some(rest) = trimmed.strip_suffix(" nostop") {
+                stop = false;
+                head = rest.to_string();
+            } else if let Some((t, n)) = strip_tail_number(trimmed, "skip") {
+                match n {
+                    Some(n) => skip = n,
+                    None => {
+                        println!("usage: ... skip <n>");
+                        return None;
+                    }
+                }
+                head = t.to_string();
+            } else if let Some((t, n)) = strip_tail_number(trimmed, "every") {
+                match n {
+                    Some(n) if n >= 1 => every = n,
+                    _ => {
+                        println!("usage: ... every <n>");
+                        return None;
+                    }
+                }
+                head = t.to_string();
+            } else {
+                break;
+            }
+        }
+        let (pos, condition) = match head.split_once(" if ") {
+            Some((p, c)) => (p.trim(), Some(c.trim().to_string())),
+            None => match head.split_once("if ") {
+                Some((p, c)) => (p.trim(), Some(c.trim().to_string())),
+                None => (head.trim(), None),
             },
         };
-        let Ok(line) = line.parse::<u32>() else {
-            println!("usage: break <line> [if <expr>]");
-            return Outcome::Stay;
+        let mut spec = if let Ok(line) = pos.parse::<u32>() {
+            if line == 0 || line as usize > self.lines.len().max(1) {
+                println!(
+                    "line {line} is outside {} (1..{})",
+                    self.script,
+                    self.lines.len()
+                );
+                return None;
+            }
+            BpSpec::line(line)
+        } else {
+            // Not a number: a function name. Stop at its first statement.
+            match host.function_entry_line(pos) {
+                Some(line) => {
+                    let mut spec = BpSpec::line(line);
+                    spec.label = Some(format!("func {pos}"));
+                    spec
+                }
+                None => {
+                    println!("no such line or function: {pos:?}");
+                    return None;
+                }
+            }
         };
-        if line == 0 || line as usize > self.lines.len().max(1) {
-            println!(
-                "line {line} is outside {} (1..{})",
-                self.script,
-                self.lines.len()
-            );
+        spec.condition = condition;
+        spec.skip = skip;
+        spec.every = every;
+        spec.stop = stop;
+        if let Some(a) = action {
+            spec.actions.push(a);
+        }
+        Some(spec)
+    }
+
+    /// `jmp <line|func>` — keep running until the position is reached (a
+    /// temporary breakpoint that deletes itself when it fires), or until the
+    /// named function is entered.
+    fn jmp_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
+        if rest.is_empty() {
+            println!("usage: jmp <line|func>");
             return Outcome::Stay;
         }
-        self.pending = Some(Edit::Add(line, condition));
+        match self.resolve_break_target(rest, host) {
+            Some(mut spec) => {
+                spec.temp = true;
+                self.pending = Some(Edit::Add(spec));
+                Outcome::Resume
+            }
+            None => Outcome::Stay,
+        }
+    }
+
+    /// `ignore <id> <count>` — the next `count` would-be hits do not fire.
+    fn ignore_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
+        let mut parts = rest.split_whitespace();
+        let (id, count) = match (parts.next(), parts.next()) {
+            (Some(i), Some(c)) => (i, c),
+            _ => {
+                println!("usage: ignore <id> <count>");
+                return Outcome::Stay;
+            }
+        };
+        match (id.parse::<u32>(), count.parse::<u64>()) {
+            (Ok(id), Ok(count)) => {
+                if host.ignore_breakpoint(id, count) {
+                    println!("breakpoint {id} will skip the next {count} hit(s)");
+                } else {
+                    println!("no breakpoint {id}");
+                }
+            }
+            _ => println!("usage: ignore <id> <count>"),
+        }
+        Outcome::Stay
+    }
+
+    /// `commands <id>` — list on-hit actions; `commands <id> do <stmt>` —
+    /// append one; `commands <id> off` — clear them all.
+    fn commands_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
+        let (id_raw, tail) = match rest.split_once(char::is_whitespace) {
+            Some((i, t)) => (i, t.trim()),
+            None => (rest.trim(), ""),
+        };
+        let Ok(id) = id_raw.parse::<u32>() else {
+            println!("usage: commands <id> [do <stmt> | off]");
+            return Outcome::Stay;
+        };
+        let existing = host
+            .breakpoints()
+            .into_iter()
+            .find(|b| b.id == id)
+            .map(|b| b.actions);
+        let Some(mut actions) = existing else {
+            println!("no breakpoint {id}");
+            return Outcome::Stay;
+        };
+        if tail == "off" {
+            host.set_breakpoint_actions(id, Vec::new());
+            println!("breakpoint {id}: actions cleared");
+        } else if let Some(stmt) = tail.strip_prefix("do ") {
+            actions.push(stmt.trim().to_string());
+            host.set_breakpoint_actions(id, actions.clone());
+            println!("breakpoint {id}: {} action(s)", actions.len());
+        } else if tail.is_empty() {
+            if actions.is_empty() {
+                println!("breakpoint {id}: no actions");
+            }
+            for a in &actions {
+                println!("  do {a}");
+            }
+        } else {
+            println!("usage: commands <id> [do <stmt> | off]");
+        }
+        Outcome::Stay
+    }
+
+    /// `nostop <id>` / `stop <id>` — make a breakpoint a pure logpoint or
+    /// restore its stopping behaviour.
+    fn stop_toggle_command(
+        &mut self,
+        rest: &str,
+        stop: bool,
+        host: &mut dyn DebugHost,
+    ) -> Outcome {
+        match rest.trim().parse::<u32>() {
+            Ok(id) => {
+                if host.set_breakpoint_stop(id, stop) {
+                    println!(
+                        "breakpoint {id} will {}",
+                        if stop { "stop" } else { "not stop (logpoint)" }
+                    );
+                } else {
+                    println!("no breakpoint {id}");
+                }
+            }
+            Err(_) => println!("usage: {} <id>", if stop { "stop" } else { "nostop" }),
+        }
+        Outcome::Stay
+    }
+
+    /// `watch` — list; `watch <expr>` — break when the value changes
+    /// (first observation only sets the baseline); `watch -d <id>` — remove.
+    fn watch_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            if self.watches.is_empty() {
+                println!("no watches");
+            }
+            for w in &self.watches {
+                println!(
+                    "{:>3}  {}  last={}",
+                    w.id,
+                    w.expr,
+                    w.last.as_deref().unwrap_or("(not observed yet)")
+                );
+            }
+            return Outcome::Stay;
+        }
+        if let Some(id) = rest.strip_prefix("-d ") {
+            match id.trim().parse::<u32>() {
+                Ok(id) => {
+                    let before = self.watches.len();
+                    self.watches.retain(|w| w.id != id);
+                    println!(
+                        "{}",
+                        if self.watches.len() != before {
+                            format!("deleted watch {id}")
+                        } else {
+                            format!("no watch {id}")
+                        }
+                    );
+                }
+                Err(_) => println!("usage: watch -d <id>"),
+            }
+            return Outcome::Stay;
+        }
+        if self.paused {
+            // A baseline taken at the current stop: changes after the resume
+            // are what stop.
+            match host.evaluate_expression(rest) {
+                Ok(v) => {
+                    let id = self.next_watch;
+                    self.next_watch += 1;
+                    println!("watch {id}: {rest} = {}", format_value(&v));
+                    self.watches.push(Watch { id, expr: rest.to_string(), last: Some(format!("{v:?}")) });
+                }
+                Err(e) => println!("cannot evaluate {rest:?} here: {e}"),
+            }
+        } else {
+            let id = self.next_watch;
+            self.next_watch += 1;
+            println!("watch {id}: {rest} (baseline set on first write)");
+            self.watches.push(Watch { id, expr: rest.to_string(), last: None });
+        }
+        Outcome::Stay
+    }
+
+    fn unwatch_command(&mut self, rest: &str) -> Outcome {
+        match rest.trim().parse::<u32>() {
+            Ok(id) => {
+                let before = self.watches.len();
+                self.watches.retain(|w| w.id != id);
+                println!(
+                    "{}",
+                    if self.watches.len() != before {
+                        format!("deleted watch {id}")
+                    } else {
+                        format!("no watch {id}")
+                    }
+                );
+            }
+            Err(_) => println!("usage: unwatch <id>"),
+        }
         Outcome::Stay
     }
 
@@ -546,12 +889,42 @@ impl Shell {
     fn flush_edits(&mut self, host: &mut dyn DebugHost) {
         match self.pending.take() {
             None => {}
-            Some(Edit::Add(line, condition)) => {
-                let id = host.add_breakpoint(line, condition.clone());
-                match condition {
-                    Some(c) => println!("Breakpoint {id} at line {line} if {c}"),
-                    None => println!("Breakpoint {id} at line {line}"),
+            Some(Edit::Add(spec)) => {
+                let id = host.add_breakpoint_full(
+                    spec.line,
+                    spec.condition.clone(),
+                    spec.skip,
+                    spec.every,
+                    spec.stop,
+                    spec.actions.clone(),
+                );
+                if let Some(label) = &spec.label {
+                    self.bp_labels.push((id, label.clone()));
                 }
+                if spec.temp {
+                    self.jmp_pending.push(id);
+                }
+                let mut summary = if let Some(label) = &spec.label {
+                    format!("Breakpoint {id} at {label} (line {})", spec.line)
+                } else {
+                    format!("Breakpoint {id} at line {}", spec.line)
+                };
+                if let Some(c) = &spec.condition {
+                    summary.push_str(&format!(" if {c}"));
+                }
+                if spec.skip > 0 {
+                    summary.push_str(&format!(", skips next {}", spec.skip));
+                }
+                if spec.every > 1 {
+                    summary.push_str(&format!(", every {}", spec.every));
+                }
+                if !spec.stop {
+                    summary.push_str(", nostop (logpoint)");
+                }
+                if !spec.actions.is_empty() {
+                    summary.push_str(&format!(", do {:?}", spec.actions));
+                }
+                println!("{summary}");
             }
             Some(Edit::Remove(Some(id))) => {
                 if host.remove_breakpoint(id) {
@@ -582,7 +955,15 @@ impl Shell {
         self.saved_breakpoints = host
             .breakpoints()
             .iter()
-            .map(|b| (b.line, b.condition.clone()))
+            .map(|b| {
+                (
+                    b.clone(),
+                    self.bp_labels
+                        .iter()
+                        .find(|(id, _)| *id == b.id)
+                        .map(|(_, l)| l.clone()),
+                )
+            })
             .collect();
     }
 
@@ -636,14 +1017,35 @@ impl Shell {
         }
         for bp in bps {
             let state = if bp.enabled { "y" } else { "n" };
+            let label = self
+                .bp_labels
+                .iter()
+                .find(|(id, _)| *id == bp.id)
+                .map(|(_, l)| l.as_str())
+                .unwrap_or("line");
             let condition = match &bp.condition {
                 Some(c) => format!(" if {c}"),
                 None => String::new(),
             };
             println!(
-                "{:>3}  line {:<6} enabled={state}  hits={}{condition}",
-                bp.id, bp.line, bp.hits
+                "{:>3}  {} {:<6} enabled={state}  hits={}{}  skip={} every={}{}{}",
+                bp.id,
+                label,
+                bp.line,
+                bp.hits,
+                condition,
+                bp.skip_remaining,
+                bp.every,
+                if bp.stop { "" } else { "  nostop" },
+                if bp.actions.is_empty() {
+                    String::new()
+                } else {
+                    format!("  actions={}", bp.actions.len())
+                },
             );
+            for a in &bp.actions {
+                println!("        do {a}");
+            }
         }
     }
 
@@ -860,12 +1262,41 @@ impl Debugger for Shell {
         self.paused = false;
     }
 
-    fn on_statement(&mut self, span: Span, depth: usize, _host: &mut dyn DebugHost) -> DebugAction {
+    fn on_breakpoint_action(
+        &mut self,
+        bp: &Breakpoint,
+        results: &[Result<Value, RuntimeError>],
+    ) {
+        for (i, r) in results.iter().enumerate() {
+            let source = bp.actions.get(i).map(String::as_str).unwrap_or("?");
+            match r {
+                Ok(v) => println!("[bp {id}] {source} = {out}", id = bp.id, out = format_value(v)),
+                Err(e) => println!("[bp {id}] {source} -> {e}", id = bp.id),
+            }
+        }
+    }
+
+    fn on_variable_write(&mut self, _name: &str, _value: &autoitv3_runtime::Value) {
+        // No host here: the actual re-observation happens at the next
+        // statement boundary, where `on_statement` has one.
+        if !self.paused && !self.finished && !self.watches.is_empty() {
+            self.pending_watch_check = true;
+        }
+    }
+
+    fn on_statement(&mut self, span: Span, depth: usize, host: &mut dyn DebugHost) -> DebugAction {
         // Unwind the run when the session is over, or when `run` asked for a
         // fresh one from inside a stop.
         if self.finished || self.restart {
             return DebugAction::Abort;
         }
+        // A write happened since the last statement: re-observe the watches.
+        let watch_fired = if self.pending_watch_check {
+            self.pending_watch_check = false;
+            self.check_watches(host)
+        } else {
+            false
+        };
         if self.tracing {
             println!("[trace] {}:{} depth={depth}", span.start.line, span.start.col);
         }
@@ -877,7 +1308,7 @@ impl Debugger for Shell {
             StepMode::Until(line) => span.start.line == line,
         };
         self.current = Some((span, depth));
-        if stop {
+        if stop || watch_fired {
             // Clear the policy: the prompt decides what happens next.
             self.step = StepMode::Run;
             DebugAction::Pause
@@ -895,7 +1326,14 @@ impl Debugger for Shell {
             }
             StopReason::Breakpoint { id, line } => {
                 self.paused = true;
-                println!("Breakpoint {id}, line {line}");
+                if self.jmp_pending.iter().any(|t| t == id) {
+                    // A `jmp` target: one-shot, so remove it on arrival.
+                    self.jmp_pending.retain(|t| t != id);
+                    host.remove_breakpoint(*id);
+                    println!("run-to target reached, line {line}");
+                } else {
+                    println!("Breakpoint {id}, line {line}");
+                }
                 self.show_current_line();
                 self.prompt_loop(host);
                 self.paused = false;
@@ -915,6 +1353,36 @@ impl Debugger for Shell {
 }
 
 impl Shell {
+    /// Re-observe every watch expression in the current frame; stop when one
+    /// changed from its last observed value. The first observation after
+    /// `watch` (or after a restart) only sets the baseline.
+    fn check_watches(&mut self, host: &mut dyn DebugHost) -> bool {
+        let mut fired = false;
+        for w in &mut self.watches {
+            let Ok(v) = host.evaluate_expression(&w.expr) else {
+                continue;
+            };
+            let now = format!("{v:?}");
+            if w.last.is_none() {
+                // First observation: baseline only.
+                w.last = Some(now);
+                continue;
+            }
+            if w.last.as_deref() != Some(now.as_str()) {
+                let old = w.last.clone().unwrap_or_default();
+                println!(
+                    "[watch {id}] {expr}: {old} -> {new}",
+                    id = w.id,
+                    expr = w.expr,
+                    new = now
+                );
+                w.last = Some(now);
+                fired = true;
+            }
+        }
+        fired
+    }
+
     /// Print the source line execution is stopped on.
     fn show_current_line(&mut self) {
         let Some((span, _)) = self.current else { return };
@@ -969,6 +1437,15 @@ fn split_commands(line: &str) -> Vec<String> {
         .collect()
 }
 
+/// Strip a trailing `skip <n>`-style option off a break spec, returning the
+/// head and the parsed number.
+fn strip_tail_number<'a>(head: &'a str, keyword: &str) -> Option<(&'a str, Option<u64>)> {
+    let idx = head.rfind(keyword)?;
+    let tail = head[idx + keyword.len()..].trim();
+    let n = tail.parse::<u64>().ok()?;
+    Some((head[..idx].trim_end(), Some(n)))
+}
+
 /// Split `"break 12"` into `("break", "12")`.
 fn split_command(line: &str) -> (String, String) {
     match line.split_once(char::is_whitespace) {
@@ -989,7 +1466,25 @@ fn help_for(topic: &str) -> String {
         "finish" => "finish — run until the current function returns".to_string(),
         "until" => "until <line> — run until that source line is reached".to_string(),
         "break" | "b" => {
-            "break <line> [if <expr>] — stop there; the condition is AutoIt source".to_string()
+            "break <line|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <stmt>] — stop there; the condition is AutoIt source".to_string()
+        }
+        "jmp" | "j" => {
+            "jmp <line|func> — keep running until the position is reached".to_string()
+        }
+        "ignore" => {
+            "ignore <id> <count> — the next <count> would-be hits do not fire".to_string()
+        }
+        "commands" => {
+            "commands <id> [do <stmt> | off] — on-hit actions (run even with nostop)".to_string()
+        }
+        "nostop" | "stop" => {
+            "nostop <id> | stop <id> — logpoint mode on/off".to_string()
+        }
+        "watch" => {
+            "watch [expr | -d <id>] — break when the expression's value changes".to_string()
+        }
+        "unwatch" => {
+            "unwatch <id> — remove a watch".to_string()
         }
         "print" | "p" => {
             "print <expr> — evaluate in the stopped frame (`p $x`, `p $a[2]`)".to_string()

@@ -1209,3 +1209,48 @@ fn continue_case_outside_a_case_is_reported() {
     let err = rt(src).call_function("F", vec![]).unwrap_err();
     assert!(err.to_string().contains("case control"), "{err}");
 }
+
+#[test]
+fn breakpoint_hit_rules_gate_firing() {
+    use autoitv3_runtime::debug::Breakpoints;
+
+    let mut bps = Breakpoints::new();
+    let id = bps.add_full(10, None, 2, 2, true, vec!["1 + 1".into()]);
+    let span = autoitv3_ast::span::Span {
+        start: autoitv3_ast::span::Pos { line: 10, col: 1 },
+        end: autoitv3_ast::span::Pos { line: 10, col: 2 },
+    };
+    let bp = |b: &Breakpoints| b.get(id).cloned().unwrap();
+    assert!(bp(&bps).matches(span));
+
+    // skip 2: hits 1 and 2 are counted but do not fire.
+    assert!(!bps.should_fire(id));
+    assert!(!bps.should_fire(id));
+    // every 2 from then on: hit 3 does not fire (3 % 2), hit 4 does.
+    assert!(!bps.should_fire(id));
+    assert!(bps.should_fire(id));
+    assert_eq!(bp(&bps).hits, 4, "skipped hits count too");
+    assert!(bp(&bps).stop);
+
+    // A plain `add` breakpoint keeps the old defaults.
+    let plain = bps.add_line(11);
+    assert!(bps.should_fire(plain));
+    assert!(bp(&bps).stop);
+}
+
+#[test]
+fn breakpoint_actions_and_flags_round_trip_through_the_host() {
+    use autoitv3_runtime::debug::{DebugHost, Debugger};
+
+    let mut rt = rt("Func Target()\n    Return 1\nEndFunc\n");
+    let id = rt.add_breakpoint_full(2, None, 0, 1, false, vec!["$x = 1".into()]);
+    assert!(rt.set_breakpoint_stop(id, true));
+    assert!(rt.ignore_breakpoint(id, 5));
+    let bp = rt.breakpoints().into_iter().find(|b| b.id == id).unwrap();
+    assert_eq!(bp.skip_remaining, 5);
+    assert!(bp.stop);
+    assert_eq!(bp.actions, vec!["$x = 1".to_string()]);
+    // Function entry resolution: first statement of the body.
+    assert_eq!(rt.function_entry_line("target"), Some(2));
+    assert_eq!(rt.function_entry_line("nope"), None);
+}
