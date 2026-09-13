@@ -173,9 +173,9 @@ Breakpoint 1, line 69
 | `break <line\|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
 | `jmp <line>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |
 | `tbreak <line\|func>` / `tb` | 一次性断点：继续执行直到命中（命中自删）；`run` 前可用 |
-| `eval <stmt>` | 在当前帧**执行语句**（赋值真实生效；`print` 是表达式求值） |
+| `eval [stmt]` | 在当前帧**执行语句**（赋值真实生效；`print` 是表达式求值）。裸 `eval` 进入多行块：逐行输入 AutoIt 源码（可含 If/For/函数定义），单独一行 `end` 结束；`-c` 参数里也可以直接内嵌换行（末尾的 `end` 行会被剥离） |
 | `ignore <id> <count>` | 给断点追加 skip 预算 |
-| `commands <id> [do <cmd> \| off]` | 查看/追加/清空**命中动作**——动作是调试命令（`print`/`eval`/`set`/`jmp`…），命中即执行 |
+| `commands <id> [do <cmd> \| off]` | 查看/追加/清空**命中动作**——动作是调试命令（`print`/`eval`/`set`/`jmp`…），命中即执行；裸 `commands <id>` 进入多行块：每行一条命令，`end` 结束，整块作为该断点的动作 |
 | `nostop <id>` / `stop <id>` | 把断点切成/切离 logpoint 模式 |
 | `watch <expr>` / `unwatch <id>` / `watch` | 数据断点：表达式值变化即停（首次观察只设基线）；restart 后基线重置 |
 | `delete [id]` / `enable` / `disable` | 增删与开关断点 |

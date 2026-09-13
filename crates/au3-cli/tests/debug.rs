@@ -555,3 +555,61 @@ fn jmp_rejects_targets_outside_the_current_frame() {
     let out = shell(&path, &["break 2", "run", "jmp 40", "continue"]);
     assert!(out.contains("cannot jump"), "{out}");
 }
+
+// ---------------------------------------------------------------------------
+// multi-line commands: bare `eval` blocks, embedded-newline `eval`, and
+// bare `commands <id>` action blocks
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_multiline_eval_block_runs_several_statements() {
+    let path = script("ml-eval", SCRIPT);
+    let out = run_with_stdin(
+        &path,
+        &["break 11", "run"],
+        "eval
+$counter = 99
+$total = $total + 1000
+end
+delete 1
+continue
+print $counter
+print $total
+",
+    );
+    // The block ran at the stop: $counter was overwritten (then incremented
+    // by the loop), and the loop contributed to the patched $total.
+    assert!(has_line(&out, "102"), "{out}");
+    assert!(has_line(&out, "1036"), "{out}");
+}
+
+#[test]
+fn an_eval_with_embedded_newlines_strips_the_trailing_end() {
+    let path = script("ml-eval-inline", SCRIPT);
+    let out = shell(
+        &path,
+        &["eval
+$counter = 42
+end", "run", "print $counter"],
+    );
+    // The whole block is one -c argument; the trailing `end` is stripped so
+    // the AutoIt source is exactly the two statements.
+    assert!(has_line(&out, "42"), "{out}");
+}
+
+#[test]
+fn a_multiline_commands_block_sets_all_actions() {
+    let path = script("ml-commands", SCRIPT);
+    let out = run_with_stdin(
+        &path,
+        &["break 11 nostop", "commands 1"],
+        "p \"tick \" & $counter
+end
+run
+",
+    );
+    assert!(has_line(&out, "breakpoint 1: 1 action(s)"), "{out}");
+    assert!(has_line(&out, "\"tick 0\""), "{out}");
+    assert!(has_line(&out, "\"tick 1\""), "{out}");
+    assert!(has_line(&out, "\"tick 2\""), "{out}");
+}
