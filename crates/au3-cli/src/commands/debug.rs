@@ -41,7 +41,7 @@ use autoitv3_ast::span::Span;
 use autoitv3_ast::Program;
 use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::RuntimeError;
-use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
+use autoitv3_runtime::{ExecutionProfile, Runtime};
 use clap::Args;
 
 use crate::args::{load_program, CliError, CliResult, EffectArgs, WinEmuArgs};
@@ -204,13 +204,9 @@ impl Debugger for SharedShell {
         }
     }
 
-    fn on_breakpoint_action(
-        &mut self,
-        bp: &Breakpoint,
-        results: &[Result<Value, RuntimeError>],
-    ) {
+    fn on_breakpoint_action(&mut self, bp: &Breakpoint, host: &mut dyn DebugHost) {
         if let Ok(mut shell) = self.0.try_borrow_mut() {
-            shell.on_breakpoint_action(bp, results);
+            shell.on_breakpoint_action(bp, host);
         }
     }
 
@@ -401,6 +397,10 @@ impl Shell {
                 bp.stop,
                 bp.actions.clone(),
             );
+            // `add_breakpoint_full` always creates an enabled breakpoint;
+            // re-apply the saved enabled state so a disabled breakpoint does
+            // not come back armed after a restart.
+            host.set_breakpoint_enabled(id, bp.enabled);
             if let Some(label) = label {
                 self.bp_labels.push((id, label));
             }
@@ -511,6 +511,8 @@ impl Shell {
             "until" | "u" => self.until_command(rest.trim()),
             "b" | "break" => self.break_command(rest.trim(), host),
             "jmp" | "j" => self.jmp_command(rest.trim(), host),
+            "tbreak" | "tb" => self.tbreak_command(rest.trim(), host),
+            "eval" => self.eval_command(rest.trim(), host),
             "ignore" => self.ignore_command(rest.trim(), host),
             "commands" => self.commands_command(rest.trim(), host),
             "nostop" => self.stop_toggle_command(rest.trim(), false, host),
@@ -675,12 +677,38 @@ impl Shell {
         Some(spec)
     }
 
-    /// `jmp <line|func>` — keep running until the position is reached (a
-    /// temporary breakpoint that deletes itself when it fires), or until the
-    /// named function is entered.
+    /// `jmp <line>` — unconditionally transfer execution: statements between
+    /// here and the target are skipped without running. Only lines of the
+    /// frame that will resume are valid; the interpreter rejects the rest.
     fn jmp_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
+        if !self.paused {
+            println!("jmp needs a stopped run — use run first");
+            return Outcome::Stay;
+        }
+        match rest.trim().parse::<u32>() {
+            Ok(line) => match host.jump_to(line) {
+                Ok(()) => {
+                    println!("jumping to line {line}");
+                    Outcome::Resume
+                }
+                Err(e) => {
+                    println!("cannot jump: {e}");
+                    Outcome::Stay
+                }
+            },
+            Err(_) => {
+                println!("usage: jmp <line> (a statement line of the current frame)");
+                Outcome::Stay
+            }
+        }
+    }
+
+    /// `tbreak <line|func>` — a temporary breakpoint: keep running until the
+    /// position is reached or the function is entered; it deletes itself when
+    /// it fires. Works before `run` and at a stop.
+    fn tbreak_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
         if rest.is_empty() {
-            println!("usage: jmp <line|func>");
+            println!("usage: tbreak <line|func>");
             return Outcome::Stay;
         }
         match self.resolve_break_target(rest, host) {
@@ -691,6 +719,18 @@ impl Shell {
             }
             None => Outcome::Stay,
         }
+    }
+
+    /// `eval <stmt>` — run AutoIt source as a *statement* in the current
+    /// frame: assignments take effect on the paused program. `print` is the
+    /// expression counterpart.
+    fn eval_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
+        if rest.is_empty() {
+            println!("usage: eval <statement>");
+            return Outcome::Stay;
+        }
+        self.show(host.evaluate(rest));
+        Outcome::Stay
     }
 
     /// `ignore <id> <count>` — the next `count` would-be hits do not fire.
@@ -1262,16 +1302,14 @@ impl Debugger for Shell {
         self.paused = false;
     }
 
-    fn on_breakpoint_action(
-        &mut self,
-        bp: &Breakpoint,
-        results: &[Result<Value, RuntimeError>],
-    ) {
-        for (i, r) in results.iter().enumerate() {
-            let source = bp.actions.get(i).map(String::as_str).unwrap_or("?");
-            match r {
-                Ok(v) => println!("[bp {id}] {source} = {out}", id = bp.id, out = format_value(v)),
-                Err(e) => println!("[bp {id}] {source} -> {e}", id = bp.id),
+    fn on_breakpoint_action(&mut self, bp: &Breakpoint, host: &mut dyn DebugHost) {
+        // The actions are debugger commands (`print`, `eval`, `set`, `jmp`,
+        // ...), run through the ordinary command parser with the live host —
+        // a logpoint is just a `nostop` breakpoint whose commands print.
+        for cmd in &bp.actions {
+            let outcome = self.execute(cmd, host);
+            if matches!(outcome, Outcome::Quit) {
+                self.finished = true;
             }
         }
     }
@@ -1466,16 +1504,22 @@ fn help_for(topic: &str) -> String {
         "finish" => "finish — run until the current function returns".to_string(),
         "until" => "until <line> — run until that source line is reached".to_string(),
         "break" | "b" => {
-            "break <line|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <stmt>] — stop there; the condition is AutoIt source".to_string()
+            "break <line|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit".to_string()
+        }
+        "commands" => {
+            "commands <id> [do <cmd> | off] — on-hit debugger commands (run even with nostop)".to_string()
         }
         "jmp" | "j" => {
-            "jmp <line|func> — keep running until the position is reached".to_string()
+            "jmp <line> — unconditionally jump: skip statements up to the target line".to_string()
+        }
+        "tbreak" | "tb" => {
+            "tbreak <line|func> — one-shot breakpoint: run until it is reached".to_string()
+        }
+        "eval" => {
+            "eval <stmt> — run AutoIt source as a statement (assignments stick)".to_string()
         }
         "ignore" => {
             "ignore <id> <count> — the next <count> would-be hits do not fire".to_string()
-        }
-        "commands" => {
-            "commands <id> [do <stmt> | off] — on-hit actions (run even with nostop)".to_string()
         }
         "nostop" | "stop" => {
             "nostop <id> | stop <id> — logpoint mode on/off".to_string()

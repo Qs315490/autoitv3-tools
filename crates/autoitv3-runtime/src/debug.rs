@@ -54,9 +54,11 @@ pub struct Breakpoint {
     /// logpoint: the `actions` run (and are reported) but the program carries
     /// straight on.
     pub stop: bool,
-    /// AutoIt statements evaluated in the current frame when the breakpoint
-    /// fires — the "on-hit actions" (print/eval/assignments). Results go to
-    /// [`Debugger::on_breakpoint_action`], not to a stop.
+    /// Debugger **commands** run in order when the breakpoint fires — the
+    /// "on-hit actions" (`print`, `eval`, `set`, `jmp`, ...). The interpreter
+    /// hands the live host to [`Debugger::on_breakpoint_action`]; the debugger
+    /// executes the commands there, so a `nostop` breakpoint becomes a
+    /// logpoint.
     pub actions: Vec<String>,
 }
 
@@ -313,17 +315,13 @@ pub trait Debugger {
         let _ = (error, span, host);
     }
 
-    /// Called when a breakpoint with on-hit actions fires, right after the
-    /// actions were evaluated (assignments already took effect on the
-    /// program). One entry per action, in order; a failed action is an `Err`.
-    /// This fires whether or not the breakpoint also stops — a logpoint
-    /// (`stop = false`) reports *only* here and never suspends.
-    fn on_breakpoint_action(
-        &mut self,
-        bp: &Breakpoint,
-        results: &[Result<Value, RuntimeError>],
-    ) {
-        let _ = (bp, results);
+    /// Called when a breakpoint with on-hit actions fires, before any
+    /// stop-prompt. The actions are **debugger commands** (`print`, `eval`,
+    /// `set`, ...), run by the debugger through `host` — so a `nostop`
+    /// breakpoint acts as a logpoint, and a stopping one runs its commands
+    /// before the prompt appears.
+    fn on_breakpoint_action(&mut self, bp: &Breakpoint, host: &mut dyn DebugHost) {
+        let _ = (bp, host);
     }
 
     /// Called when the interpreter stops.
@@ -396,10 +394,22 @@ pub trait DebugHost {
 
     /// The first source line of the named function (its first statement, or
     /// the `Func` line when the body is empty) — what `break <func>` and
-    /// `jmp <func>` resolve to. `None` when no such function exists.
+    /// `tbreak <func>` resolve to. `None` when no such function exists.
     fn function_entry_line(&self, name: &str) -> Option<u32> {
         let _ = name;
         None
+    }
+
+    /// Unconditionally transfer execution to `line` in the current frame:
+    /// statements between here and there are skipped without running. The
+    /// host validates the target; a target that is never reached simply has
+    /// no effect. Default: not supported.
+    fn jump_to(&mut self, line: u32) -> Result<(), RuntimeError> {
+        let _ = line;
+        Err(RuntimeError::Unsupported {
+            what: "this host cannot jump".to_string(),
+            span: None,
+        })
     }
 
     /// Add skips to a breakpoint (`ignore`): the next `count` would-be hits

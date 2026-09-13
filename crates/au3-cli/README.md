@@ -170,10 +170,12 @@ Breakpoint 1, line 69
 | `next` / `n` | 单步，不进入调用（停在同层或更浅的语句） |
 | `finish` / `fin` | 跑到当前函数返回 |
 | `until <line>` | 跑到某一行 |
-| `break <line\|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <stmt>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（在当前帧求值/赋值，结果随命中打印）；`break <func>` 停在函数第一条语句 |
-| `jmp <line\|func>` / `j` | 继续执行直到到达目标（一次性断点，命中即自删）；`run` 前可用 |
+| `break <line\|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
+| `jmp <line>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |
+| `tbreak <line\|func>` / `tb` | 一次性断点：继续执行直到命中（命中自删）；`run` 前可用 |
+| `eval <stmt>` | 在当前帧**执行语句**（赋值真实生效；`print` 是表达式求值） |
 | `ignore <id> <count>` | 给断点追加 skip 预算 |
-| `commands <id> [do <stmt> \| off]` | 查看/追加/清空命中动作 |
+| `commands <id> [do <cmd> \| off]` | 查看/追加/清空**命中动作**——动作是调试命令（`print`/`eval`/`set`/`jmp`…），命中即执行 |
 | `nostop <id>` / `stop <id>` | 把断点切成/切离 logpoint 模式 |
 | `watch <expr>` / `unwatch <id>` / `watch` | 数据断点：表达式值变化即停（首次观察只设基线）；restart 后基线重置 |
 | `delete [id]` / `enable` / `disable` | 增删与开关断点 |
