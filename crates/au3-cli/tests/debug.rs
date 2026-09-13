@@ -392,3 +392,121 @@ fn catch_reports_its_state() {
     assert!(out.contains("is on"), "got:\n{out}");
     assert!(out.contains("is off"), "got:\n{out}");
 }
+
+// ---------------------------------------------------------------------------
+// logpoints (nostop + on-hit actions), hit rules, watches, function
+// breakpoints and `jmp`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_logpoint_prints_without_stopping() {
+    let path = script("logpoint", SCRIPT);
+    let out = shell(
+        &path,
+        &[
+            "break 11 nostop do \"hit \" & $counter", // inside the For loop
+            "run",
+        ],
+    );
+    // Three loop iterations -> three log lines, and the run finishes without
+    // ever stopping.
+    assert!(has_line(&out, "[bp 1] \"hit \" & $counter = \"hit 0\""), "{out}");
+    assert!(has_line(&out, "[bp 1] \"hit \" & $counter = \"hit 1\""), "{out}");
+    assert!(has_line(&out, "[bp 1] \"hit \" & $counter = \"hit 2\""), "{out}");
+    assert!(has_line(&out, "[script finished]"), "{out}");
+    assert!(!out.contains("Breakpoint 1, line"), "{out}");
+}
+
+#[test]
+fn skip_and_every_gate_hits() {
+    let path = script("skip-every", SCRIPT);
+    // skip 1: the first hit does not fire. every 2 from then on: hits 2 and 3...
+    // With 3 loop iterations: hit 1 skipped, hits 2 fires (every=2 -> (2)%2=0).
+    let out = shell(&path, &["break 11 skip 1 every 2", "run"]);
+    // Hit 1 skipped; hit 2 fires (every 2); hit 3 does not (3 % 2 != 0) —
+    // exactly one stop before the script ends.
+    assert_eq!(out.matches("Breakpoint 1, line 11").count(), 1, "{out}");
+}
+
+#[test]
+fn ignore_extends_the_skip_budget() {
+    let path = script("ignore", SCRIPT);
+    // Two breakpoints' worth of behaviour: ignore 2 then run — with 3 hits
+    // available, hits 1-2 are skipped and hit 3 stops.
+    let out = shell(&path, &["break 11", "ignore 1 2", "run"]);
+    assert_eq!(out.matches("Breakpoint 1, line 11").count(), 1, "{out}");
+}
+
+#[test]
+fn nostop_can_be_toggled_after_creation() {
+    let path = script("nostop-toggle", SCRIPT);
+    let out = shell(
+        &path,
+        &["break 11", "nostop 1", "run"],
+    );
+    assert!(has_line(&out, "breakpoint 1 will not stop (logpoint)"), "{out}");
+    assert!(has_line(&out, "[script finished]"), "{out}");
+}
+
+#[test]
+fn on_hit_actions_can_assign_and_run_multiple_times() {
+    let path = script("actions", SCRIPT);
+    let out = shell(
+        &path,
+        &[
+            "break 11 nostop do $total = $total + 100",
+            "commands 1 do $counter = $counter",
+            "run",
+            "print $total",
+        ],
+    );
+    // The action ran 3 times (one per loop iteration), so the final total is
+    // the script's own 36 plus 300 from the actions.
+    assert!(has_line(&out, "336"), "{out}");
+}
+
+#[test]
+fn a_watch_stops_when_the_value_changes() {
+    let path = script("watch", SCRIPT);
+    let out = shell(
+        &path,
+        &["watch $counter", "run"],
+    );
+    // $counter goes 0 -> 1 on the first loop iteration; the watch stops there.
+    assert!(out.contains("[watch 1] $counter:"), "{out}");
+    assert!(out.contains("-> 1"), "{out}");
+    assert!(!has_line(&out, "[script finished]"), "{out}");
+}
+
+#[test]
+fn a_function_breakpoint_stops_at_the_first_statement() {
+    let path = script("funcbp", SCRIPT);
+    let out = shell(
+        &path,
+        &["break Add", "run", "info breakpoints"],
+    );
+    assert!(has_line(&out, "Breakpoint 1 at func Add (line 5)"), "{out}");
+    assert!(has_line(&out, "Breakpoint 1, line 5"), "{out}");
+    assert!(out.contains("1  func Add 5"), "{out}");
+}
+
+#[test]
+fn jmp_runs_to_a_line_and_removes_itself() {
+    let path = script("jmp", SCRIPT);
+    let out = shell(
+        &path,
+        &["break 2", "run", "jmp 11", "delete 1", "info breakpoints"],
+    );
+    assert!(has_line(&out, "run-to target reached, line 11"), "{out}");
+    // The temporary breakpoint is gone: `info breakpoints` shows none.
+    assert!(has_line(&out, "no breakpoints"), "{out}");
+}
+
+#[test]
+fn jmp_works_from_the_top_level_before_a_run() {
+    let path = script("jmp-func", SCRIPT);
+    let out = shell(&path, &["jmp Main"]);
+    // Main's first statement is the For line (10); the target resolves and
+    // the run stops there.
+    assert!(has_line(&out, "run-to target reached, line 10"), "{out}");
+}

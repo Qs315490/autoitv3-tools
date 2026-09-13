@@ -41,14 +41,40 @@ pub struct Breakpoint {
     /// Optional AutoIt condition expression; the breakpoint fires only when it
     /// evaluates to a true value.
     pub condition: Option<String>,
-    /// Number of times this breakpoint has been hit.
+    /// Number of times this breakpoint has been hit (counts hits that passed
+    /// their condition, including ones swallowed by skip/every rules).
     pub hits: u64,
+    /// Hits to skip before the breakpoint may fire again (an `ignore` budget).
+    /// Each would-be hit that lands here consumes one skip without firing.
+    pub skip_remaining: u64,
+    /// Fire every *n*-th hit (1 = every hit). Combined with `skip_remaining`:
+    /// skips are consumed first, then the every-*n* rule applies.
+    pub every: u64,
+    /// Whether reaching the breakpoint suspends execution. `false` makes it a
+    /// logpoint: the `actions` run (and are reported) but the program carries
+    /// straight on.
+    pub stop: bool,
+    /// AutoIt statements evaluated in the current frame when the breakpoint
+    /// fires — the "on-hit actions" (print/eval/assignments). Results go to
+    /// [`Debugger::on_breakpoint_action`], not to a stop.
+    pub actions: Vec<String>,
 }
 
 impl Breakpoint {
     /// Create an enabled line breakpoint.
     pub fn at_line(id: u32, line: u32) -> Self {
-        Self { id, line, column: None, enabled: true, condition: None, hits: 0 }
+        Self {
+            id,
+            line,
+            column: None,
+            enabled: true,
+            condition: None,
+            hits: 0,
+            skip_remaining: 0,
+            every: 1,
+            stop: true,
+            actions: Vec::new(),
+        }
     }
 
     /// True when `span` starts on this breakpoint's position.
@@ -92,6 +118,61 @@ impl Breakpoints {
         id
     }
 
+    /// Add a breakpoint with the full spec (condition, hit rules, stop flag,
+    /// on-hit actions), returning its id.
+    pub fn add_full(
+        &mut self,
+        line: u32,
+        condition: Option<String>,
+        skip: u64,
+        every: u64,
+        stop: bool,
+        actions: Vec<String>,
+    ) -> u32 {
+        let id = self.add(line, condition);
+        if let Some(bp) = self.items.iter_mut().find(|b| b.id == id) {
+            bp.skip_remaining = skip;
+            bp.every = every.max(1);
+            bp.stop = stop;
+            bp.actions = actions;
+        }
+        id
+    }
+
+    /// Add `count` skips to a breakpoint (an `ignore` command): the next
+    /// `count` would-be hits do not fire.
+    pub fn ignore(&mut self, id: u32, count: u64) -> bool {
+        match self.items.iter_mut().find(|b| b.id == id) {
+            Some(b) => {
+                b.skip_remaining += count;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Set whether a breakpoint suspends execution on fire.
+    pub fn set_stop(&mut self, id: u32, stop: bool) -> bool {
+        match self.items.iter_mut().find(|b| b.id == id) {
+            Some(b) => {
+                b.stop = stop;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Replace a breakpoint's on-hit actions.
+    pub fn set_actions(&mut self, id: u32, actions: Vec<String>) -> bool {
+        match self.items.iter_mut().find(|b| b.id == id) {
+            Some(b) => {
+                b.actions = actions;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Look up a breakpoint by id.
     pub fn get(&self, id: u32) -> Option<&Breakpoint> {
         self.items.iter().find(|b| b.id == id)
@@ -133,6 +214,22 @@ impl Breakpoints {
         if let Some(b) = self.items.iter_mut().find(|b| b.id == id) {
             b.hits += 1;
         }
+    }
+
+    /// Whether a breakpoint that just matched and passed its condition may
+    /// fire now. Counts the hit (so `hits` includes skipped ones), consumes
+    /// skips first, then applies the every-*n* rule to the hit number.
+    pub fn should_fire(&mut self, id: u32) -> bool {
+        let Some(b) = self.items.iter_mut().find(|b| b.id == id) else {
+            return false;
+        };
+        b.hits += 1;
+        if b.skip_remaining > 0 {
+            b.skip_remaining -= 1;
+            return false;
+        }
+        let every = b.every.max(1);
+        b.hits % every == 0
     }
 
     /// The first enabled breakpoint matching `span`, if any. Increments its
@@ -216,6 +313,19 @@ pub trait Debugger {
         let _ = (error, span, host);
     }
 
+    /// Called when a breakpoint with on-hit actions fires, right after the
+    /// actions were evaluated (assignments already took effect on the
+    /// program). One entry per action, in order; a failed action is an `Err`.
+    /// This fires whether or not the breakpoint also stops — a logpoint
+    /// (`stop = false`) reports *only* here and never suspends.
+    fn on_breakpoint_action(
+        &mut self,
+        bp: &Breakpoint,
+        results: &[Result<Value, RuntimeError>],
+    ) {
+        let _ = (bp, results);
+    }
+
     /// Called when the interpreter stops.
     ///
     /// For [`StopReason::Breakpoint`], [`StopReason::Step`] and
@@ -263,11 +373,53 @@ pub trait DebugHost {
     /// Add a breakpoint, optionally with a condition, returning its id.
     fn add_breakpoint(&mut self, line: u32, condition: Option<String>) -> u32;
 
+    /// Add a breakpoint with the full spec (hit rules, stop flag, on-hit
+    /// actions). Default: add a plain breakpoint and ignore the extras.
+    fn add_breakpoint_full(
+        &mut self,
+        line: u32,
+        condition: Option<String>,
+        skip: u64,
+        every: u64,
+        stop: bool,
+        actions: Vec<String>,
+    ) -> u32 {
+        let _ = (skip, every, stop, actions);
+        self.add_breakpoint(line, condition)
+    }
+
     /// Remove a breakpoint by id.
     fn remove_breakpoint(&mut self, id: u32) -> bool;
 
     /// Enable or disable a breakpoint by id.
     fn set_breakpoint_enabled(&mut self, id: u32, enabled: bool) -> bool;
+
+    /// The first source line of the named function (its first statement, or
+    /// the `Func` line when the body is empty) — what `break <func>` and
+    /// `jmp <func>` resolve to. `None` when no such function exists.
+    fn function_entry_line(&self, name: &str) -> Option<u32> {
+        let _ = name;
+        None
+    }
+
+    /// Add skips to a breakpoint (`ignore`): the next `count` would-be hits
+    /// do not fire. Default: no breakpoint table to edit.
+    fn ignore_breakpoint(&mut self, id: u32, count: u64) -> bool {
+        let _ = (id, count);
+        false
+    }
+
+    /// Set whether a breakpoint suspends execution (`stop`/`nostop`).
+    fn set_breakpoint_stop(&mut self, id: u32, stop: bool) -> bool {
+        let _ = (id, stop);
+        false
+    }
+
+    /// Replace a breakpoint's on-hit actions (`commands`).
+    fn set_breakpoint_actions(&mut self, id: u32, actions: Vec<String>) -> bool {
+        let _ = (id, actions);
+        false
+    }
 }
 
 /// What the interpreter should do after a debug callback.

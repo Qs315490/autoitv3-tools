@@ -157,12 +157,47 @@ impl DebugHost for Runtime {
         self.breakpoints.add(line, condition)
     }
 
+    fn add_breakpoint_full(
+        &mut self,
+        line: u32,
+        condition: Option<String>,
+        skip: u64,
+        every: u64,
+        stop: bool,
+        actions: Vec<String>,
+    ) -> u32 {
+        self.breakpoints
+            .add_full(line, condition, skip, every, stop, actions)
+    }
+
     fn remove_breakpoint(&mut self, id: u32) -> bool {
         self.breakpoints.remove(id)
     }
 
     fn set_breakpoint_enabled(&mut self, id: u32, enabled: bool) -> bool {
         self.breakpoints.set_enabled(id, enabled)
+    }
+
+    fn function_entry_line(&self, name: &str) -> Option<u32> {
+        let def = self.funcs.get(&name.to_ascii_lowercase())?;
+        Some(
+            def.body
+                .first()
+                .map(|s| s.span.start.line)
+                .unwrap_or_else(|| def.span.start.line),
+        )
+    }
+
+    fn ignore_breakpoint(&mut self, id: u32, count: u64) -> bool {
+        self.breakpoints.ignore(id, count)
+    }
+
+    fn set_breakpoint_stop(&mut self, id: u32, stop: bool) -> bool {
+        self.breakpoints.set_stop(id, stop)
+    }
+
+    fn set_breakpoint_actions(&mut self, id: u32, actions: Vec<String>) -> bool {
+        self.breakpoints.set_actions(id, actions)
     }
 }
 
@@ -1377,9 +1412,11 @@ impl Runtime {
             return Ok(());
         }
         let depth = self.frames.len();
-        // A breakpoint only fires when its condition, if any, holds. Ask before
-        // counting the hit, so a guarded breakpoint's counter means what it says.
+        // A breakpoint only fires when its condition, if any, holds and its
+        // hit rules allow it (skips first, then every-n). Ask before counting
+        // the hit, so a guarded breakpoint's counter means what it says.
         let mut stopped = None;
+        let mut action_report: Option<(Breakpoint, Vec<Result<Value, RuntimeError>>)> = None;
         if let Some(bp) = self.breakpoints.matching(span) {
             let (id, line, condition) = (bp.id, bp.line, bp.condition.clone());
             let fires = match &condition {
@@ -1394,9 +1431,32 @@ impl Runtime {
                     verdict
                 }
             };
-            if fires {
-                self.breakpoints.record_hit(id);
-                stopped = Some(StopReason::Breakpoint { id, line });
+            if fires && self.breakpoints.should_fire(id) {
+                let bp = self.breakpoints.get(id).cloned().unwrap_or_else(|| {
+                    let mut b = Breakpoint::at_line(id, line);
+                    b.hits = 1;
+                    b
+                });
+                // On-hit actions (print/eval/assignments): evaluated in the
+                // current frame whether or not the breakpoint stops.
+                if !bp.actions.is_empty() {
+                    self.in_debugger = true;
+                    let results = bp
+                        .actions
+                        .iter()
+                        .map(|a| self.evaluate(a))
+                        .collect::<Vec<_>>();
+                    self.in_debugger = false;
+                    action_report = Some((bp.clone(), results));
+                }
+                if bp.stop {
+                    stopped = Some(StopReason::Breakpoint { id, line });
+                }
+            }
+        }
+        if let Some((bp, results)) = &action_report {
+            if let Some(dbg) = self.debugger.as_mut() {
+                dbg.on_breakpoint_action(bp, results);
             }
         }
 
