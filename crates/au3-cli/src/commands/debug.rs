@@ -132,7 +132,7 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
     while !shell.borrow().finished {
         // The borrow must end before the run: the runtime calls back into the
         // shell, and holding it here would silence every callback.
-        let Some(cmd) = shell.borrow_mut().next_command() else {
+        let Some(cmd) = shell.borrow_mut().next_logical(Some(&mut rt)) else {
             break;
         };
         if shell.borrow_mut().execute(&cmd, &mut rt) != Outcome::Resume {
@@ -1433,7 +1433,7 @@ impl Shell {
     /// Read commands until one resumes execution.
     fn prompt_loop(&mut self, host: &mut dyn DebugHost) {
         loop {
-            let Some(cmd) = self.next_command() else {
+            let Some(cmd) = self.next_logical(Some(host)) else {
                 // EOF at a prompt means "stop", the same as gdb.
                 self.finished = true;
                 return;
@@ -1442,6 +1442,84 @@ impl Shell {
                 Outcome::Stay => {}
                 Outcome::Resume | Outcome::Quit => return,
             }
+        }
+    }
+
+    /// Read one *logical* command.
+    ///
+    /// Two commands take a **multi-line block**: bare `eval` (AutoIt source
+    /// until a line reading `end`), and bare `commands <id>` (debugger
+    /// commands until `end`, applied as the breakpoint's on-hit actions).
+    /// Everything else — including an `eval` whose argument already carries
+    /// embedded newlines — passes through as one line.
+    fn next_logical(&mut self, mut host: Option<&mut dyn DebugHost>) -> Option<String> {
+        loop {
+        let cmd = self.next_command()?;
+        let trimmed = cmd.trim_start();
+        let (first, rest) = match trimmed.split_once(char::is_whitespace) {
+            Some((w, r)) => (w, r.trim_start()),
+            None => (trimmed, ""),
+        };
+        let word = first.to_ascii_lowercase();
+
+        // Bare `eval`: collect AutoIt source until `end`.
+        if word == "eval" && rest.is_empty() {
+            let mut body = String::new();
+            loop {
+                match self.next_command() {
+                    None => break, // EOF: finalize with what we have
+                    Some(l) => {
+                        if l.trim().eq_ignore_ascii_case("end") {
+                            break;
+                        }
+                        body.push_str(&l);
+                        body.push('\n');
+                    }
+                }
+            }
+            return Some(format!("eval {body}"));
+        }
+
+        // Bare `commands <id>`: collect debugger commands until `end`.
+        if word == "commands" {
+            if let Ok(id) = rest.parse::<u32>() {
+                let mut actions: Vec<String> = Vec::new();
+                loop {
+                    match self.next_command() {
+                        None => break,
+                        Some(l) => {
+                            if l.trim().eq_ignore_ascii_case("end") {
+                                break;
+                            }
+                            if !l.trim().is_empty() {
+                                actions.push(l.trim().to_string());
+                            }
+                        }
+                    }
+                }
+                match host.as_deref_mut() {
+                    Some(h) => {
+                        h.set_breakpoint_actions(id, actions.clone());
+                        println!("breakpoint {id}: {} action(s)", actions.len());
+                    }
+                    None => println!("no host to apply breakpoint actions"),
+                }
+                continue; // block handled: read the next command
+            }
+            return Some(cmd); // `commands <id> do …` / `off` stay one-liners
+        }
+
+        // An `eval` written as one -c argument with embedded newlines: strip a
+        // trailing lone `end` line, so blocks read the same everywhere.
+        if word == "eval" && rest.contains('\n') {
+            if let Some(pos) = rest.rfind('\n') {
+                if rest[pos + 1..].trim().eq_ignore_ascii_case("end") {
+                    let body = &rest[..pos + 1];
+                    return Some(format!("eval {body}"));
+                }
+            }
+        }
+        return Some(cmd);
         }
     }
 }
