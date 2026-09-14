@@ -14,6 +14,7 @@
 //! [`crate::debug`] and [`crate::host`].
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use autoitv3_ast::ast::*;
 use autoitv3_ast::span::Span;
@@ -62,7 +63,7 @@ pub struct Runtime {
     globals: HashMap<String, Value>,
     frames: Vec<Frame>,
     /// Lower-cased function name -> definition.
-    funcs: HashMap<String, FuncDef>,
+    funcs: HashMap<String, Rc<FuncDef>>,
     /// Lower-cased function name -> original spelling.
     func_names: HashMap<String, String>,
     /// Plugged-in provider of native functions (the full-runtime seam).
@@ -407,7 +408,7 @@ impl Runtime {
             ItemKind::Func(f) => {
                 let key = f.name.name.to_ascii_lowercase();
                 self.func_names.insert(key.clone(), f.name.name.clone());
-                self.funcs.insert(key, f.clone());
+                self.funcs.insert(key, Rc::new(f.clone()));
             }
             ItemKind::Stmt(st) => {
                 let (lo, hi) = self.script_span.unwrap_or((u32::MAX, 0));
@@ -1983,7 +1984,7 @@ impl Runtime {
                 ItemKind::Func(f) => {
                     let key = f.name.name.to_ascii_lowercase();
                     self.func_names.insert(key.clone(), f.name.name.clone());
-                    self.funcs.insert(key, f.clone());
+                    self.funcs.insert(key, Rc::new(f.clone()));
                 }
                 ItemKind::Stmt(s) => {
                     if let StmtKind::Expr(e) = &s.kind {
