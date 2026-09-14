@@ -3,7 +3,7 @@
 //! Command-specific arguments live with their command; only the pieces more
 //! than one command needs are here.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use autoitv3_ast::{parse, Program};
 use autoitv3_platform::{
@@ -167,13 +167,18 @@ impl WinEmuArgs {
     /// The environment is read first so `AU3_WIN_VERSION` keeps working, then
     /// the flags override it, so an explicit `--win-version` always wins.
     ///
-    /// `script` is the `.au3` being analysed. It seeds the search for the PE
+    /// `script` is the file being analysed. It seeds the search for the PE
     /// image that answers `FindResourceW`: a script compiled into an `.exe`
     /// reads its payload and its string table out of that image's resources,
     /// and the image normally sits next to the script, so the default is to
     /// look there and then in the working directory. Passing
-    /// `--resource-module` (or `AU3_RESOURCE_MODULE`) skips the search.
-    pub fn platform(&self, script: Option<&Path>) -> CliResult<Box<dyn Platform>> {
+    /// `--resource-module` (or `AU3_RESOURCE_MODULE`) skips the search, and so
+    /// does `input_module` — the build the script was just unpacked from.
+    pub fn platform(
+        &self,
+        script: Option<&Path>,
+        input_module: Option<&Path>,
+    ) -> CliResult<Box<dyn Platform>> {
         let mut emu = WindowsEmulation::from_env();
         if self.no_win_emu {
             emu = emu.disabled();
@@ -200,7 +205,15 @@ impl WinEmuArgs {
             }
             emu = emu.with_module_file(path);
         } else if !self.no_win_emu && emu.module_path().is_none() {
-            if let Some(found) = find_resource_module(script) {
+            if let Some(path) = input_module {
+                // The input *was* the build, so its resources are the ones the
+                // script reads — no sibling search needed.
+                eprintln!(
+                    "# resource module: {} (the input build; override with --resource-module)",
+                    path.display()
+                );
+                emu = emu.with_module_file(path);
+            } else if let Some(found) = find_resource_module(script) {
                 eprintln!(
                     "# resource module: {} (found next to the script; override with --resource-module)",
                     found.display()
@@ -260,11 +273,78 @@ impl CliError {
 /// Convenience alias for the command entry points.
 pub type CliResult<T> = Result<T, CliError>;
 
+/// A loaded input: the script's source and AST, however they were obtained.
+pub struct Input {
+    /// The script's text: the `.au3` file, or the source read back out of a
+    /// compiled build.
+    pub source: String,
+    /// The parsed program.
+    pub program: Program,
+    /// The PE image the script's resources live in — the build itself when the
+    /// input *was* a build; `None` for a plain `.au3`.
+    pub resource_module: Option<PathBuf>,
+}
+
 /// Read and parse the AutoIt program at `path`.
+///
+/// `path` is either a `.au3` source file or a compiled build. A build is
+/// recognised by its header — `MZ` for an image, `AU3!EA…` for a bare compiled
+/// chunk — and its embedded script is read back with `autoitv3-unpack`. The
+/// build then serves as the resource module, so the script's own
+/// `FindResourceW` calls resolve without `--resource-module`.
+pub fn load_input(path: &str) -> CliResult<Input> {
+    let bytes =
+        std::fs::read(path).map_err(|e| CliError::io(format!("cannot read {path}: {e}")))?;
+    if is_compiled_build(&bytes) {
+        return load_compiled(path);
+    }
+    let source = String::from_utf8(bytes).map_err(|_| {
+        CliError::io(format!(
+            "cannot read {path}: not UTF-8 source, and not a compiled build \
+             (no MZ / AU3!EA header)"
+        ))
+    })?;
+    let program =
+        parse(&source).map_err(|e| CliError::failure(format!("parse error in {path}: {e}")))?;
+    Ok(Input {
+        source,
+        program,
+        resource_module: None,
+    })
+}
+
+/// Read and parse the program at `path`, discarding the rest of the input.
 pub fn load_program(path: &str) -> CliResult<Program> {
-    let src = std::fs::read_to_string(path)
-        .map_err(|e| CliError::io(format!("cannot read {path}: {e}")))?;
-    parse(&src).map_err(|e| CliError::failure(format!("parse error in {path}: {e}")))
+    load_input(path).map(|input| input.program)
+}
+
+/// Whether `bytes` are a compiled build rather than `.au3` source text.
+fn is_compiled_build(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"MZ") || bytes.starts_with(b"AU3!EA")
+}
+
+/// Read the script a build carries and parse it.
+fn load_compiled(path: &str) -> CliResult<Input> {
+    let compiled = autoitv3_unpack::script::from_image(path)
+        .map_err(|e| CliError::failure(format!("{path}: {e}")))?;
+    let source = compiled
+        .source()
+        .map_err(|e| CliError::failure(format!("{path}: {e}")))?;
+    eprintln!(
+        "# input build: {path} (compiled script {}, {} embedded file(s))",
+        compiled.version,
+        compiled.files.len()
+    );
+    let program = parse(&source).map_err(|e| {
+        CliError::failure(format!(
+            "parse error in the script unpacked from {path}: {e}"
+        ))
+    })?;
+    Ok(Input {
+        source,
+        program,
+        resource_module: Some(PathBuf::from(path)),
+    })
 }
 
 /// Parse a `--arg` value: integers (decimal or `0x` hex) become `Int`,
@@ -281,3 +361,10 @@ pub fn parse_arg_value(raw: &str) -> autoitv3_runtime::Value {
     }
     Value::Str(raw.to_string())
 }
+
+// Unit tests live in `tests/unit/` so this file reads as implementation;
+// `#[path]` pulls them back in as a test module, which is what keeps their
+// access to the private build-detection predicate.
+#[cfg(test)]
+#[path = "../tests/unit/args.rs"]
+mod tests;

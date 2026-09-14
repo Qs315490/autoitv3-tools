@@ -10,7 +10,7 @@ use autoitv3_runtime::{Runtime, Value};
 use clap::Args;
 
 use crate::args::{
-    load_program, parse_arg_value, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs,
+    load_input, parse_arg_value, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs,
     WinEmuArgs,
 };
 use crate::output::format_value;
@@ -23,7 +23,7 @@ pub struct RunArgs {
     #[arg(value_name = "FUNC")]
     pub function: String,
 
-    /// Input AutoIt v3 script
+    /// Input AutoIt v3 script, or a compiled build (.exe/.a3x) to read it from
     #[arg(value_name = "FILE")]
     pub input: String,
 
@@ -59,12 +59,16 @@ pub struct RunArgs {
 
 /// Entry point for the `run` subcommand.
 pub fn run(args: &RunArgs) -> CliResult<()> {
-    let prog = load_program(&args.input)?;
+    let input = load_input(&args.input)?;
+    let prog = input.program;
     // Install the platform layer for this OS so OS-specific builtins can be
     // reached (see `autoitv3-platform`); off Windows the Windows emulation
     // layer answers first, with the version these arguments select.
     let mut rt = Runtime::with_program(&prog);
-    rt.set_platform(args.win.platform(Some(Path::new(&args.input)))?);
+    rt.set_platform(args.win.platform(
+        Some(Path::new(&args.input)),
+        input.resource_module.as_deref(),
+    )?);
     rt.set_max_steps(args.steps.max_steps);
     // Probing a script wants reproducibility and no side effects; `--faithful`
     // switches to AutoIt's own semantics instead. `--allow`/`--deny` then

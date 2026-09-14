@@ -72,6 +72,13 @@ AU3_UNPACK_EXPECTED=/path/to/source.au3 \
 cargo test -p autoitv3-unpack
 ```
 
+CLI 的「把编译产物当输入」路径同样如此：`AU3_BUILD` 指向一个 `aut2exe` 产物时，
+`au3-cli` 会跑一遍 `parse build.exe`（解包 → 解析 → 平台），未设置则跳过。
+
+```bash
+AU3_BUILD=/path/to/build.exe cargo test -p au3-cli
+```
+
 `AU3_UNPACK_SCRIPT` 可以是 `.exe`，也可以是已经 dump 出来的 chunk；
 `AU3_UNPACK_EXPECTED` 给出编译时用的 `.au3`，测试会断言解包结果与它完全相同。
 

@@ -23,7 +23,7 @@ use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_program, CliResult, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs, StepArgs,
+    load_input, CliResult, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs, StepArgs,
     SubstituteArgs, WinEmuArgs,
 };
 use crate::output::write_output;
@@ -33,7 +33,7 @@ use std::path::Path;
 /// Arguments for `au3 evaluate`.
 #[derive(Args, Debug)]
 pub struct EvaluateArgs {
-    /// Input AutoIt v3 script
+    /// Input AutoIt v3 script, or a compiled build (.exe/.a3x) to read it from
     #[arg(value_name = "FILE")]
     pub input: String,
 
@@ -95,10 +95,13 @@ pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
 
 /// Entry point for the `evaluate` subcommand.
 pub fn run(args: &EvaluateArgs) -> CliResult<()> {
-    let mut prog = load_program(&args.input)?;
+    let input = load_input(&args.input)?;
+    let mut prog = input.program;
 
     let profile = args.effects.apply(args.profile.profile())?;
-    let platform = args.win.platform(Some(Path::new(&args.input)))?;
+    let platform = args
+        .win
+        .platform(Some(Path::new(&args.input)), input.resource_module.as_deref())?;
     let options = SubstituteOptions {
         inline_declarations: args.substitute.inline_tables,
     };

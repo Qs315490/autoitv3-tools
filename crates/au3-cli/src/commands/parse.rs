@@ -11,7 +11,7 @@ use crate::args::{load_program, CliResult};
 /// Arguments for `au3 parse`.
 #[derive(Args, Debug)]
 pub struct ParseArgs {
-    /// Input AutoIt v3 script
+    /// Input AutoIt v3 script, or a compiled build (.exe/.a3x) to read it from
     #[arg(value_name = "FILE")]
     pub input: String,
 }

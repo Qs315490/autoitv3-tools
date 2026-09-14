@@ -45,7 +45,7 @@ use autoitv3_runtime::Runtime;
 use clap::Args;
 
 use crate::args::{
-    load_program, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
+    load_input, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
 };
 use crate::output::format_value;
 use std::path::Path;
@@ -53,7 +53,7 @@ use std::path::Path;
 /// Arguments for `au3 debug`.
 #[derive(Args, Debug)]
 pub struct DebugArgs {
-    /// Input AutoIt v3 script
+    /// Input AutoIt v3 script, or a compiled build (.exe/.a3x) to read it from
     #[arg(value_name = "FILE")]
     pub input: String,
 
@@ -107,9 +107,10 @@ pub struct DebugArgs {
 
 /// Entry point for the `debug` subcommand.
 pub fn run(args: &DebugArgs) -> CliResult<()> {
-    let prog = load_program(&args.input)?;
-    let source = std::fs::read_to_string(&args.input)
-        .map_err(|e| CliError::io(format!("cannot read {}: {e}", args.input)))?;
+    let input = load_input(&args.input)?;
+    let source = input.source;
+    let prog = input.program;
+    let resource_module = input.resource_module;
 
     let mut file_commands = Vec::new();
     for path in &args.command_files {
@@ -126,7 +127,7 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
         args,
         file_commands,
     )));
-    let mut rt = build_runtime(&prog, args, shell.clone());
+    let mut rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref());
 
     // The outer loop. A `Resume` here means "start the script body"; the same
     // answer at a breakpoint means "give control back to the interpreter",
@@ -143,7 +144,7 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
         // Start a run. `run` typed at a stop asks for a fresh one: the request
         // unwinds the current run first, which is what `take_restart` reports.
         loop {
-            rt = build_runtime(&prog, args, shell.clone());
+            rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref());
             shell.borrow_mut().restore_breakpoints(&mut rt);
             shell.borrow_mut().begin_run();
             let result = rt.run_script();
@@ -158,9 +159,14 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
 }
 
 /// Build a runtime with the platform, profile and shell this session uses.
-fn build_runtime(prog: &Program, args: &DebugArgs, shell: Rc<RefCell<Shell>>) -> Runtime {
+fn build_runtime(
+    prog: &Program,
+    args: &DebugArgs,
+    shell: Rc<RefCell<Shell>>,
+    resource_module: Option<&Path>,
+) -> Runtime {
     let mut rt = Runtime::with_program(prog);
-    match args.win.platform(Some(Path::new(&args.input))) {
+    match args.win.platform(Some(Path::new(&args.input)), resource_module) {
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
     }

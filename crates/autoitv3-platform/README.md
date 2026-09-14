@@ -87,8 +87,8 @@
 `LockResource` → `RtlMoveMemory` 读出。分析脚本源码时真实的宿主是 `au3`，它的镜像里
 没有这些资源，所以**无论在哪台主机上都会读失败**——除非把镜像指回被分析的 `.exe`。
 
-`--resource-module`（或 `AU3_RESOURCE_MODULE`，或脚本旁边自动发现的同名 `.exe`）因此
-**同时**喂给两个宿主：
+`--resource-module`（或 `AU3_RESOURCE_MODULE`，或直接把编译产物当输入，
+或脚本旁边自动发现的同名 `.exe`）因此**同时**喂给两个宿主：
 
 - 非 Windows（`winemu`）由 `PeImage` 解析镜像，用仿真地址回答整条资源链；
 - Windows（原生层）用 `LoadLibraryExW(path, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE)`
