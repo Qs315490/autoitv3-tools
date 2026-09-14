@@ -12,7 +12,7 @@
 //! caller's array.
 
 use autoitv3_ast::ast::LitKind;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -76,6 +76,42 @@ impl Drop for NativeObject {
 /// A shared reference to a platform object.
 pub type ObjRef = Rc<NativeObject>;
 
+/// A function named by the script: the spelling it was written with, plus the
+/// lower-cased key the runtime looks it up by.
+///
+/// Function references are shared (`Rc`), so the key is computed once per named
+/// function and every indirect call reuses it: cloning a reference is a
+/// refcount bump, and neither the lookup nor the call allocates for the name.
+#[derive(Debug, Clone)]
+pub struct FuncRefName {
+    display: String,
+    key: OnceCell<String>,
+}
+
+/// A shared function reference.
+pub type FuncRef = Rc<FuncRefName>;
+
+impl FuncRefName {
+    /// A reference to the function spelled `display`.
+    pub fn new(display: impl Into<String>) -> Rc<Self> {
+        Rc::new(Self {
+            display: display.into(),
+            key: OnceCell::new(),
+        })
+    }
+
+    /// The name as the script wrote it.
+    pub fn display(&self) -> &str {
+        &self.display
+    }
+
+    /// The lookup key: lower-cased, without a leading `$`.
+    pub fn key(&self) -> &str {
+        self.key
+            .get_or_init(|| self.display.trim_start_matches('$').to_ascii_lowercase())
+    }
+}
+
 /// A runtime AutoIt value.
 #[derive(Clone)]
 pub enum Value {
@@ -100,7 +136,7 @@ pub enum Value {
     /// A reference to a function by name. Produced by evaluating a bare
     /// identifier such as the function names stored in the obfuscator's
     /// function table.
-    FuncRef(String),
+    FuncRef(Rc<FuncRefName>),
     /// A platform object (`ObjCreate`); opaque to the runtime.
     Obj(ObjRef),
 }
@@ -215,7 +251,7 @@ impl Value {
             Value::Array(_) => String::new(),
             Value::Map(_) => String::new(),
             Value::Binary(b) => binary_to_hex(b),
-            Value::FuncRef(name) => name.clone(),
+            Value::FuncRef(name) => name.display().to_string(),
             Value::Obj(o) => o.name.clone(),
         }
     }
@@ -249,7 +285,7 @@ impl Value {
             (Value::Binary(a), Value::Binary(b)) => a == b,
             (Value::Str(a), b) => a.as_str() == b.to_autoit_string(),
             (a, Value::Str(b)) => a.to_autoit_string() == b.as_str(),
-            (Value::FuncRef(a), Value::FuncRef(b)) => a == b,
+            (Value::FuncRef(a), Value::FuncRef(b)) => a.display() == b.display(),
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
             (Value::Map(a), Value::Map(b)) => Rc::ptr_eq(a, b),
             (Value::Obj(a), Value::Obj(b)) => Rc::ptr_eq(a, b),
@@ -296,7 +332,7 @@ impl fmt::Debug for Value {
             Value::Array(a) => write!(f, "Array(len={})", a.borrow().len()),
             Value::Map(m) => write!(f, "Map(len={})", m.borrow().len()),
             Value::Binary(b) => write!(f, "Binary(len={})", b.len()),
-            Value::FuncRef(n) => write!(f, "FuncRef({n})"),
+            Value::FuncRef(n) => write!(f, "FuncRef({})", n.display()),
             Value::Obj(o) => write!(f, "Obj({})", o.name),
         }
     }

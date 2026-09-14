@@ -559,6 +559,28 @@ EndFunc
 }
 
 #[test]
+fn a_function_reference_carries_its_own_lookup_key() {
+    // A table element is a function reference, and the reference caches the
+    // key the call resolves by — so the spelling in the table does not have to
+    // match the definition.
+    let src = r#"
+Func Target($n)
+    Return $n + 1
+EndFunc
+Func F()
+    Local $t[] = [1, TaRgEt]
+    Return $t[1](41)
+EndFunc
+Func G()
+    Local $f = target
+    Return FuncName($f)
+EndFunc
+"#;
+    assert!(matches!(call(src, "F", vec![]), Value::Int(42)));
+    assert_eq!(call(src, "G", vec![]).to_autoit_string(), "target");
+}
+
+#[test]
 fn funcname_reports_the_function_name() {
     let src = "Func Target()\n    Return 1\nEndFunc\nFunc F()\n    Return FuncName(Target)\nEndFunc\n";
     assert_eq!(call(src, "F", vec![]).to_autoit_string(), "Target");

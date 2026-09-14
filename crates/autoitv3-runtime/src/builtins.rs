@@ -25,14 +25,17 @@ use crate::interp::Runtime;
 use crate::value::{format_float, MapKey, Value};
 
 /// Dispatch a builtin call. `Ok(None)` means "not a builtin I know".
+///
+/// `key` is the caller's lower-cased lookup key, so the dispatch does not have
+/// to build one of its own: a builtin call is the single most common operation
+/// in a script like this one.
 pub(crate) fn call(
     rt: &mut Runtime,
-    name: &str,
+    key: &str,
     args: &[Value],
     span: Span,
 ) -> Result<Option<Value>, RuntimeError> {
-    let key = name.to_ascii_lowercase();
-    let v = match key.as_str() {
+    let v = match key {
         // ---------------- conversion / numbers ----------------
         "string" => Value::Str(args.first().map(|a| a.to_autoit_string()).unwrap_or_default()),
         "number" => {
@@ -111,7 +114,7 @@ pub(crate) fn call(
             let mut acc = args.first().map(|v| v.to_int()).unwrap_or(0);
             for a in args.iter().skip(1) {
                 let b = a.to_int();
-                acc = match key.as_str() {
+                acc = match key {
                     "bitand" => acc & b,
                     "bitor" => acc | b,
                     _ => acc ^ b,
@@ -737,7 +740,7 @@ pub(crate) fn call(
         }
         "funcname" => {
             let resolved = match args.first() {
-                Some(Value::FuncRef(n)) => Some(n.clone()),
+                Some(Value::FuncRef(n)) => Some(n.display().to_string()),
                 Some(other) => {
                     let s = other.to_autoit_string();
                     rt.has_function(&s).then_some(s)
