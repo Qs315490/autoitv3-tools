@@ -18,7 +18,7 @@
 //! au3 evaluate sample.au3 --no-win-emu     # stop at the first Windows call
 //! ```
 
-use autoitv3_deobf::{evaluate_with_options, SubstituteOptions};
+use autoitv3_deobf::{evaluate_with_debugger, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
@@ -27,6 +27,7 @@ use crate::args::{
     WinEmuArgs,
 };
 use crate::output::write_output;
+use crate::progress::ProgressDebugger;
 use std::path::Path;
 
 /// Arguments for `au3 evaluate`.
@@ -92,7 +93,7 @@ pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
 pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let mut prog = load_program(&args.input)?;
 
-    let outcome = evaluate_with_options(
+    let outcome = evaluate_with_debugger(
         &mut prog,
         args.effects.apply(args.profile.profile())?,
         args.win.platform(Some(Path::new(&args.input)))?,
@@ -100,6 +101,7 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
             inline_declarations: args.substitute.inline_tables,
         },
         args.steps.max_steps,
+        Box::new(ProgressDebugger::new()),
     );
     report(&outcome);
 

@@ -118,6 +118,19 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 `evaluate` 的脚本求值、`deobfuscate` 的函数表求值三条入口共用同一个值，
 不再各自写死。
 
+**长任务心跳**。`evaluate` 与 `deobfuscate --evaluate` 的脚本求值一旦超过
+1 秒，就会在 stderr 每秒打印一次当前进度（不影响 stdout 的程序输出）：
+
+```text
+evaluating: 296 globals, 10 tables (1.0s)
+evaluating: 296 globals, 10 tables (2.0s)
+evaluated: 296 globals, 10 tables, 30449 values inlined, 11668 calls resolved
+```
+
+它由 `evaluate_with_debugger` 在运行时挂一个 `Debugger` 实现——解释器每条
+语句都会回调 `on_statement`，报告器只在累计若干条后才看一次时钟，因此对
+执行本身几乎无开销。
+
 | 子命令 | 别名 | 说明 |
 | ------ | ---- | ---- |
 | `parse <FILE>` | `p`, `check` | 解析并报告顶层条目/函数数量 |
