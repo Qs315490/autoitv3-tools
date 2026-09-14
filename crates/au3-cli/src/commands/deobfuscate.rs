@@ -13,7 +13,7 @@
 //! `$l_str_003` / `f042` aliases on top.
 
 use autoitv3_deobf::{
-    evaluate_with_options, DeobfReport, Deobfuscator, SubstituteOptions,
+    evaluate_with_debugger, DeobfReport, Deobfuscator, SubstituteOptions,
 };
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
@@ -23,6 +23,7 @@ use crate::args::{
     WinEmuArgs,
 };
 use crate::output::write_output;
+use crate::progress::ProgressDebugger;
 use std::path::Path;
 
 /// Arguments for `au3 deobfuscate`.
@@ -94,12 +95,13 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     };
     let mut tables = None;
     if args.evaluate {
-        let outcome = evaluate_with_options(
+        let outcome = evaluate_with_debugger(
             &mut prog,
             args.effects.apply(args.profile.profile())?,
             args.win.platform(Some(Path::new(&args.input)))?,
             options,
             args.steps.max_steps,
+            Box::new(ProgressDebugger::new()),
         );
         super::evaluate::report(&outcome);
         tables = Some(outcome.values);
