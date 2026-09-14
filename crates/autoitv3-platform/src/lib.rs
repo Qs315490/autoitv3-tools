@@ -234,10 +234,14 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
     let emulated = emulation.is_enabled();
     #[cfg(windows)]
     {
-        let mut layers: Vec<Box<dyn Platform>> = vec![
-            Box::new(windows::WindowsPlatform::new()),
-            Box::new(CommonPlatform::new()),
-        ];
+        let mut native = windows::WindowsPlatform::new();
+        if let Some(path) = emulation.module_path() {
+            // `GetModuleHandleW(NULL)` must name the image under analysis, not
+            // the host `au3` process, or the script's own resources vanish.
+            native = native.with_resource_module(path);
+        }
+        let mut layers: Vec<Box<dyn Platform>> =
+            vec![Box::new(native), Box::new(CommonPlatform::new())];
         if emulated {
             layers.push(Box::new(emulation));
         }
@@ -380,11 +384,17 @@ pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform>
         .collect();
     #[cfg(windows)]
     {
+        let mut native = windows::WindowsPlatform::new();
+        if let Some(path) = emulation.module_path() {
+            // The image under analysis answers `GetModuleHandleW(NULL)` so the
+            // script reads its own resources (see `host_platform_with`).
+            native = native.with_resource_module(path);
+        }
         let native: Box<dyn Platform> = if declined.is_empty() {
-            Box::new(windows::WindowsPlatform::new())
+            Box::new(native)
         } else {
             Box::new(FilteredPlatform {
-                inner: windows::WindowsPlatform::new(),
+                inner: native,
                 declined: declined.clone(),
             })
         };

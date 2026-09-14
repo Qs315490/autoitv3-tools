@@ -178,6 +178,36 @@ EndFunc
 }
 
 #[test]
+fn a_null_module_handle_names_the_configured_resource_image() {
+    // `GetModuleHandleW(NULL)` normally names the host `au3`/test image, whose
+    // resources are not the analysed script's. With a resource module named,
+    // the handle must expose *that* image's resources instead.
+    let system_root = std::env::var_os("SystemRoot").expect("SystemRoot");
+    let mut kernel32 = std::path::PathBuf::from(system_root);
+    kernel32.push("System32");
+    kernel32.push("kernel32.dll");
+
+    let src = wrap(
+        r#"
+Func F()
+    Local $r = DllCall("kernel32.dll", "handle", "GetModuleHandleW", "ptr", 0)
+    If $r[0] = 0 Then Return 0
+    ; RT_VERSION (16), name 1 — every system image carries it.
+    Local $v = DllCall("kernel32.dll", "handle", "FindResourceW", "handle", $r[0], "int", 1, "int", 16)
+    Return (($v[0] <> 0)) + 0
+EndFunc
+"#,
+    );
+    let prog = parse(&src).expect("parses");
+
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(host_platform_with(
+        WindowsEmulation::new().with_module_file(kernel32),
+    ));
+    assert_eq!(rt.call_function("F", vec![]).expect("runs").to_int(), 1);
+}
+
+#[test]
 fn dllcall_with_a_struct_pointer_sees_native_writes() {
     // GetVersionExW fills the struct for real; without a manifest it reports
     // the 6.2 floor, so assert on the size field round-tripping instead.

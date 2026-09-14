@@ -287,6 +287,20 @@ impl WindowsPlatform {
             }
         }
 
+        // A compiled script reads its payload out of its own image through
+        // `GetModuleHandleW(NULL)`. Under analysis the module being unpacked
+        // stands in for the host process (see `with_resource_module`), so the
+        // resource chain resolves against the right PE.
+        if let Some(base) = self.resource_base_for_null_lookup(&function, &pairs) {
+            let mut out = Vec::with_capacity(pairs.len() + 1);
+            out.push(Value::Int(base as i64));
+            for (_, value) in &pairs {
+                out.push(value.clone());
+            }
+            ctx.set_error(0, 0);
+            return Value::array(out);
+        }
+
         let module = match args.first() {
             Some(v) => self.resolve_module(v),
             None => 0,
@@ -553,6 +567,28 @@ pub(crate) fn load_library(name: &str) -> usize {
     }
     // A name without extension or a module that is already mapped.
     (unsafe { GetModuleHandleW(wide.as_ptr()) }) as usize
+}
+
+/// `LoadLibraryExW(path, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE)` — map a PE
+/// image for its resources without running any of its code.
+///
+/// Used to answer `GetModuleHandleW(NULL)` with the image under analysis: the
+/// script then finds, sizes and locks its own resources exactly as it would
+/// when running as the compiled executable.
+pub(crate) fn load_library_as_image_resource(path: &std::path::Path) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::LibraryLoader::{
+        LoadLibraryExW, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+    };
+    // An absolute path keeps the lookup independent of the loader search order.
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    (unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_AS_IMAGE_RESOURCE) })
+        as usize
 }
 
 pub(crate) fn load_function(module: usize, name: &str) -> Option<usize> {

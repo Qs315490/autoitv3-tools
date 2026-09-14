@@ -80,6 +80,24 @@
 `AU3_WIN_EMU=0`（或 `--no-win-emu`）去掉兜底后，原生未实现的名字回归"未定义函数"。
 需要显式指定仿真配置时用 `host_platform_with(WindowsEmulation::new()...)`。
 
+#### 被分析镜像的资源（两个宿主一致）
+
+编译后的脚本把自己的载荷放进**自身 PE 镜像的 `RT_RCDATA`**，运行期用
+`GetModuleHandleW(NULL)` → `FindResourceW` → `SizeofResource` → `LoadResource` →
+`LockResource` → `RtlMoveMemory` 读出。分析脚本源码时真实的宿主是 `au3`，它的镜像里
+没有这些资源，所以**无论在哪台主机上都会读失败**——除非把镜像指回被分析的 `.exe`。
+
+`--resource-module`（或 `AU3_RESOURCE_MODULE`，或脚本旁边自动发现的同名 `.exe`）因此
+**同时**喂给两个宿主：
+
+- 非 Windows（`winemu`）由 `PeImage` 解析镜像，用仿真地址回答整条资源链；
+- Windows（原生层）用 `LoadLibraryExW(path, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE)`
+  把镜像按**资源**映射进地址空间（不执行其中任何代码），让 `GetModuleHandleW(NULL)`
+  返回它，于是 `FindResource*`/`LoadResource`/`LockResource`/`RtlMoveMemory` 全走真实
+  Win32 语义、真实指针。
+
+于是同一份 `au3 deobf script.au3 --evaluate` 在 Linux 与 Windows 上走到同一条边界。
+
 `Platform` **trait** 留在 `autoitv3-runtime`（解释器调用的接缝），**实现**在此 crate。
 依赖方向单向——运行时不知道任何具体操作系统——因此 `Runtime::new()` 默认**没有**平台层，
 需要时用 `autoitv3_platform::runtime_with_platform(&prog)` 或 `rt.set_platform(...)` 安装。

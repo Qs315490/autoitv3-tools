@@ -88,12 +88,66 @@ pub struct WindowsPlatform {
     modules: Vec<Option<usize>>,
     /// `DllCall` targets seen but not resolvable, for `AU3_WINEMU_TRACE`.
     unimplemented_dll_calls: Vec<String>,
+    /// PE image `GetModuleHandleW(NULL)` should report while analysing a
+    /// compiled script — the image under analysis, not the `au3` host.
+    resource_module: Option<std::path::PathBuf>,
+    /// Handle of `resource_module` once mapped as an image resource; 0 means
+    /// "not loaded yet".
+    resource_base: usize,
 }
 
 impl WindowsPlatform {
     /// Create the Windows platform.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Point `GetModuleHandleW(NULL)` at the PE image under analysis.
+    ///
+    /// A compiled AutoIt script reads its payload out of *its own* image
+    /// (`GetModuleHandleW(NULL)` → `FindResourceW` → `SizeofResource` →
+    /// `LoadResource` → `LockResource`). When the tool analyses the extracted
+    /// source, the real host process is `au3`, whose image carries none of
+    /// those resources, so the lookup fails and the script's decoder returns
+    /// an error value. Naming the image the script was compiled into restores
+    /// the script's own view of "the current module".
+    pub fn with_resource_module(mut self, path: impl AsRef<std::path::Path>) -> Self {
+        self.resource_module = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// The handle a `GetModuleHandleW/A(NULL)` call must report, or `None`
+    /// when this is not such a call or no resource image is configured.
+    ///
+    /// The image is mapped lazily on first use with
+    /// `LOAD_LIBRARY_AS_IMAGE_RESOURCE`, which exposes its resources without
+    /// running any of its code.
+    pub(crate) fn resource_base_for_null_lookup(
+        &mut self,
+        function: &str,
+        args: &[(String, Value)],
+    ) -> Option<usize> {
+        let function = function.to_ascii_lowercase();
+        if !matches!(
+            function.as_str(),
+            "getmodulehandlew" | "getmodulehandlea" | "getmodulehandle"
+        ) {
+            return None;
+        }
+        match args.first() {
+            Some((_, value)) if !is_null_module_name(value) => return None,
+            _ => {}
+        }
+        let path = self.resource_module.clone()?;
+        if self.resource_base != 0 {
+            return Some(self.resource_base);
+        }
+        let base = dll::load_library_as_image_resource(&path);
+        if base == 0 {
+            return None;
+        }
+        self.resource_base = base;
+        Some(base)
     }
 
     /// The architecture this process runs as — what `DllStruct` layouts and
@@ -178,6 +232,16 @@ impl WindowsPlatform {
         if std::env::var_os("AU3_WINEMU_TRACE").is_some_and(|v| v != "0") {
             eprintln!("[win32] DllCall not resolved: {target}");
         }
+    }
+}
+
+/// Whether a `GetModuleHandleW`/`GetModuleHandleA` argument names the current
+/// module (`NULL`, `0` or the empty string) as opposed to a module name.
+fn is_null_module_name(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Int(0) | Value::Bool(false) => true,
+        Value::Str(s) => s.is_empty(),
+        _ => false,
     }
 }
 
