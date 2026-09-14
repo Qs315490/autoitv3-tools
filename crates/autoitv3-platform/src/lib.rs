@@ -287,11 +287,13 @@ pub struct PlatformOptions {
 
 /// A [`WindowsPlatform`] that declines the names in `declined`, letting the
 /// layers behind it answer instead.
+#[cfg(windows)]
 struct FilteredPlatform {
     inner: windows::WindowsPlatform,
     declined: std::rc::Rc<[String]>,
 }
 
+#[cfg(windows)]
 impl Platform for FilteredPlatform {
     fn name(&self) -> &'static str {
         self.inner.name()
