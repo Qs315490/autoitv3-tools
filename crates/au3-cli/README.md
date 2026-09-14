@@ -129,7 +129,8 @@ evaluated: 296 globals, 10 tables, 30449 values inlined, 11668 calls resolved
 
 它由 `evaluate_with_debugger` 在运行时挂一个 `Debugger` 实现——解释器每条
 语句都会回调 `on_statement`，报告器只在累计若干条后才看一次时钟，因此对
-执行本身几乎无开销。
+执行本身几乎无开销。`--no-progress` 关掉它（`evaluate` 与
+`deobfuscate --evaluate` 都接受），此时根本不挂 debugger。
 
 | 子命令 | 别名 | 说明 |
 | ------ | ---- | ---- |
