@@ -24,6 +24,9 @@
           unpack.rs     au3 unpack（UnpackArgs + run：--script/--raw/--table/--at）
       tests/
         debug.rs     端到端驱动真实二进制：断点/单步/条件/求值/重启/stdin（21 项）
+        steps.rs     --max-steps / --no-progress 的端到端校验
+        input.rs     FILE 走源码路径 / 编译产物路径 / 两者都不是
+        unit/args.rs 输入加载器的构建识别（`#[path]` 回挂进 src/args.rs）
 ```
 
 ## 使用
@@ -34,6 +37,12 @@ CLI 采用**子命令**形式（一级参数不带 `--` 前缀），解析由 [c
 ```bash
 cargo build --release
 au3 --help                                 # 查看全部命令
+
+# 输入既可以是 .au3 源码，也可以是编译产物（aut2exe 的 .exe / 裸 AU3!EA05|EA06 chunk）：
+# 按文件头识别，用 autoitv3-unpack 把编译进去的脚本读回来，并把该产物本身当资源镜像
+au3 parse build.exe
+au3 debug build.exe                        # 源码视图就是解出来的脚本
+au3 deobf build.exe --evaluate -o clean.au3
 
 # parse：只做解析与统计（顶层条目数、函数数）
 au3 parse some.au3
@@ -142,6 +151,9 @@ evaluated: 296 globals, 10 tables, 30449 values inlined, 11668 calls resolved
 | `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停） |
 | `unpack <PATH> [-o FILE]` | `unp` | 取回编译产物里的载荷：`--script` 输出编译进去的 `.au3` 源码（`AU3!EA05`/`AU3!EA06`；PE、裸 chunk 都行）；默认解资源打包的载荷（目录或 PE 都行，自动认角色，`--raw` 输出整段文本） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
+
+以上 `<FILE>` 一律接受 `.au3` 源码或编译产物（`.exe` / 裸 `AU3!EA05|EA06` chunk）；
+后者会被就地解出脚本并同时充当资源镜像（见上文「输入」）。
 
 **缩写**：只要前缀无歧义即可使用，例如 `au3 deob`、`au3 pars`、`au3 pret`。
 `-o` 同时支持短名 `-o` 与长名 `--output`。
