@@ -315,6 +315,21 @@ fn a_bare_ansi_name_answers_its_a_arm() {
     assert_eq!(text(win10(), body), "3:0");
 }
 
+#[test]
+fn a_bare_name_removed_from_its_arm_still_hits_the_a_variant() {
+    // `GetVersionEx`/`FindResource`/`GetModuleHandle`/`LoadLibrary`/
+    // `CryptAcquireContext` only list their A/W arms; the ANSI fallback has to
+    // carry the bare spelling.
+    let body = format!(
+        r#"Local $t = DllStructCreate("{def}")
+    DllStructSetData($t, "OSVersionInfoSize", DllStructGetSize($t))
+    Local $r = DllCall("kernel32.dll", "int", "GetVersionEx", "ptr", $t)
+    Return $r[0] & "|" & DllStructGetData($t, "MajorVersion")"#,
+        def = VERSION_STRUCT
+    );
+    assert_eq!(text(win10(), &body), "1|10");
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------

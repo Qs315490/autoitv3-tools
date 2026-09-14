@@ -1437,7 +1437,7 @@ impl WindowsEmulation {
         let lower = function.to_ascii_lowercase();
         let wide_name = lower.ends_with('w');
         match lower.as_str() {
-            "getversionexw" | "getversionexa" | "getversionex" | "rtlgetversion" => {
+            "getversionexw" | "getversionexa" | "rtlgetversion" => {
                 Some(DllOutcome::value(self.fill_version_struct(&values)?))
             }
             "getversion" => Some(DllOutcome::value(Value::Int(
@@ -1459,7 +1459,7 @@ impl WindowsEmulation {
             "isbadreadptr" | "isbadwriteptr" => Some(DllOutcome::value(Value::Int(0))),
 
             // ---------------- module resources ----------------
-            "getmodulehandlew" | "getmodulehandlea" | "getmodulehandle" => {
+            "getmodulehandlew" | "getmodulehandlea" => {
                 // Either source can answer `FindResourceW`: the image, or
                 // resources already extracted next to the script. Failing
                 // here when neither exists keeps the boundary visible.
@@ -1468,7 +1468,7 @@ impl WindowsEmulation {
                 }
                 Some(DllOutcome::value(Value::Int(EMULATED_IMAGE_BASE)))
             }
-            "findresourcew" | "findresourcea" | "findresource" => {
+            "findresourcew" | "findresourcea" => {
                 let name = resource_selector(arg(1).as_ref())?;
                 let kind = resource_selector(arg(2).as_ref())?;
                 // Resources extracted to files win over the image: an analysis
@@ -1516,7 +1516,7 @@ impl WindowsEmulation {
             }
 
             // ---------------- modules ----------------
-            "loadlibraryw" | "loadlibrarya" | "loadlibrary" => {
+            "loadlibraryw" | "loadlibrarya" => {
                 let name = self.c_string_arg(arg(0)?)?;
                 Some(DllOutcome::value(Value::Int(self.open_dll(&name))))
             }
@@ -1693,7 +1693,7 @@ impl WindowsEmulation {
             }
 
             // ---------------- CryptoAPI ----------------
-            "cryptacquirecontext" | "cryptacquirecontexta" | "cryptacquirecontextw" => {
+            "cryptacquirecontexta" | "cryptacquirecontextw" => {
                 Some(DllOutcome::with(
                     Value::Bool(true),
                     0,
