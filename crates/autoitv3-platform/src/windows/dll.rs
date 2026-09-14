@@ -72,17 +72,24 @@ fn parse_type(raw: &str) -> Option<ArgType> {
     let ptr_size = (usize::BITS / 8) as u8;
     let (class, width, signed, is_pointer) = match base.as_str() {
         "none" | "void" => (ArgClass::Int, 4, false, false),
-        "bool" | "int" | "long" => (ArgClass::Int, 4, true, false),
-        "int_ptr" | "long_ptr" | "lresult" | "lparam" | "wparam" => (ArgClass::Int, 8, true, false),
-        "uint" | "ulong" => (ArgClass::Int, 4, false, false),
-        "dword" => (ArgClass::Int, 4, false, false),
-        "dword_ptr" => (ArgClass::Int, ptr_size, false, false),
+        "bool" | "boolean" | "int" | "long" => (ArgClass::Int, 4, true, false),
+        "byte" | "ubyte" => (ArgClass::Int, 1, false, false),
+        "char" => (ArgClass::Int, 1, true, false),
+        "short" => (ArgClass::Int, 2, true, false),
+        "ushort" | "wchar" => (ArgClass::Int, 2, false, false),
+        "int_ptr" | "long_ptr" | "lresult" | "lparam" | "wparam" => {
+            (ArgClass::Int, ptr_size, true, false)
+        }
+        "uint_ptr" | "ulong_ptr" | "dword_ptr" | "size_t" => {
+            (ArgClass::Int, ptr_size, false, false)
+        }
+        "uint" | "ulong" | "dword" => (ArgClass::Int, 4, false, false),
         "handle" | "hwnd" | "hwnd_ptr" | "hfile" | "hmodule" | "hinstance" | "hbitmap"
         | "hicon" | "hcursor" | "hfont" | "hbrush" | "hdesk" | "hhook" | "hglobal"
         | "hprocess" | "hthread" | "hkey" | "hsocket" | "hlocal" | "hdwp" | "hdc" | "hrgn" => {
-            (ArgClass::Int, 4, false, true)
+            (ArgClass::Int, ptr_size, false, true)
         }
-        "ptr" | "ulong_ptr" => (ArgClass::Int, ptr_size, false, true),
+        "ptr" => (ArgClass::Int, ptr_size, false, true),
         "int64" | "qword" => (ArgClass::Int, 8, true, false),
         "uint64" => (ArgClass::Int, 8, false, false),
         "float" => (ArgClass::Float, 4, true, false),
@@ -482,10 +489,13 @@ impl WindowsPlatform {
                     }
                     Some(ArgSlot::Buffer(Rc::from(bytes.as_slice()), 2))
                 }
-                ArgClass::Struct => {
-                    let (addr, _) = self.struct_memory(value.to_int())?;
-                    Some(ArgSlot::StructBuf(addr, value.to_int()))
-                }
+                ArgClass::Struct => match self.struct_memory(value.to_int()) {
+                    Some((addr, _)) => Some(ArgSlot::StructBuf(addr, value.to_int())),
+                    // `struct*` also carries raw pointers (`DllStructGetPtr`
+                    // of foreign memory, a `LockResource` address, …); pass
+                    // the value through when it names no live struct.
+                    None => Some(ArgSlot::Word(value_to_word(value))),
+                },
             };
         }
         Some(match ty.class {
@@ -510,10 +520,10 @@ impl WindowsPlatform {
                 units.push(0);
                 ArgSlot::WStr(Rc::from(units.as_slice()))
             }
-            ArgClass::Struct => {
-                let (addr, _) = self.struct_memory(value.to_int())?;
-                ArgSlot::StructBuf(addr, value.to_int())
-            }
+            ArgClass::Struct => match self.struct_memory(value.to_int()) {
+                Some((addr, _)) => ArgSlot::StructBuf(addr, value.to_int()),
+                None => ArgSlot::Word(value_to_word(value)),
+            },
         })
     }
 
@@ -776,3 +786,10 @@ mod probe_tests {
         assert!(load_function(m, "NoSuchExportInTheDll").is_none());
     }
 }
+
+// Unit tests live in `tests/unit/` so this file reads as implementation;
+// `#[path]` pulls them back in as a test module, which is what keeps their
+// access to the private type table.
+#[cfg(test)]
+#[path = "../../tests/unit/windows_dll.rs"]
+mod tests;
