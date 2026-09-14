@@ -128,6 +128,51 @@ fn next_steps_over_a_call_and_step_enters_it() {
 }
 
 #[test]
+fn step_and_next_take_a_statement_count() {
+    // `step 2` counts every statement, so it walks into `Add`.
+    let path = script("step-count-into", SCRIPT);
+    let out = shell(&path, &["break 11", "run", "step 2", "quit"]);
+    assert!(out.contains("Stopped at line 5"), "got:\n{out}");
+
+    // A straight-line body, so `next 3`'s count is easy to follow: from the
+    // stop at line 2 it runs 2, 3 and 4, then stops before line 5.
+    const STRAIGHT: &str = "\
+Global $x = 0
+$x += 1
+$x += 1
+$x += 1
+$x += 1
+";
+    let path = script("next-count", STRAIGHT);
+    let out = shell(&path, &["break 2", "run", "next 3", "print $x", "quit"]);
+    assert!(out.contains("Stopped at line 5"), "got:\n{out}");
+    assert!(has_line(&out, "3"), "x should be 3:\n{out}");
+}
+
+#[test]
+fn break_accepts_function_relative_line_expressions() {
+    let path = script("line-func", SCRIPT);
+    let out = shell(&path, &["break Main+1", "break Main-1", "run", "quit"]);
+    assert!(
+        out.contains("Breakpoint 1 at func Main+1 (line 11)"),
+        "got:\n{out}"
+    );
+    // `Main` starts at line 10, so `Main-1` is the declaration line.
+    assert!(
+        out.contains("Breakpoint 2 at func Main-1 (line 9)"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn break_accepts_stop_relative_line_expressions() {
+    let path = script("line-rel", SCRIPT);
+    let out = shell(&path, &["break 11", "run", "break +1", "continue", "quit"]);
+    assert!(out.contains("Breakpoint 2 at line 12"), "got:\n{out}");
+    assert!(out.contains("Breakpoint 2, line 12"), "got:\n{out}");
+}
+
+#[test]
 fn a_conditional_breakpoint_fires_only_when_it_holds() {
     let path = script("cond", SCRIPT);
     let out = shell(
@@ -236,7 +281,7 @@ fn run_at_a_stop_starts_over_and_keeps_the_breakpoints() {
 fn help_lists_the_commands() {
     let path = script("help", SCRIPT);
     let out = shell(&path, &["help", "quit"]);
-    assert!(out.contains("break <line>"), "got:\n{out}");
+    assert!(out.contains("break <line-expr>"), "got:\n{out}");
     assert!(out.contains("backtrace"), "got:\n{out}");
 }
 

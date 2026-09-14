@@ -238,10 +238,10 @@ enum Outcome {
 enum StepMode {
     /// Run until a breakpoint fires.
     Run,
-    /// Stop at the very next statement, wherever it is.
-    Step,
-    /// Stop at the next statement in this frame or a shallower one.
-    Over(usize),
+    /// Stop after this many statements, wherever they are.
+    Step(u64),
+    /// Stop after this many statements in this frame or a shallower one.
+    Over(usize, u64),
     /// Stop once the current frame has been left.
     Out(usize),
 }
@@ -420,7 +420,7 @@ impl Shell {
         self.restart = false;
         // `jmp_pending` survives: a `jmp` typed before `run` is exactly the
         // case where the target must still be pending when the run starts.
-        self.step = if self.stop_at_start { StepMode::Step } else { StepMode::Run };
+        self.step = if self.stop_at_start { StepMode::Step(1) } else { StepMode::Run };
     }
 
     /// Report how the script body ended.
@@ -507,9 +507,9 @@ impl Shell {
                 self.step = StepMode::Run;
                 Outcome::Resume
             }
-            "s" | "step" => self.step_command("step"),
-            "n" | "next" => self.step_command("next"),
-            "fin" | "finish" => self.step_command("finish"),
+            "s" | "step" => self.step_command("step", rest.trim()),
+            "n" | "next" => self.step_command("next", rest.trim()),
+            "fin" | "finish" => self.step_command("finish", rest.trim()),
             // gdb's `until` collapses into the one-shot breakpoint: with no
             // frame-boundary semantics it was a duplicate of `tbreak <line>`.
             "until" | "u" => self.tbreak_command(rest.trim(), host),
@@ -543,7 +543,7 @@ impl Shell {
                 Outcome::Stay
             }
             "l" | "list" => {
-                self.list_command(rest.trim());
+                self.list_command(rest.trim(), host);
                 Outcome::Stay
             }
             "trace" => {
@@ -564,12 +564,29 @@ impl Shell {
         outcome
     }
 
-    /// `step`, `next` and `finish` differ only in when they stop.
-    fn step_command(&mut self, which: &str) -> Outcome {
+    /// `step [n]`, `next [n]` and `finish` differ only in when they stop.
+    ///
+    /// The count is how many statements to run before stopping again, which is
+    /// what makes walking a loop body practical (`next 5`, `step 20`).
+    fn step_command(&mut self, which: &str, rest: &str) -> Outcome {
+        if which == "finish" && !rest.is_empty() {
+            println!("usage: finish");
+            return Outcome::Stay;
+        }
+        let count = match rest {
+            "" => 1,
+            raw => match raw.parse::<u64>() {
+                Ok(n) if n >= 1 => n,
+                _ => {
+                    println!("usage: {which} [n] (n >= 1)");
+                    return Outcome::Stay;
+                }
+            },
+        };
         self.step = match (self.current, self.paused, which) {
-            (Some((_, depth)), true, "next") => StepMode::Over(depth),
+            (Some((_, depth)), true, "next") => StepMode::Over(depth, count),
             (Some((_, depth)), true, "finish") => StepMode::Out(depth),
-            _ => StepMode::Step,
+            _ => StepMode::Step(count),
         };
         Outcome::Resume
     }
@@ -581,6 +598,56 @@ impl Shell {
                 Outcome::Stay
             }
             None => Outcome::Stay,
+        }
+    }
+
+    /// Resolve a line expression to a line number.
+    ///
+    /// Forms: `123` (absolute), `+N` / `-N` (relative to the stop), `Func`
+    /// (its first statement), and `Func+N` / `Func-N` (entry line plus an
+    /// offset). Bounds are the caller's business — `break` rejects an
+    /// out-of-range target while `list` clamps.
+    fn resolve_line_expr(&self, expr: &str, host: &mut dyn DebugHost) -> Option<u32> {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            return None;
+        }
+        // `+N` / `-N`: relative to the current stop.
+        if expr.starts_with('+') || expr.starts_with('-') {
+            let Ok(n) = expr[1..].parse::<i64>() else {
+                println!("not a line expression: {expr:?}");
+                return None;
+            };
+            let Some((span, _)) = self.current else {
+                println!("no current line to be relative to — run first");
+                return None;
+            };
+            let delta = if expr.starts_with('-') { -n } else { n };
+            let line = span.start.line as i64 + delta;
+            if line < 1 {
+                println!("{expr:?} resolves to line {line}, before the file");
+                return None;
+            }
+            return Some(line as u32);
+        }
+        if let Ok(line) = expr.parse::<u32>() {
+            return Some(line);
+        }
+        // `Func`, `Func+N`, `Func-N`.
+        let (name, offset) = split_function_offset(expr);
+        match host.function_entry_line(name) {
+            Some(entry) => {
+                let line = entry as i64 + offset;
+                if line < 1 {
+                    println!("{expr:?} resolves to line {line}, before the file");
+                    return None;
+                }
+                Some(line as u32)
+            }
+            None => {
+                println!("no such line or function: {expr:?}");
+                None
+            }
         }
     }
 
@@ -634,30 +701,23 @@ impl Shell {
                 None => (head.trim(), None),
             },
         };
-        let mut spec = if let Ok(line) = pos.parse::<u32>() {
-            if line == 0 || line as usize > self.lines.len().max(1) {
-                println!(
-                    "line {line} is outside {} (1..{})",
-                    self.script,
-                    self.lines.len()
-                );
-                return None;
-            }
-            BpSpec::line(line)
-        } else {
-            // Not a number: a function name. Stop at its first statement.
-            match host.function_entry_line(pos) {
-                Some(line) => {
-                    let mut spec = BpSpec::line(line);
-                    spec.label = Some(format!("func {pos}"));
-                    spec
-                }
-                None => {
-                    println!("no such line or function: {pos:?}");
-                    return None;
-                }
-            }
+        let Some(line) = self.resolve_line_expr(pos, host) else {
+            return None;
         };
+        if line == 0 || line as usize > self.lines.len().max(1) {
+            println!(
+                "line {line} is outside {} (1..{})",
+                self.script,
+                self.lines.len()
+            );
+            return None;
+        }
+        let mut spec = BpSpec::line(line);
+        // A function-relative target still shows its function in `info
+        // breakpoints`; plain numbers and `+N`/`-N` have no name.
+        if pos.parse::<u32>().is_err() && !pos.starts_with('+') && !pos.starts_with('-') {
+            spec.label = Some(format!("func {pos}"));
+        }
         spec.condition = condition;
         spec.skip = skip;
         spec.every = every;
@@ -668,27 +728,25 @@ impl Shell {
         Some(spec)
     }
 
-    /// `jmp <line>` — unconditionally transfer execution: statements between
-    /// here and the target are skipped without running. Only lines of the
-    /// frame that will resume are valid; the interpreter rejects the rest.
+    /// `jmp <line-expr>` — unconditionally transfer execution: statements
+    /// between here and the target are skipped without running. Only lines of
+    /// the frame that will resume are valid; the interpreter rejects the rest.
     fn jmp_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
         if !self.paused {
             println!("jmp needs a stopped run — use run first");
             return Outcome::Stay;
         }
-        match rest.trim().parse::<u32>() {
-            Ok(line) => match host.jump_to(line) {
-                Ok(()) => {
-                    println!("jumping to line {line}");
-                    Outcome::Resume
-                }
-                Err(e) => {
-                    println!("cannot jump: {e}");
-                    Outcome::Stay
-                }
-            },
-            Err(_) => {
-                println!("usage: jmp <line> (a statement line of the current frame)");
+        let Some(line) = self.resolve_line_expr(rest.trim(), host) else {
+            println!("usage: jmp <line> (a statement line of the current frame)");
+            return Outcome::Stay;
+        };
+        match host.jump_to(line) {
+            Ok(()) => {
+                println!("jumping to line {line}");
+                Outcome::Resume
+            }
+            Err(e) => {
+                println!("cannot jump: {e}");
                 Outcome::Stay
             }
         }
@@ -1150,8 +1208,12 @@ impl Shell {
         }
     }
 
-    /// `list [line|+]`, showing a window around the stop point.
-    fn list_command(&mut self, rest: &str) {
+    /// `list [line-expr]`, showing a window around the stop point.
+    ///
+    /// Beyond the absolute form this accepts the same expressions as the
+    /// breakpoint commands (`+1`, `-1`, `Main`, `Main-1`); a bare `+` keeps its
+    /// older "one line past the stop" meaning.
+    fn list_command(&mut self, rest: &str, host: &mut dyn DebugHost) {
         if self.lines.is_empty() {
             println!("{} is empty", self.script);
             return;
@@ -1160,12 +1222,9 @@ impl Shell {
         let centre = match rest.trim() {
             "" => current.unwrap_or(1),
             "+" => current.map(|l| l.saturating_add(1)).unwrap_or(1),
-            other => match other.parse::<u32>() {
-                Ok(line) => line,
-                Err(_) => {
-                    println!("usage: list [line]");
-                    return;
-                }
+            other => match self.resolve_line_expr(other, host) {
+                Some(line) => line,
+                None => return,
             },
         };
         // Clamp into the file, so `list 999999` shows the tail rather than
@@ -1251,22 +1310,26 @@ Commands (`help <cmd>` describes one)
 
   run, restart           start the script (a second `run` starts over)
   continue, c            resume until the next breakpoint
-  step, s                run the next statement, entering calls
-  next, n                run to the next statement in this frame
+  step [n], s            run n statements (default 1), entering calls
+  next [n], n            run n statements in this frame (default 1)
   finish, fin            run until the current function returns
-  until <line>           alias of `tbreak <line>`
-  break <line> [if E]    set a breakpoint, optionally conditional
+  until <line-expr>      alias of `tbreak <line-expr>`
+  break <line-expr> [if E]   set a breakpoint, optionally conditional
+  jmp <line-expr>        skip statements up to the target line
   delete [id]            remove one breakpoint, or all of them
   enable/disable <id>    toggle a breakpoint
   print <expr>, p        evaluate an expression in the current frame
   set $x = <expr>        assign to a variable in the current frame
   info <topic>           breakpoints | locals | globals | functions | frame
   backtrace, bt          show the call stack
-  list [line], l         show source around the stop point
+  list [line-expr], l    show source around the stop point
   trace on|off           echo every statement as it runs
   catch on|off           stop where an uncaught error is raised (default on)
   source <file>          run the commands in a file, then come back here
   quit, q                leave the session
+
+A <line-expr> is `123`, `+N`/`-N` (relative to the stop), `Func`, or
+`Func+N`/`Func-N` (the function's entry line plus an offset).
 
 `;` separates several commands on one line (`break 11; run; print $i`); a `;`
 inside a \"quoted string\" is left alone."
@@ -1331,11 +1394,21 @@ impl Debugger for Shell {
         if self.tracing {
             println!("[trace] {}:{} depth={depth}", span.start.line, span.start.col);
         }
-        let stop = match self.step {
+        // `step n`/`next n` count down as statements go by; the mode is cleared
+        // on the stop, so the prompt starts from a clean `Run`.
+        let stop = match &mut self.step {
             StepMode::Run => false,
-            StepMode::Step => true,
-            StepMode::Over(d) => depth <= d,
-            StepMode::Out(d) => depth < d,
+            StepMode::Step(n) => {
+                *n = n.saturating_sub(1);
+                *n == 0
+            }
+            StepMode::Over(d, n) => {
+                if depth <= *d {
+                    *n = n.saturating_sub(1);
+                }
+                *n == 0 && depth <= *d
+            }
+            StepMode::Out(d) => depth < *d,
         };
         self.current = Some((span, depth));
         if stop || watch_fired {
@@ -1554,6 +1627,25 @@ fn strip_tail_number<'a>(head: &'a str, keyword: &str) -> Option<(&'a str, Optio
     Some((head[..idx].trim_end(), Some(n)))
 }
 
+/// Split a `func+N` / `func-N` line expression into its name and offset; a bare
+/// name has offset 0.
+///
+/// AutoIt identifiers cannot contain `+`/`-`, so the last such operator is
+/// always the offset separator.
+fn split_function_offset(expr: &str) -> (&str, i64) {
+    if let Some((name, off)) = expr.rsplit_once('+') {
+        if let Ok(n) = off.parse::<i64>() {
+            return (name, n);
+        }
+    }
+    if let Some((name, off)) = expr.rsplit_once('-') {
+        if let Ok(n) = off.parse::<i64>() {
+            return (name, -n);
+        }
+    }
+    (expr, 0)
+}
+
 /// Split `"break 12"` into `("break", "12")`.
 fn split_command(line: &str) -> (String, String) {
     match line.split_once(char::is_whitespace) {
@@ -1567,23 +1659,25 @@ fn help_for(topic: &str) -> String {
     match topic {
         "run" | "r" => "run — start the script body; typing it again starts over".to_string(),
         "continue" | "c" => "continue — resume until the next breakpoint".to_string(),
-        "step" | "s" => "step — run one statement, entering function calls".to_string(),
+        "step" | "s" => {
+            "step [n] — run n statements (default 1), entering function calls".to_string()
+        }
         "next" | "n" => {
-            "next — run until the next statement in this frame or shallower".to_string()
+            "next [n] — run n statements in this frame or a shallower one".to_string()
         }
         "finish" => "finish — run until the current function returns".to_string(),
-        "until" | "u" => "until <line> — alias of `tbreak <line>`".to_string(),
+        "until" | "u" => "until <line-expr> — alias of `tbreak <line-expr>`".to_string(),
         "break" | "b" => {
-            "break <line|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit".to_string()
+            "break <line-expr> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit".to_string()
         }
         "commands" => {
             "commands <id> [do <cmd> | off] — on-hit debugger commands (run even with nostop)".to_string()
         }
         "jmp" | "j" => {
-            "jmp <line> — unconditionally jump: skip statements up to the target line".to_string()
+            "jmp <line-expr> — unconditionally jump: skip statements up to the target line".to_string()
         }
         "tbreak" | "tb" => {
-            "tbreak <line|func> — one-shot breakpoint: run until it is reached".to_string()
+            "tbreak <line-expr> — one-shot breakpoint: run until it is reached".to_string()
         }
         "eval" => {
             "eval <stmt> — run AutoIt source as a statement (assignments stick)".to_string()
@@ -1606,7 +1700,7 @@ fn help_for(topic: &str) -> String {
         "set" => "set $var = <expr> — assign in the stopped frame".to_string(),
         "info" | "i" => "info breakpoints|locals|globals|functions|frame".to_string(),
         "backtrace" | "bt" | "where" => "backtrace — the call stack, innermost last".to_string(),
-        "list" | "l" => "list [line] — eight source lines around the stop point".to_string(),
+        "list" | "l" => "list [line-expr] — eight source lines around the stop point".to_string(),
         "trace" => "trace on|off — echo every statement as it executes".to_string(),
         "catch" => {
             "catch on|off — stop where an uncaught error is raised, before it unwinds".to_string()
