@@ -8,8 +8,10 @@ description.workspace = true
 autoitv3-ast = { path = "../autoitv3-ast" }
 
 # AutoIt's StringRegExp* are PCRE; we implement them with the pure-Rust
-# `regex` engine, which keeps them platform-independent (no PCRE/C dependency).
-regex = "1.12"
+# `fancy-regex` engine, which covers the backtracking features scripts rely on
+# (lookaround, backreferences, atomic groups, conditionals) without a C
+# dependency, and stays platform-independent.
+fancy-regex = "0.19.2"
 
 
 [lib]

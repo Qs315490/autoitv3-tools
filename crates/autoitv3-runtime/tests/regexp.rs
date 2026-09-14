@@ -1,9 +1,11 @@
 //! Tests for `StringRegExp` / `StringRegExpReplace`.
 //!
 //! AutoIt uses PCRE; this crate implements the same surface with the pure-Rust
-//! `regex` engine (see `autoitv3_runtime::regexp`), so these tests double as the
-//! specification of the subset that is supported and of how the unsupported
-//! PCRE-only features are reported.
+//! `fancy-regex` engine (see `autoitv3_runtime::regexp`), so these tests double
+//! as the specification of the supported subset. `fancy-regex` keeps the
+//! linear-time `regex` syntax for ordinary patterns and adds a backtracking VM
+//! for the PCRE features scripts use: lookaround, backreferences, atomic groups
+//! and conditionals.
 
 use autoitv3_runtime::regexp;
 use autoitv3_runtime::{Runtime, Value};
@@ -27,6 +29,26 @@ fn array(body: &str) -> Vec<String> {
         Value::Array(a) => a.borrow().iter().map(|v| v.to_autoit_string()).collect(),
         other => panic!("expected an array, got {other:?}"),
     }
+}
+
+/// Render `s` as an AutoIt string literal (an embedded `"` is doubled).
+///
+/// Patterns and subjects with quotes are awkward to write inline, so the
+/// lookbehind tests below build the call from Rust values through this.
+fn autoit_literal(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// Run `StringRegExp(subject, pattern, flag)` and summarise the result the way
+/// the deobfuscator's probe wrapper does: `"ERR"` when the call set `@error`,
+/// otherwise `"N:<ubound>"`.
+fn re(subject: &str, pattern: &str, flag: i64) -> String {
+    let body = format!(
+        "    Local $m = StringRegExp({}, {}, {flag})\n    If @error Then Return \"ERR\"\n    Return \"N:\" & UBound($m, 1)",
+        autoit_literal(subject),
+        autoit_literal(pattern),
+    );
+    text(&body)
 }
 
 // ---------------------------------------------------------------------------
@@ -226,16 +248,41 @@ fn lazy_quantifiers_work() {
 }
 
 #[test]
-fn unsupported_pcre_features_are_reported_as_a_bad_pattern() {
-    // The Rust engine is a finite-automaton one: lookaround and backreferences
-    // are not available. They must fail loudly (`@error = 2`) rather than being
-    // approximated.
-    for pattern in [r"(?=x)", r"(?<=x)y", r"(a)\1", r"(?>ab)"] {
-        let body = format!(
-            "    StringRegExp(\"x\", \"{pattern}\")\n    Return @error"
-        );
-        assert_eq!(text(&body), "2", "pattern {pattern} should be a bad pattern");
-    }
+fn backtracking_features_are_available() {
+    // `fancy-regex` adds a backtracking VM for the PCRE constructs scripts
+    // actually use: lookaround, backreferences and atomic groups.
+    assert_eq!(text(r#"Return StringRegExp("x", "(?=x)")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("xy", "(?<=x)y")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("aa", "(a)\1")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("ab", "(?>ab)")"#), "1");
+    // A pattern that really is malformed is still a bad pattern.
+    assert_eq!(
+        text("    StringRegExp(\"x\", \"([a-z\")\n    Return @error"),
+        "2"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Backtracking features
+// ---------------------------------------------------------------------------
+
+#[test]
+fn native_lookbehind_handles_the_tokenizer_scan() {
+    // `(?<!\\)"` is the obfuscator's "unescaped quote" scan. The backtracking
+    // engine supports the lookbehind natively, so it consumes nothing before
+    // the quote: all four quotes match, and alternations containing it compile.
+    let subject = r#"{"Form": null, "Ctrls": {}}"#;
+    assert_eq!(re(subject, r#"(?<!\\)""#, 3), "N:4");
+    assert_eq!(re(subject, r#"(?<!\\)"|\{|\["#, 3), "N:6");
+}
+
+#[test]
+fn tokenizer_variable_names_keep_their_mode_semantics() {
+    // The generated names are `$STR` + six letters; the flags used to locate
+    // them behave as elsewhere in this file.
+    assert_eq!(re("$STRABCXYZ: null", r"\s*(\$[A-Z]{3}[A-Z]{6})\s*:", 1), "N:1");
+    assert_eq!(re("$STRABCXYZ", r"\$[A-Z]{3}[A-Z]{6}", 3), "N:1");
+    assert_eq!(re("STRABCXYZ", r"STR[A-Z]{6}", 1), "N:1");
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +300,7 @@ fn replacement_translation_maps_onto_the_engine_syntax() {
 #[test]
 fn prologue_stripping_keeps_the_body() {
     let re = regexp::compile("(*UCP)(?i)hello").expect("compiles");
-    assert!(re.is_match("HELLO"));
+    assert!(re.is_match("HELLO").expect("no engine error"));
 }
 
 #[test]
