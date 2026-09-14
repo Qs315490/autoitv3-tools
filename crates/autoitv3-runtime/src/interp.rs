@@ -52,6 +52,13 @@ const MAX_PENDING_CALLBACKS: usize = 10_000;
 /// One activation record.
 struct Frame {
     vars: HashMap<String, Value>,
+    /// Names this frame resolves to a function-level `Static`: variable key ->
+    /// key into [`Runtime::statics`].
+    ///
+    /// AutoIt's `Static` is one variable shared by every call of the function,
+    /// so a frame only remembers where the storage lives — it does not hold a
+    /// copy, or a recursive call's write-back would resurrect a stale value.
+    statics: HashMap<String, String>,
     function: Option<String>,
     span: Option<Span>,
     /// How many arguments the caller passed, for `@NumParams`.
@@ -62,6 +69,12 @@ struct Frame {
 pub struct Runtime {
     globals: HashMap<String, Value>,
     frames: Vec<Frame>,
+    /// Function-level `Static` variables, keyed by function and name.
+    ///
+    /// They outlive a call, which is the whole point of `Static`; a script uses
+    /// them for session state (an open handle, a cache) that the next call must
+    /// still see.
+    statics: HashMap<String, Value>,
     /// Lower-cased function name -> definition.
     funcs: HashMap<String, Rc<FuncDef>>,
     /// Lower-cased function name -> original spelling.
@@ -254,6 +267,7 @@ impl Runtime {
         Self {
             globals: HashMap::new(),
             frames: Vec::new(),
+            statics: HashMap::new(),
             funcs: HashMap::new(),
             func_names: HashMap::new(),
             host: None,
@@ -760,6 +774,7 @@ impl Runtime {
 
         self.frames.push(Frame {
             vars,
+            statics: HashMap::new(),
             function: Some(display.clone()),
             span,
             arg_count: args.len(),
@@ -814,6 +829,12 @@ impl Runtime {
 
     /// Copy a `ByRef` parameter back to the caller's variable of the same name.
     fn write_back_by_ref(&mut self, key: &str, value: Value) {
+        // The caller may have passed one of its `Static` variables; that write
+        // has to reach the function's storage, not a per-call slot.
+        if let Some(store) = self.frames.last().and_then(|f| f.statics.get(key)).cloned() {
+            bind_var(&mut self.statics, &store, value);
+            return;
+        }
         if let Some(frame) = self.frames.last_mut() {
             if frame.vars.contains_key(key) {
                 frame.vars.insert(key.to_string(), value);
@@ -850,6 +871,9 @@ impl Runtime {
     /// allocation nor a lower-casing — this is the interpreter's hottest loop.
     fn read_var_key(&self, key: &str, span: Span) -> Result<Value, RuntimeError> {
         if let Some(f) = self.frames.last() {
+            if let Some(store) = f.statics.get(key) {
+                return Ok(self.statics.get(store).cloned().unwrap_or(Value::Null));
+            }
             if let Some(v) = f.vars.get(key) {
                 return Ok(v.clone());
             }
@@ -875,6 +899,14 @@ impl Runtime {
             dbg.on_variable_write(key, &value);
         }
         let _ = span;
+        // A name bound to a `Static` writes through to the function's storage,
+        // so every activation sees the same variable.
+        if !matches!(scope, VarScope::Global) {
+            if let Some(store) = self.frames.last().and_then(|f| f.statics.get(key)).cloned() {
+                bind_var(&mut self.statics, &store, value);
+                return;
+            }
+        }
         match scope {
             VarScope::Global => bind_var(&mut self.globals, key, value),
             VarScope::Local => bind_var(self.current_vars(), key, value),
@@ -900,6 +932,9 @@ impl Runtime {
     pub fn variable_value(&self, name: &str) -> Option<Value> {
         let key = var_key(name);
         if let Some(f) = self.frames.last() {
+            if let Some(store) = f.statics.get(&key) {
+                return self.statics.get(store).cloned();
+            }
             if let Some(v) = f.vars.get(&key) {
                 return Some(v.clone());
             }
@@ -1610,19 +1645,27 @@ impl Runtime {
                 continue;
             }
 
-            let value = if let Some(init) = &item.init {
-                self.eval_expr(init)?
-            } else if !item.dims.is_empty() {
-                if is_empty_brackets(&item.dims) {
-                    // `Local $m[]` declares a Map (an array needs a size or an
-                    // initializer).
-                    Value::map()
-                } else {
-                    self.array_with_dims(&item.dims, span)?
+            // A function-level `Static` is one variable the function shares
+            // with every call: the first call evaluates the initializer and
+            // parks the value on the runtime, later calls leave it alone and
+            // only point this frame at the storage that already holds it.
+            // (Outside a function there is nothing to share with, so `Static`
+            // falls through to the ordinary path below.)
+            if v.kind == VarKind::Static && !self.frames.is_empty() {
+                let store = self.static_store_key(key);
+                if !self.statics.contains_key(&store) {
+                    let value = self.decl_value(item, span)?;
+                    self.statics.insert(store.clone(), value);
                 }
-            } else {
-                Value::Str(String::new())
-            };
+                self.frames
+                    .last_mut()
+                    .expect("non-empty")
+                    .statics
+                    .insert(key.to_string(), store);
+                continue;
+            }
+
+            let value = self.decl_value(item, span)?;
 
             if v.is_enum {
                 // Enum numbering: an explicit value resets the counter,
@@ -1643,6 +1686,38 @@ impl Runtime {
             self.write_var_key(item.name.key(), value, scope, span);
         }
         Ok(())
+    }
+
+    /// The value a declaration gives one variable: its initializer, else the
+    /// array its brackets describe, else an empty string.
+    fn decl_value(&mut self, item: &VarDeclItem, span: Span) -> Result<Value, RuntimeError> {
+        if let Some(init) = &item.init {
+            return self.eval_expr(init);
+        }
+        if !item.dims.is_empty() {
+            if is_empty_brackets(&item.dims) {
+                // `Local $m[]` declares a Map (an array needs a size or an
+                // initializer).
+                return Ok(Value::map());
+            }
+            return self.array_with_dims(&item.dims, span);
+        }
+        Ok(Value::Str(String::new()))
+    }
+
+    /// Storage key for a function-level `Static` variable.
+    ///
+    /// The store lives on the runtime and therefore has to be qualified by the
+    /// declaring function: two functions may each declare `Static $cache` and
+    /// those are two different variables. The separator cannot appear in a
+    /// variable name, so no name pair can collide.
+    fn static_store_key(&self, var_key: &str) -> String {
+        let function = self
+            .frames
+            .last()
+            .and_then(|f| f.function.as_deref())
+            .unwrap_or("");
+        format!("{}\u{1}{}", function.to_ascii_lowercase(), var_key)
     }
 
     /// Build the array a declaration's dimensions describe.
