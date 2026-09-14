@@ -27,7 +27,7 @@ use crate::error::{Flow, RuntimeError};
 use crate::host::{Host, HostContext};
 use crate::platform::Platform;
 use crate::profile::ExecutionProfile;
-use crate::value::{MapKey, Value};
+use crate::value::{FuncRefName, MapKey, Value};
 
 /// Default runaway-loop guard.
 ///
@@ -611,29 +611,54 @@ impl Runtime {
                 span: Some(span),
             });
         };
-        let name = name.clone();
-        self.call_named(&name, args, span)
+        // The reference is shared and carries its own lookup key, so neither
+        // the name nor the key has to be copied here.
+        self.call_named_key(name.key(), name.display(), args, span)
     }
 
     /// Call `name` — user function first, then builtin, then host.
     pub fn call_named(&mut self, name: &str, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
-        if self.has_function(name) {
-            return self.call_user(name, args, Some(span));
+        let key = var_key(name);
+        self.call_named_key(&key, name, args, span)
+    }
+
+    /// [`Runtime::call_named`] for callers that already hold the lookup key
+    /// (`FuncRefName::key`, `Ident::key`).
+    ///
+    /// `display` is the name as the script wrote it, used for error messages and
+    /// the debugger hook; `key` drives the lookups, so no call has to lower-case
+    /// a name or allocate one.
+    fn call_named_key(
+        &mut self,
+        key: &str,
+        display: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        if self.funcs.contains_key(key) {
+            return self.call_user_key(key, display, args, Some(span));
         }
-        self.call_external(name, args, span)
+        self.call_external(key, display, args, span)
     }
 
     /// Call a builtin or host function.
     ///
     /// The host is reached through a [`HostContext`] built from *disjoint*
     /// fields of `self`, so no raw pointers or interior mutability are needed.
-    fn call_external(&mut self, name: &str, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
+    fn call_external(
+        &mut self,
+        key: &str,
+        display: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         // Builtins/host/platform calls have no script body, so the debugger
-        // gets its own hook for them (`untilcall GUICreate` is one user).
+        // gets its own hook for them (`untilcall GUICreate` is one user). The
+        // hook wants the spelling the script used.
         if let Some(dbg) = self.debugger.as_mut() {
-            dbg.on_builtin_call(name);
+            dbg.on_builtin_call(display);
         }
-        if let Some(v) = builtins::call(self, name, &args, span)? {
+        if let Some(v) = builtins::call(self, key, &args, span)? {
             return Ok(v);
         }
         // An explicit host wins over the platform default.
@@ -641,7 +666,7 @@ impl Runtime {
             let Runtime { globals, error, extended, profile, host, .. } = self;
             let mut ctx = HostBridge { globals, error, extended, profile };
             if let Some(host) = host.as_mut() {
-                if let Some(v) = host.call(name, args.clone(), &mut ctx)? {
+                if let Some(v) = host.call(display, args.clone(), &mut ctx)? {
                     return Ok(v);
                 }
             }
@@ -654,7 +679,7 @@ impl Runtime {
             let Runtime { globals, error, extended, profile, platform, .. } = self;
             let mut ctx = HostBridge { globals, error, extended, profile };
             if let Some(p) = platform.as_mut() {
-                result = p.call(name, args, &mut ctx)?;
+                result = p.call(display, args, &mut ctx)?;
                 pending = p.take_pending_callbacks();
             }
         }
@@ -677,7 +702,7 @@ impl Runtime {
             return Ok(v);
         }
 
-        Err(RuntimeError::UndefinedFunction { name: name.to_string(), span: Some(span) })
+        Err(RuntimeError::UndefinedFunction { name: display.to_string(), span: Some(span) })
     }
 
     fn call_user(
@@ -686,10 +711,21 @@ impl Runtime {
         args: Vec<Value>,
         span: Option<Span>,
     ) -> Result<Value, RuntimeError> {
-        let key = name.to_ascii_lowercase();
-        let Some(def) = self.funcs.get(&key).cloned() else {
+        let key = var_key(name);
+        self.call_user_key(&key, name, args, span)
+    }
+
+    /// [`Runtime::call_user`] for callers that already hold the lookup key.
+    fn call_user_key(
+        &mut self,
+        key: &str,
+        display: &str,
+        args: Vec<Value>,
+        span: Option<Span>,
+    ) -> Result<Value, RuntimeError> {
+        let Some(def) = self.funcs.get(key).cloned() else {
             return Err(RuntimeError::UndefinedFunction {
-                name: name.to_string(),
+                name: display.to_string(),
                 span,
             });
         };
@@ -715,9 +751,9 @@ impl Runtime {
 
         let display = self
             .func_names
-            .get(&key)
+            .get(key)
             .cloned()
-            .unwrap_or_else(|| name.to_string());
+            .unwrap_or_else(|| display.to_string());
         if let Some(dbg) = self.debugger.as_mut() {
             dbg.on_call_enter(&display, &args);
         }
@@ -917,7 +953,7 @@ impl Runtime {
                 LitKind::Null => Value::Null,
             }),
             ExprKind::Macro(name) => Ok(self.eval_macro(name)),
-            ExprKind::Ident(id) => Ok(Value::FuncRef(id.name.clone())),
+            ExprKind::Ident(id) => Ok(Value::FuncRef(FuncRefName::new(&id.name))),
             ExprKind::Var(v) => {
                 let base = self.read_var_key(v.name.key(), e.span)?;
                 self.index_value(base, &v.indices, e.span)
@@ -927,7 +963,7 @@ impl Runtime {
                 for a in &c.args {
                     args.push(self.eval_expr(a)?);
                 }
-                self.call_named(&c.callee.name, args, e.span)
+                self.call_named_key(c.callee.key(), &c.callee.name, args, e.span)
             }
             ExprKind::IndexCall(v, args) => {
                 let callee = {

@@ -548,7 +548,7 @@ impl SubstituteCtx<'_> {
         };
         self.calls_resolved += 1;
         e.kind = ExprKind::Call(CallExpr {
-            callee: Ident::new(name, e.span),
+            callee: Ident::new(name.display(), e.span),
             args,
         });
     }
