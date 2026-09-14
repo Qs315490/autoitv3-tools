@@ -56,3 +56,20 @@ fn evaluate_honours_max_steps() {
     let out = au3(&["evaluate", path.to_str().unwrap(), "--max-steps", "1000"]);
     assert!(out.contains("step limit exceeded (1000)"), "got:\n{out}");
 }
+
+#[test]
+fn evaluate_accepts_no_progress() {
+    // The run is far shorter than the heartbeat interval, so the point here is
+    // only that the flag parses and the quiet path runs to the same report;
+    // `progress::reporter` is unit-tested for the actual suppression.
+    let path = script("quiet", &format!("{SPIN}\nSpin()\n"));
+    let out = au3(&[
+        "evaluate",
+        path.to_str().unwrap(),
+        "--max-steps",
+        "1000",
+        "--no-progress",
+    ]);
+    assert!(out.contains("evaluated:"), "got:\n{out}");
+    assert!(!out.contains("evaluating:"), "got:\n{out}");
+}

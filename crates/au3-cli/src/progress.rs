@@ -38,6 +38,16 @@ impl Default for ProgressDebugger {
     }
 }
 
+/// The debugger a long evaluation should install: a [`ProgressDebugger`]
+/// unless the user asked for `--no-progress`.
+pub fn reporter(no_progress: bool) -> Option<Box<dyn Debugger>> {
+    if no_progress {
+        None
+    } else {
+        Some(Box::new(ProgressDebugger::new()))
+    }
+}
+
 impl Debugger for ProgressDebugger {
     fn on_statement(
         &mut self,
@@ -63,5 +73,16 @@ impl Debugger for ProgressDebugger {
             self.start.elapsed().as_secs_f32()
         );
         DebugAction::Continue
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reporter;
+
+    #[test]
+    fn no_progress_installs_no_reporter() {
+        assert!(reporter(true).is_none(), "--no-progress must install nothing");
+        assert!(reporter(false).is_some(), "the default must install a reporter");
     }
 }

@@ -13,17 +13,17 @@
 //! `$l_str_003` / `f042` aliases on top.
 
 use autoitv3_deobf::{
-    evaluate_with_debugger, DeobfReport, Deobfuscator, SubstituteOptions,
+    evaluate_with_debugger, evaluate_with_options, DeobfReport, Deobfuscator, SubstituteOptions,
 };
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_program, CliResult, EffectArgs, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs,
-    WinEmuArgs,
+    load_program, CliResult, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs, StepArgs,
+    SubstituteArgs, WinEmuArgs,
 };
 use crate::output::write_output;
-use crate::progress::ProgressDebugger;
+use crate::progress::reporter;
 use std::path::Path;
 
 /// Arguments for `au3 deobfuscate`.
@@ -76,6 +76,11 @@ pub struct DeobfuscateArgs {
     #[command(flatten)]
     pub steps: StepArgs,
 
+    /// Progress-heartbeat control (see `ProgressArgs`); only used with
+    /// --evaluate.
+    #[command(flatten)]
+    pub progress: ProgressArgs,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 
@@ -95,14 +100,21 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     };
     let mut tables = None;
     if args.evaluate {
-        let outcome = evaluate_with_debugger(
-            &mut prog,
-            args.effects.apply(args.profile.profile())?,
-            args.win.platform(Some(Path::new(&args.input)))?,
-            options,
-            args.steps.max_steps,
-            Box::new(ProgressDebugger::new()),
-        );
+        let profile = args.effects.apply(args.profile.profile())?;
+        let platform = args.win.platform(Some(Path::new(&args.input)))?;
+        let outcome = match reporter(args.progress.no_progress) {
+            Some(debugger) => evaluate_with_debugger(
+                &mut prog,
+                profile,
+                platform,
+                options,
+                args.steps.max_steps,
+                debugger,
+            ),
+            None => {
+                evaluate_with_options(&mut prog, profile, platform, options, args.steps.max_steps)
+            }
+        };
         super::evaluate::report(&outcome);
         tables = Some(outcome.values);
     }

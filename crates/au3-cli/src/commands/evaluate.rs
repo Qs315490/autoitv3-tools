@@ -18,16 +18,16 @@
 //! au3 evaluate sample.au3 --no-win-emu     # stop at the first Windows call
 //! ```
 
-use autoitv3_deobf::{evaluate_with_debugger, SubstituteOptions};
+use autoitv3_deobf::{evaluate_with_debugger, evaluate_with_options, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_program, CliResult, EffectArgs, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs,
-    WinEmuArgs,
+    load_program, CliResult, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs, StepArgs,
+    SubstituteArgs, WinEmuArgs,
 };
 use crate::output::write_output;
-use crate::progress::ProgressDebugger;
+use crate::progress::reporter;
 use std::path::Path;
 
 /// Arguments for `au3 evaluate`.
@@ -52,6 +52,10 @@ pub struct EvaluateArgs {
     /// Substitution knobs (see `SubstituteArgs`).
     #[command(flatten)]
     pub substitute: SubstituteArgs,
+
+    /// Progress-heartbeat control (see `ProgressArgs`).
+    #[command(flatten)]
+    pub progress: ProgressArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -93,16 +97,22 @@ pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
 pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let mut prog = load_program(&args.input)?;
 
-    let outcome = evaluate_with_debugger(
-        &mut prog,
-        args.effects.apply(args.profile.profile())?,
-        args.win.platform(Some(Path::new(&args.input)))?,
-        SubstituteOptions {
-            inline_declarations: args.substitute.inline_tables,
-        },
-        args.steps.max_steps,
-        Box::new(ProgressDebugger::new()),
-    );
+    let profile = args.effects.apply(args.profile.profile())?;
+    let platform = args.win.platform(Some(Path::new(&args.input)))?;
+    let options = SubstituteOptions {
+        inline_declarations: args.substitute.inline_tables,
+    };
+    let outcome = match reporter(args.progress.no_progress) {
+        Some(debugger) => evaluate_with_debugger(
+            &mut prog,
+            profile,
+            platform,
+            options,
+            args.steps.max_steps,
+            debugger,
+        ),
+        None => evaluate_with_options(&mut prog, profile, platform, options, args.steps.max_steps),
+    };
     report(&outcome);
 
     let mut printer = PrettyPrinter::new().strip_comments(true);

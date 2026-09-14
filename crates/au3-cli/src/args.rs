@@ -135,6 +135,15 @@ pub struct SubstituteArgs {
     pub inline_tables: bool,
 }
 
+/// Progress-heartbeat control shared by the commands that run a long
+/// evaluation.
+#[derive(Args, Debug, Clone, Default)]
+pub struct ProgressArgs {
+    /// Do not print the periodic progress heartbeat for long evaluations
+    #[arg(long = "no-progress")]
+    pub no_progress: bool,
+}
+
 /// Expand an `--emulate` area alias into the function names routed to the
 /// emulation layer.
 fn expand_emulate_area(raw: &str) -> CliResult<Vec<String>> {
