@@ -420,11 +420,20 @@ impl Shell {
         self.restart = false;
         // `jmp_pending` survives: a `jmp` typed before `run` is exactly the
         // case where the target must still be pending when the run starts.
-        self.step = if self.stop_at_start { StepMode::Step(1) } else { StepMode::Run };
+        //
+        // A `step`/`next` typed before the run is a request to stop early and
+        // must survive too; `--stop-at-start` is only the fallback for when
+        // nothing asked to step.
+        if matches!(self.step, StepMode::Run) && self.stop_at_start {
+            self.step = StepMode::Step(1);
+        }
     }
 
     /// Report how the script body ended.
     fn report_run(&mut self, outcome: &Result<autoitv3_runtime::Flow, autoitv3_runtime::RuntimeError>) {
+        // The run is over: a step budget it did not get to spend must not leak
+        // into the next one.
+        self.step = StepMode::Run;
         if self.finished {
             return;
         }
