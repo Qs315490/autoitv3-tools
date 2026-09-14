@@ -1206,9 +1206,9 @@ impl WindowsEmulation {
                         match tail.find('%') {
                             Some(end) => {
                                 let name = &tail[..end];
-                                out.push_str(&std::env::var(name).unwrap_or_else(|_| {
-                                    format!("%{name}%")
-                                }));
+                                out.push_str(
+                                    &host_env(name).unwrap_or_else(|| format!("%{name}%")),
+                                );
                                 rest = &tail[end + 1..];
                             }
                             None => {
@@ -3104,7 +3104,6 @@ fn arg_int(args: &[Value], i: usize) -> i64 {
     args.get(i).map(|v| v.to_int()).unwrap_or(0)
 }
 
-/// Whether the execution profile allows side effects.
 /// The account name to present, from the host environment.
 fn host_user() -> String {
     std::env::var("USERNAME")
@@ -3123,4 +3122,19 @@ fn host_computer() -> String {
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_ascii_uppercase())
         .unwrap_or_else(|| "DESKTOP-EMULATED".to_string())
+}
+
+/// Resolve an environment variable the way a Windows-targeted script expects.
+///
+/// Windows spells its identity variables differently from a Unix host, so the
+/// Windows-only names are mapped onto the same host values the emulated paths
+/// already use (`@UserName` / `@ComputerName`, `WindowsPaths`); every other
+/// name is read from the host environment unchanged. Names are matched
+/// case-insensitively, as on Windows.
+fn host_env(name: &str) -> Option<String> {
+    match name.to_ascii_uppercase().as_str() {
+        "USERNAME" => Some(host_user()),
+        "COMPUTERNAME" => Some(host_computer()),
+        _ => std::env::var(name).ok(),
+    }
 }
