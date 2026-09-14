@@ -296,7 +296,7 @@ impl Simplify {
         let args = call.args[1..].to_vec();
         let span = e.span;
         e.kind = ExprKind::Call(CallExpr {
-            callee: Ident { name: target, span },
+            callee: Ident::new(target, span),
             args,
         });
         self.calls += 1;

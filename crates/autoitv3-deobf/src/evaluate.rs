@@ -548,7 +548,7 @@ impl SubstituteCtx<'_> {
         };
         self.calls_resolved += 1;
         e.kind = ExprKind::Call(CallExpr {
-            callee: Ident { name, span: e.span },
+            callee: Ident::new(name, e.span),
             args,
         });
     }
@@ -662,10 +662,7 @@ fn value_literal(v: &Value, depth: usize) -> Option<Expr> {
         }
         Value::Binary(b) => Some(Expr {
             kind: ExprKind::Call(CallExpr {
-                callee: Ident {
-                    name: "Binary".to_string(),
-                    span: Span::default(),
-                },
+                callee: Ident::new("Binary", Span::default()),
                 args: vec![Expr {
                     kind: ExprKind::Lit(Lit {
                         kind: LitKind::Str(autoitv3_runtime::value::binary_to_hex(b)),
