@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use autoitv3_ast::ast::*;
+use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
 use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
 
 /// Result of resolving the function table.
@@ -44,12 +45,24 @@ pub struct TableReport {
 /// Both fields are optional: when either is `None` the pass *detects* the table
 /// instead of relying on a particular obfuscator's naming, so no one sample's
 /// identifier ever becomes part of the tool.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TableOptions {
     /// The table variable's name, with or without the leading `$`.
     pub table_var: Option<String>,
     /// The name of the pure builder function that constructs the table.
     pub builder_func: Option<String>,
+    /// Interpreter step budget for evaluating the builder; `0` means no limit.
+    pub max_steps: u64,
+}
+
+impl Default for TableOptions {
+    fn default() -> Self {
+        Self {
+            table_var: None,
+            builder_func: None,
+            max_steps: DEFAULT_MAX_STEPS,
+        }
+    }
 }
 
 /// Resolve a function table at an explicit location and rewrite its usages.
@@ -62,6 +75,16 @@ pub fn resolve_function_table(
     prog: &mut Program,
     table_var: &str,
     builder_func: &str,
+) -> TableReport {
+    resolve_function_table_budgeted(prog, table_var, builder_func, DEFAULT_MAX_STEPS)
+}
+
+/// [`resolve_function_table`] with an explicit interpreter step budget.
+fn resolve_function_table_budgeted(
+    prog: &mut Program,
+    table_var: &str,
+    builder_func: &str,
+    max_steps: u64,
 ) -> TableReport {
     // Normalize: AST stores variable names with the leading '$'.
     let tv = if table_var.starts_with('$') {
@@ -76,7 +99,7 @@ pub fn resolve_function_table(
     };
 
     // Pass 1: evaluate the builder function on the runtime to obtain the table.
-    ctx.table = eval_builder(prog, builder_func);
+    ctx.table = eval_builder(prog, builder_func, max_steps);
 
     // If we got a table, build the index -> name map.
     if let Some(table) = &ctx.table {
@@ -104,10 +127,12 @@ pub fn resolve_function_table(
 pub fn resolve_function_table_with(prog: &mut Program, options: &TableOptions) -> TableReport {
     match (&options.table_var, &options.builder_func) {
         (Some(tv), Some(bf)) if !tv.is_empty() && !bf.is_empty() => {
-            resolve_function_table(prog, tv, bf)
+            resolve_function_table_budgeted(prog, tv, bf, options.max_steps)
         }
-        _ => match detect_function_table(prog) {
-            Some((tv, bf)) => resolve_function_table(prog, &tv, &bf),
+        _ => match detect_function_table(prog, options.max_steps) {
+            Some((tv, bf)) => {
+                resolve_function_table_budgeted(prog, &tv, &bf, options.max_steps)
+            }
             None => TableReport::default(),
         },
     }
@@ -119,7 +144,7 @@ pub fn resolve_function_table_with(prog: &mut Program, options: &TableOptions) -
 /// script-defined function that returns an array: element 0 is the entry count
 /// and the remaining entries all look like function names. Among the candidates
 /// the largest table wins, so a small helper array cannot shadow the real one.
-fn detect_function_table(prog: &Program) -> Option<(String, String)> {
+fn detect_function_table(prog: &Program, max_steps: u64) -> Option<(String, String)> {
     use std::collections::HashSet;
 
     let defined: HashSet<String> = prog
@@ -154,7 +179,7 @@ fn detect_function_table(prog: &Program) -> Option<(String, String)> {
             if !defined.contains(&builder.to_ascii_lowercase()) {
                 continue;
             }
-            let Some(table) = eval_builder(prog, &builder) else {
+            let Some(table) = eval_builder(prog, &builder, max_steps) else {
                 continue;
             };
             if table.len() < 2 {
@@ -208,14 +233,15 @@ struct ResolveCtx {
 ///
 /// Returns the resolved element list (element 0 is the count), or `None` when
 /// the builder is missing or cannot be evaluated.
-fn eval_builder(prog: &Program, builder_func: &str) -> Option<Vec<String>> {
+fn eval_builder(prog: &Program, builder_func: &str, max_steps: u64) -> Option<Vec<String>> {
     let mut rt = Runtime::with_program(prog);
     // Deobfuscation must be reproducible and must not touch the machine, so it
     // uses the deterministic profile rather than AutoIt's own semantics.
     rt.set_profile(ExecutionProfile::deterministic());
-    // Table builders are finite, but keep a generous guard against a builder
-    // that loops forever on an unsupported construct.
-    rt.set_max_steps(20_000_000);
+    // Table builders are finite, but keep a guard against a builder that loops
+    // forever on an unsupported construct. The budget comes from the caller so
+    // the CLI's `--max-steps` reaches it.
+    rt.set_max_steps(max_steps);
 
     let value = rt.call_function(builder_func, Vec::new()).ok()?;
     let Value::Array(items) = value else { return None };

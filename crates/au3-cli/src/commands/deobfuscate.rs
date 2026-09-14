@@ -18,7 +18,9 @@ use autoitv3_deobf::{
 use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
-use crate::args::{load_program, CliResult, OutputArgs, WinEmuArgs};
+use crate::args::{
+    load_program, CliResult, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs, WinEmuArgs,
+};
 use crate::output::write_output;
 use std::path::Path;
 
@@ -34,10 +36,9 @@ pub struct DeobfuscateArgs {
     #[arg(long)]
     pub evaluate: bool,
 
-    /// With --evaluate, run with AutoIt semantics instead of the
-    /// deterministic analysis profile
-    #[arg(long)]
-    pub faithful: bool,
+    /// Execution semantics (see `ProfileArgs`); only used with --evaluate.
+    #[command(flatten)]
+    pub profile: ProfileArgs,
 
     /// Rename identifiers: give every script-defined variable and function a
     /// deterministic `$l_str_003` / `f042` alias. Off by default, so the output
@@ -59,10 +60,14 @@ pub struct DeobfuscateArgs {
     #[arg(long, value_name = "NAME")]
     pub table_builder: Option<String>,
 
-    /// With --evaluate, also rewrite `Global Const $t = Build()` into the
-    /// table's literal value (otherwise the declaration keeps its call)
-    #[arg(long)]
-    pub inline_tables: bool,
+    /// Substitution knobs (see `SubstituteArgs`); only used with --evaluate.
+    #[command(flatten)]
+    pub substitute: SubstituteArgs,
+
+    /// Interpreter step budget (see `StepArgs`), for both --evaluate and the
+    /// function-table pass.
+    #[command(flatten)]
+    pub steps: StepArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -79,15 +84,16 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     // see (the obfuscator's string table), and the later passes then fold and
     // rename the result.
     let options = SubstituteOptions {
-        inline_declarations: args.inline_tables,
+        inline_declarations: args.substitute.inline_tables,
     };
     let mut tables = None;
     if args.evaluate {
         let outcome = evaluate_with_options(
             &mut prog,
-            super::evaluate::profile(args.faithful),
+            args.profile.profile(),
             args.win.platform(Some(Path::new(&args.input)))?,
             options,
+            args.steps.max_steps,
         );
         super::evaluate::report(&outcome);
         tables = Some(outcome.values);
@@ -101,6 +107,7 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     if let (Some(table_var), Some(builder)) = (&args.table_var, &args.table_builder) {
         deobf = deobf.with_function_table(table_var.clone(), builder.clone());
     }
+    deobf = deobf.with_max_steps(args.steps.max_steps);
     let mut report = DeobfReport::default();
     match &tables {
         // The simplifier splices `Execute("...")` strings into the program as

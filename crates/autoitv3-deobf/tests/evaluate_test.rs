@@ -8,6 +8,7 @@ use autoitv3_ast::ast::ExprKind;
 use autoitv3_ast::parse;
 use autoitv3_deobf::{evaluate, evaluate_with_options, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
+use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
 use autoitv3_runtime::ExecutionProfile;
 
 fn render(prog: &autoitv3_ast::Program) -> String {
@@ -32,6 +33,7 @@ fn run_with(
         ExecutionProfile::deterministic(),
         autoitv3_platform::host_platform(),
         options,
+        DEFAULT_MAX_STEPS,
     );
     (render(&prog), report)
 }
@@ -517,6 +519,7 @@ fn sample_evaluate(module: Option<&std::path::Path>) -> Option<autoitv3_deobf::E
         ExecutionProfile::deterministic(),
         autoitv3_platform::host_platform_with(emu),
         SubstituteOptions::default(),
+        DEFAULT_MAX_STEPS,
     ))
 }
 

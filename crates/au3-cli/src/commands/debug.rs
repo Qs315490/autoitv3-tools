@@ -41,10 +41,12 @@ use autoitv3_ast::span::Span;
 use autoitv3_ast::Program;
 use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::RuntimeError;
-use autoitv3_runtime::{ExecutionProfile, Runtime};
+use autoitv3_runtime::Runtime;
 use clap::Args;
 
-use crate::args::{load_program, CliError, CliResult, EffectArgs, WinEmuArgs};
+use crate::args::{
+    load_program, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
+};
 use crate::output::format_value;
 use std::path::Path;
 
@@ -87,17 +89,17 @@ pub struct DebugArgs {
     #[arg(long)]
     pub stop_at_start: bool,
 
-    /// Run with AutoIt semantics: really wait in Sleep(), really randomise
-    /// Random(), and let file/environment writes happen.
-    ///
-    /// The default is the deterministic analysis profile, which is fast,
-    /// reproducible and refuses writes (see `ExecutionProfile`).
-    #[arg(long)]
-    pub faithful: bool,
+    /// Execution semantics (see `ProfileArgs`).
+    #[command(flatten)]
+    pub profile: ProfileArgs,
 
     /// Per-effect allow/deny overrides (see `EffectArgs`).
     #[command(flatten)]
     pub effects: EffectArgs,
+
+    /// Interpreter step budget (see `StepArgs`).
+    #[command(flatten)]
+    pub steps: StepArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -162,12 +164,8 @@ fn build_runtime(prog: &Program, args: &DebugArgs, shell: Rc<RefCell<Shell>>) ->
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
     }
-    let base = if args.faithful {
-        ExecutionProfile::faithful()
-    } else {
-        ExecutionProfile::deterministic()
-    };
-    match args.effects.apply(base) {
+    rt.set_max_steps(args.steps.max_steps);
+    match args.effects.apply(args.profile.profile()) {
         Ok(p) => rt.set_profile(p),
         Err(e) => eprintln!("warning: {}", e.message),
     }

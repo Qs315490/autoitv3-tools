@@ -28,6 +28,7 @@ use std::collections::{HashMap, HashSet};
 
 use autoitv3_ast::ast::*;
 use autoitv3_ast::span::Span;
+use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
 use autoitv3_runtime::profile::ExecutionProfile;
 use autoitv3_runtime::value::MapKey;
 use autoitv3_runtime::{Runtime, Value};
@@ -165,15 +166,23 @@ pub fn evaluate_with_platform(
     profile: ExecutionProfile,
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
 ) -> EvaluateReport {
-    evaluate_with_options(prog, profile, platform, SubstituteOptions::default())
+    evaluate_with_options(
+        prog,
+        profile,
+        platform,
+        SubstituteOptions::default(),
+        DEFAULT_MAX_STEPS,
+    )
 }
 
-/// [`evaluate_with_platform`] with explicit [`SubstituteOptions`].
+/// [`evaluate_with_platform`] with explicit [`SubstituteOptions`] and an
+/// interpreter step budget (`max_steps`; `0` means no limit).
 pub fn evaluate_with_options(
     prog: &mut Program,
     profile: ExecutionProfile,
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
     options: SubstituteOptions,
+    max_steps: u64,
 ) -> EvaluateReport {
     let mut report = EvaluateReport::default();
 
@@ -182,7 +191,7 @@ pub fn evaluate_with_options(
     let mut rt = Runtime::with_program(prog);
     rt.set_platform(platform);
     rt.set_profile(profile);
-    rt.set_max_steps(20_000_000);
+    rt.set_max_steps(max_steps);
     match rt.run_script() {
         Ok(flow) => {
             report.completed = flow.is_normal();
