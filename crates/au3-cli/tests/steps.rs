@@ -46,7 +46,7 @@ fn au3(args: &[&str]) -> String {
 #[test]
 fn run_honours_max_steps() {
     let path = script("run", SPIN);
-    let out = au3(&["run", "Spin", path.to_str().unwrap(), "--max-steps", "1000"]);
+    let out = au3(&["run", path.to_str().unwrap(), "Spin", "--max-steps", "1000"]);
     assert!(out.contains("step limit exceeded (1000)"), "got:\n{out}");
 }
 

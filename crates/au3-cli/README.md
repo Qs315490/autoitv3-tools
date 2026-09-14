@@ -71,11 +71,16 @@ au3 evaluate some.au3 --win-version win11 -o resolved.au3
 au3 evaluate some.au3 --win-version win7 --win-arch x86 -o resolved.au3
 au3 evaluate some.au3 --no-win-emu        # 关掉仿真，停在第一个 Windows 调用
 
-# run：用解释器调用函数（--arg 传参，--init 先执行脚本体以建立全局表）
-au3 run Add --arg 2 --arg 3 some.au3
-au3 run BuildFunctionTable --init some.au3
+# run：执行整个脚本，或调用其中一个函数
+#      --cmdline 始终是脚本的 $CmdLine/$CmdLineRaw；--arg 是函数入参，
+#      没写函数时也归入 $CmdLine
+au3 run some.au3                          # 不写函数 = 执行整个脚本体
+au3 run some.au3 --arg a --arg b          # 脚本里读 $CmdLine[0]/[1]/[2]…
+au3 run some.au3 Add --arg 2 --arg 3
+au3 run some.au3 Add --cmdline s1 --arg 2 # 脚本拿 --cmdline，函数拿 --arg
+au3 run some.au3 BuildFunctionTable --init   # --init 先跑脚本体建立全局表
 # --trace 打印解释器执行的语句流
-au3 run SomeFunc --trace some.au3
+au3 run some.au3 SomeFunc --trace
 
 # debug：加载脚本并进入交互式调试 shell（断点/单步/异常时停/查看/求值）
 au3 debug some.au3
@@ -147,7 +152,7 @@ evaluated: 296 globals, 10 tables, 30449 values inlined, 11668 calls resolved
 | `pretty <FILE> [-o FILE]` | `fmt`, `format` | 规范化重打印，保留注释 |
 | `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值；`--inline-tables` 顺带把表声明换成字面量；`--rename` 做标识符重命名，默认关闭；`--win-version` 等选仿真版本） |
 | `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--inline-tables` 顺带把表声明换成字面量；`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
-| `run <FUNC> <FILE> [--arg V]… [--init] [--trace]` | `r`, `exec` | 解释执行一个函数（同样接受 `--win-*` 开关） |
+| `run <FILE> [FUNC] [--cmdline V]… [--arg V]… [--init] [--trace]` | `r`, `exec` | 执行整个脚本；给了 `FUNC` 则调用该函数。`--cmdline` 始终是脚本的 `$CmdLine`/`$CmdLineRaw`；`--arg` 是 `FUNC` 的入参，未给 `FUNC` 时也并入 `$CmdLine`（同样接受 `--win-*` 开关） |
 | `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停） |
 | `unpack <PATH> [-o FILE]` | `unp` | 取回编译产物里的载荷：`--script` 输出编译进去的 `.au3` 源码（`AU3!EA05`/`AU3!EA06`；PE、裸 chunk 都行）；默认解资源打包的载荷（目录或 PE 都行，自动认角色，`--raw` 输出整段文本） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |

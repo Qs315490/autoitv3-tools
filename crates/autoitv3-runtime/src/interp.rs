@@ -518,6 +518,26 @@ impl Runtime {
         self.globals.insert(var_key(name), value);
     }
 
+    /// Define the predefined `$CmdLine` / `$CmdLineRaw` a script sees.
+    ///
+    /// AutoIt exposes a program's command line as a 1-based array whose element
+    /// 0 is the count (`$CmdLine[0]`), plus the raw text (`$CmdLineRaw`).
+    /// Setting both keeps a script's own argument handling working when the
+    /// interpreter runs it.
+    pub fn set_cmdline(&mut self, args: &[String]) {
+        let mut line = Vec::with_capacity(args.len() + 1);
+        line.push(Value::Int(args.len() as i64));
+        line.extend(args.iter().cloned().map(Value::Str));
+        self.set_global("CmdLine", Value::array(line));
+
+        let raw = args
+            .iter()
+            .map(|arg| quote_cmdline_arg(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.set_global("CmdLineRaw", Value::Str(raw));
+    }
+
     /// Snapshot every global variable (for inspection / debugging).
     pub fn globals_snapshot(&self) -> Vec<(String, Value)> {
         let mut v: Vec<(String, Value)> =
@@ -1846,6 +1866,23 @@ fn is_empty_brackets(dims: &[Expr]) -> bool {
             dims[0].kind,
             ExprKind::Lit(Lit { kind: LitKind::Null, .. })
         )
+}
+
+/// Quote one argument so `$CmdLineRaw` parses back into the same argument.
+fn quote_cmdline_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
+        return arg.to_string();
+    }
+    let mut quoted = String::with_capacity(arg.len() + 2);
+    quoted.push('"');
+    for c in arg.chars() {
+        if c == '"' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Variable names are case-insensitive in AutoIt and stored without the `$`.

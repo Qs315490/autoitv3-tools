@@ -49,7 +49,8 @@ pub enum Command {
     #[command(visible_aliases = ["eval", "e"])]
     Evaluate(commands::evaluate::EvaluateArgs),
 
-    /// Interpret one function (probes the obfuscator's builders)
+    /// Run a script, or call one function from it (probes the obfuscator's
+    /// builders)
     #[command(visible_aliases = ["r", "exec"])]
     Run(commands::run::RunArgs),
 
