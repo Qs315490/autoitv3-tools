@@ -77,9 +77,14 @@ CLI 的 `au3 run` 面向"探查混淆样本"，因此默认用确定性配置；
 `--faithful`：
 
 ```bash
-au3 run F sample.au3              # 快速、可复现、不改磁盘
-au3 run F --faithful sample.au3   # 真的 Sleep、真的随机、真的写文件
+au3 run sample.au3                # 执行整个脚本体
+au3 run sample.au3 F              # 调用函数 F（快速、可复现、不改磁盘）
+au3 run sample.au3 F --faithful   # 真的 Sleep、真的随机、真的写文件
 ```
+
+`--cmdline`（以及没写函数时的 `--arg`）由 `Runtime::set_cmdline` 变成脚本的
+`$CmdLine`/`$CmdLineRaw`；写了函数时 `--arg` 是该函数的入参，`--cmdline` 仍供
+`--init` 跑的脚本体读取。
 
 其余仍属**有意为之的近似**（与执行配置无关，已在模块文档逐条标注）：
 

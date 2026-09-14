@@ -8,7 +8,7 @@
 //! au3 parse       <FILE>
 //! au3 pretty      <FILE> [-o FILE]
 //! au3 deobfuscate <FILE> [-o FILE]
-//! au3 run         <FUNC> <FILE> [--arg V]... [--init] [--trace]
+//! au3 run         <FILE> [FUNC] [--arg V]... [--init] [--trace]
 //! au3 debug       <FILE> [-c CMD]...
 //! ```
 //!

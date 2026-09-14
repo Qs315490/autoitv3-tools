@@ -1,12 +1,13 @@
-//! `au3 run <FUNC> <FILE> [--arg V]... [--init] [--trace]` — interpret.
+//! `au3 run <FILE> [FUNC] [--arg V]... [--init] [--trace]` — interpret.
 //!
-//! Calls one function on [`Runtime`](autoitv3_runtime::Runtime). This is how the
+//! Without `FUNC` the whole script body is executed; with it, one function is
+//! called on [`Runtime`](autoitv3_runtime::Runtime). This is how the
 //! obfuscator's table builders can be probed directly, and `--trace` wires in a
 //! [`Debugger`](autoitv3_runtime::debug::Debugger) to show the statement stream
 //! the future debug module consumes.
 
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
-use autoitv3_runtime::{Runtime, Value};
+use autoitv3_runtime::{Flow, Runtime, Value};
 use clap::Args;
 
 use crate::args::{
@@ -19,21 +20,28 @@ use std::path::Path;
 /// Arguments for `au3 run`.
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Function to call
-    #[arg(value_name = "FUNC")]
-    pub function: String,
-
     /// Input AutoIt v3 script, or a compiled build (.exe/.a3x) to read it from
     #[arg(value_name = "FILE")]
     pub input: String,
 
-    /// Argument to pass to the function; repeat for more.
-    /// Integers (decimal, or `0x` hex) are passed as numbers, anything else
-    /// as a string.
+    /// Function to call; omitted runs the whole script body
+    #[arg(value_name = "FUNC")]
+    pub function: Option<String>,
+
+    /// Script command-line argument (`$CmdLine`); repeat for more. Available in
+    /// every mode, so a function call can still hand the script body a command
+    /// line (`--init`).
+    #[arg(long = "cmdline", value_name = "VALUE")]
+    pub cmdline: Vec<String>,
+
+    /// Argument for the function; repeat for more. Without a FUNC it is a
+    /// command-line argument instead (same as `--cmdline`). Integers (decimal,
+    /// or `0x` hex) become numbers, anything else a string.
     #[arg(long = "arg", value_name = "VALUE")]
     pub args: Vec<String>,
 
-    /// Run the top-level script first, so global tables (`$fn_table`, ...) exist
+    /// When a FUNC is named, run the top-level script first so global tables
+    /// (`$fn_table`, ...) exist before the call
     #[arg(long)]
     pub init: bool,
 
@@ -78,6 +86,34 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
     if args.trace {
         rt.set_debugger(Box::new(TracePrinter::new()));
     }
+
+    // No FUNC: run the top-level script body. `--cmdline` is the command line,
+    // and `--arg` joins it (with no function to take it, it names the script's
+    // argument instead). `--init` is meaningless here (there is nothing to
+    // prepare for), so it is ignored.
+    let Some(function) = &args.function else {
+        let mut cmdline = args.cmdline.clone();
+        cmdline.extend(args.args.iter().cloned());
+        rt.set_cmdline(&cmdline);
+        let outcome = rt.run_script();
+        match &outcome {
+            Ok(Flow::Return(value)) => println!("script body returned {}", format_value(value)),
+            Ok(Flow::Exit(code)) => println!("script body exited with code {code}"),
+            Ok(_) => println!("script body ran to completion"),
+            Err(_) => {}
+        }
+        if let Some(reason) = rt.take_pause() {
+            eprintln!("(stopped: {reason:?})");
+        }
+        return outcome
+            .map(|_| ())
+            .map_err(|e| CliError::failure(format!("error while running script body: {e}")));
+    };
+
+    // With a FUNC, `--cmdline` is still the script's command line (visible to
+    // the body `--init` runs) while `--arg` belongs to the function.
+    rt.set_cmdline(&args.cmdline);
+
     if args.init {
         // Execute the top-level script so the tables the function may rely on
         // exist before it runs.
@@ -90,17 +126,16 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
 
     let call_args: Vec<Value> = args.args.iter().map(|a| parse_arg_value(a)).collect();
 
-    match rt.call_function(&args.function, call_args) {
+    match rt.call_function(function, call_args) {
         Ok(value) => {
-            println!("{}() = {}", args.function, format_value(&value));
+            println!("{function}() = {}", format_value(&value));
             if let Some(reason) = rt.take_pause() {
                 eprintln!("(stopped: {reason:?})");
             }
             Ok(())
         }
         Err(e) => Err(CliError::failure(format!(
-            "runtime error in {}(): {e}",
-            args.function
+            "runtime error in {function}(): {e}"
         ))),
     }
 }
