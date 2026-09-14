@@ -1248,7 +1248,7 @@ fn breakpoint_hit_rules_gate_firing() {
 
 #[test]
 fn breakpoint_actions_and_flags_round_trip_through_the_host() {
-    use autoitv3_runtime::debug::{DebugHost, Debugger};
+    use autoitv3_runtime::debug::DebugHost;
 
     let mut rt = rt("Func Target()\n    Return 1\nEndFunc\n");
     let id = rt.add_breakpoint_full(2, None, 0, 1, false, vec!["$x = 1".into()]);

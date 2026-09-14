@@ -446,7 +446,7 @@ fn a_registry_file_round_trips_every_value_type() {
     store.write(r"HKCU\Software\EmptyKey", "", RegistryData::Sz(String::new()));
 
     // Writes batch in memory; flush (or drop) puts them on disk.
-    store.flush();
+    store.flush().expect("flush the registry store to disk");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains(&format!("REG_EXPAND_SZ\t{}", r"%TEMP%\\x")), "{text}");
     assert!(text.contains("REG_DWORD\t4294967295"), "{text}");
