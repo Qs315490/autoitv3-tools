@@ -221,6 +221,24 @@ impl Debugger for SharedShell {
             shell.on_variable_write(name, value);
         }
     }
+
+    fn on_call_enter(&mut self, name: &str, args: &[autoitv3_runtime::Value]) {
+        if let Ok(mut shell) = self.0.try_borrow_mut() {
+            shell.on_call_enter(name, args);
+        }
+    }
+
+    fn on_call_exit(&mut self, name: &str, result: Option<&autoitv3_runtime::Value>) {
+        if let Ok(mut shell) = self.0.try_borrow_mut() {
+            shell.on_call_exit(name, result);
+        }
+    }
+
+    fn on_builtin_call(&mut self, name: &str) {
+        if let Ok(mut shell) = self.0.try_borrow_mut() {
+            shell.on_builtin_call(name);
+        }
+    }
 }
 
 /// What a command asked the caller to do next.
@@ -324,6 +342,21 @@ struct Shell {
     paused: bool,
     /// Echo every statement as it runs.
     tracing: bool,
+    /// Only trace statements at this depth or shallower (`trace depth N`).
+    trace_depth: Option<usize>,
+    /// Suppress tracing while any of these functions is on the stack
+    /// (`trace skip Func`), so a hot helper does not flood the output.
+    trace_skip: Vec<String>,
+    /// Script-defined functions currently on the stack, innermost last.
+    ///
+    /// Maintained from the call hooks so `trace skip` does not have to snapshot
+    /// the whole stack on every statement.
+    call_stack: Vec<String>,
+    /// `untilcall <name>`: stop at the next call to this builtin/function
+    /// (lower-case).
+    until_call: Option<String>,
+    /// The `untilcall` target has been seen; stop at the next statement.
+    until_hit: bool,
     /// Stop where an uncaught error was raised.
     catching: bool,
     /// An error was already shown at its source, so the end-of-run report
@@ -368,6 +401,11 @@ impl Shell {
             current: None,
             paused: false,
             tracing: false,
+            trace_depth: None,
+            trace_skip: Vec::new(),
+            call_stack: Vec::new(),
+            until_call: None,
+            until_hit: false,
             catching: !args.no_catch,
             reported_error: false,
             pending: None,
@@ -524,6 +562,10 @@ impl Shell {
             // gdb's `until` collapses into the one-shot breakpoint: with no
             // frame-boundary semantics it was a duplicate of `tbreak <line>`.
             "until" | "u" => self.tbreak_command(rest.trim(), host),
+            // `untilcall` is the builtin counterpart: builtins have no entry
+            // line, so it watches the resolved call instead.
+            "untilcall" | "untilc" => self.until_call_command(rest.trim()),
+            "untilgui" | "gui" => self.until_call_command("GUICreate"),
             "b" | "break" => self.break_command(rest.trim(), host),
             "jmp" | "j" => self.jmp_command(rest.trim(), host),
             "tbreak" | "tb" => self.tbreak_command(rest.trim(), host),
@@ -779,6 +821,23 @@ impl Shell {
             }
             None => Outcome::Stay,
         }
+    }
+
+    /// `untilcall <name>` — run until the next call to that builtin/function.
+    ///
+    /// `tbreak <func>` needs a script entry line; a builtin like `GUICreate`
+    /// has none, so this watches the resolved call and stops at the statement
+    /// after it. `untilgui` is the shorthand for `untilcall GUICreate`.
+    fn until_call_command(&mut self, name: &str) -> Outcome {
+        if name.is_empty() {
+            println!("usage: untilcall <function>");
+            return Outcome::Stay;
+        }
+        self.until_call = Some(name.to_ascii_lowercase());
+        self.until_hit = false;
+        self.step = StepMode::Run;
+        println!("running until {name} is called");
+        Outcome::Resume
     }
 
     /// `eval <stmt>` — run AutoIt source as a *statement* in the current
@@ -1292,8 +1351,15 @@ impl Shell {
         }
     }
 
+    /// `trace on|off`, plus filters that keep a hot loop from flooding the
+    /// output: `trace depth <n>` (only depth <= n) and `trace skip <func>`
+    /// (suppress while that function is on the stack).
     fn trace_command(&mut self, rest: &str) {
-        match rest {
+        let (word, arg) = match rest.split_once(char::is_whitespace) {
+            Some((w, a)) => (w, a.trim()),
+            None => (rest, ""),
+        };
+        match word {
             "on" => {
                 self.tracing = true;
                 println!("statement tracing on");
@@ -1302,12 +1368,63 @@ impl Shell {
                 self.tracing = false;
                 println!("statement tracing off");
             }
-            "" => println!(
-                "statement tracing is {}",
-                if self.tracing { "on" } else { "off" }
+            "depth" => match arg {
+                "off" => {
+                    self.trace_depth = None;
+                    println!("trace depth limit off");
+                }
+                other => match other.parse::<usize>() {
+                    Ok(n) => {
+                        self.trace_depth = Some(n);
+                        println!("tracing statements at depth <= {n}");
+                    }
+                    Err(_) => println!("usage: trace depth <n> | trace depth off"),
+                },
+            },
+            "skip" => match arg {
+                "off" => {
+                    self.trace_skip.clear();
+                    println!("trace skip list cleared");
+                }
+                "" => println!("usage: trace skip <func> | trace skip off"),
+                other => {
+                    let lower = other.to_ascii_lowercase();
+                    if !self.trace_skip.contains(&lower) {
+                        self.trace_skip.push(lower);
+                    }
+                    println!("not tracing inside {other}");
+                }
+            },
+            "unskip" => {
+                let lower = arg.to_ascii_lowercase();
+                self.trace_skip.retain(|f| *f != lower);
+                println!("tracing inside {arg} again");
+            }
+            "" => {
+                let mut state = if self.tracing { "on" } else { "off" }.to_string();
+                if let Some(n) = self.trace_depth {
+                    state.push_str(&format!(", depth <= {n}"));
+                }
+                if !self.trace_skip.is_empty() {
+                    state.push_str(&format!(", skipping {}", self.trace_skip.join(", ")));
+                }
+                println!("statement tracing is {state}");
+            }
+            other => println!(
+                "usage: trace on|off | trace depth <n> | trace skip <func> (not {other:?})"
             ),
-            other => println!("usage: trace on|off (not {other:?})"),
         }
+    }
+
+    /// Whether `trace` echoes a statement at `depth`.
+    fn trace_visible(&self, depth: usize) -> bool {
+        if self.trace_depth.is_some_and(|max| depth > max) {
+            return false;
+        }
+        !self
+            .call_stack
+            .iter()
+            .any(|frame| self.trace_skip.iter().any(|skip| skip == frame))
     }
 
     fn print_help(&mut self, topic: &str) {
@@ -1325,6 +1442,8 @@ Commands (`help <cmd>` describes one)
   next [n], n            run n statements in this frame (default 1)
   finish, fin            run until the current function returns
   until <line-expr>      alias of `tbreak <line-expr>`
+  untilcall <func>       run until <func> is called (builtins too)
+  untilgui, gui          untilcall GUICreate
   break <line-expr> [if E]   set a breakpoint, optionally conditional
   jmp <line-expr>        skip statements up to the target line
   delete [id]            remove one breakpoint, or all of them
@@ -1334,7 +1453,7 @@ Commands (`help <cmd>` describes one)
   info <topic>           breakpoints | locals | globals | functions | frame
   backtrace, bt          show the call stack
   list [line-expr], l    show source around the stop point
-  trace on|off           echo every statement as it runs
+  trace on|off           echo every statement (filters: depth N, skip Func)
   catch on|off           stop where an uncaught error is raised (default on)
   source <file>          run the commands in a file, then come back here
   quit, q                leave the session
@@ -1389,6 +1508,31 @@ impl Debugger for Shell {
         }
     }
 
+    fn on_call_enter(&mut self, name: &str, _args: &[autoitv3_runtime::Value]) {
+        let lower = name.to_ascii_lowercase();
+        if self.until_call.as_deref() == Some(lower.as_str()) {
+            self.until_hit = true;
+        }
+        self.call_stack.push(lower);
+    }
+
+    fn on_call_exit(&mut self, _name: &str, _result: Option<&autoitv3_runtime::Value>) {
+        self.call_stack.pop();
+    }
+
+    fn on_builtin_call(&mut self, name: &str) {
+        // A builtin has no entry line, so `untilcall GUICreate` watches the
+        // resolved call instead (`GUICreate` still goes through the table and
+        // reaches here as a function value).
+        if self
+            .until_call
+            .as_deref()
+            .is_some_and(|target| target.eq_ignore_ascii_case(name))
+        {
+            self.until_hit = true;
+        }
+    }
+
     fn on_statement(&mut self, span: Span, depth: usize, host: &mut dyn DebugHost) -> DebugAction {
         // Unwind the run when the session is over, or when `run` asked for a
         // fresh one from inside a stop.
@@ -1402,25 +1546,31 @@ impl Debugger for Shell {
         } else {
             false
         };
-        if self.tracing {
+        if self.tracing && self.trace_visible(depth) {
             println!("[trace] {}:{} depth={depth}", span.start.line, span.start.col);
+        }
+        // `untilcall` saw its target: stop here, one statement after the call.
+        let until = std::mem::take(&mut self.until_hit);
+        if until {
+            self.until_call = None;
         }
         // `step n`/`next n` count down as statements go by; the mode is cleared
         // on the stop, so the prompt starts from a clean `Run`.
-        let stop = match &mut self.step {
-            StepMode::Run => false,
-            StepMode::Step(n) => {
-                *n = n.saturating_sub(1);
-                *n == 0
-            }
-            StepMode::Over(d, n) => {
-                if depth <= *d {
+        let stop = until
+            || match &mut self.step {
+                StepMode::Run => false,
+                StepMode::Step(n) => {
                     *n = n.saturating_sub(1);
+                    *n == 0
                 }
-                *n == 0 && depth <= *d
-            }
-            StepMode::Out(d) => depth < *d,
-        };
+                StepMode::Over(d, n) => {
+                    if depth <= *d {
+                        *n = n.saturating_sub(1);
+                    }
+                    *n == 0 && depth <= *d
+                }
+                StepMode::Out(d) => depth < *d,
+            };
         self.current = Some((span, depth));
         if stop || watch_fired {
             // Clear the policy: the prompt decides what happens next.
@@ -1678,6 +1828,10 @@ fn help_for(topic: &str) -> String {
         }
         "finish" => "finish — run until the current function returns".to_string(),
         "until" | "u" => "until <line-expr> — alias of `tbreak <line-expr>`".to_string(),
+        "untilcall" | "untilc" => {
+            "untilcall <func> — run until <func> is called, builtins included".to_string()
+        }
+        "untilgui" | "gui" => "untilgui — run until GUICreate is called".to_string(),
         "break" | "b" => {
             "break <line-expr> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit".to_string()
         }
@@ -1712,7 +1866,9 @@ fn help_for(topic: &str) -> String {
         "info" | "i" => "info breakpoints|locals|globals|functions|frame".to_string(),
         "backtrace" | "bt" | "where" => "backtrace — the call stack, innermost last".to_string(),
         "list" | "l" => "list [line-expr] — eight source lines around the stop point".to_string(),
-        "trace" => "trace on|off — echo every statement as it executes".to_string(),
+        "trace" => {
+            "trace on|off | trace depth <n> | trace skip <func> — echo statements, optionally filtered".to_string()
+        }
         "catch" => {
             "catch on|off — stop where an uncaught error is raised, before it unwinds".to_string()
         }

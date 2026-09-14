@@ -1,5 +1,6 @@
 //! Tests for the autoitv3-runtime interpreter, host and debug interfaces.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason, TracingDebugger};
@@ -233,6 +234,31 @@ fn compiled_macro_reflects_how_the_script_was_loaded() {
     assert_eq!(rt.call_function("F", vec![]).unwrap().to_int(), 0);
     rt.set_compiled(true);
     assert_eq!(rt.call_function("F", vec![]).unwrap().to_int(), 1);
+}
+
+#[test]
+fn a_debugger_sees_builtin_calls() {
+    // Builtins have no script body, so the debugger's call hook is the only
+    // way to know they ran (`untilcall GUICreate` relies on it).
+    struct Recorder(Rc<RefCell<Vec<String>>>);
+    impl Debugger for Recorder {
+        fn on_builtin_call(&mut self, name: &str) {
+            self.0.borrow_mut().push(name.to_string());
+        }
+    }
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let mut rt = rt("Func F()\n    Return String(1) & String(2)\nEndFunc\n");
+    rt.set_debugger(Box::new(Recorder(calls.clone())));
+    assert_eq!(
+        rt.call_function("F", vec![]).unwrap().to_autoit_string(),
+        "12"
+    );
+    let seen = calls.borrow();
+    assert!(
+        seen.iter().any(|c| c.eq_ignore_ascii_case("String")),
+        "got {seen:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

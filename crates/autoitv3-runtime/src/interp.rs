@@ -627,6 +627,11 @@ impl Runtime {
     /// The host is reached through a [`HostContext`] built from *disjoint*
     /// fields of `self`, so no raw pointers or interior mutability are needed.
     fn call_external(&mut self, name: &str, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
+        // Builtins/host/platform calls have no script body, so the debugger
+        // gets its own hook for them (`untilcall GUICreate` is one user).
+        if let Some(dbg) = self.debugger.as_mut() {
+            dbg.on_builtin_call(name);
+        }
         if let Some(v) = builtins::call(self, name, &args, span)? {
             return Ok(v);
         }
