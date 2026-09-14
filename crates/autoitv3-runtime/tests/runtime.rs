@@ -271,6 +271,141 @@ EndFunc
 }
 
 // ---------------------------------------------------------------------------
+// Static — one variable shared by every call of the function
+// ---------------------------------------------------------------------------
+
+#[test]
+fn static_survives_across_calls() {
+    let mut runtime = rt(
+        "Func Tick()\n\
+         \x20   Static $n = 0\n\
+         \x20   $n += 1\n\
+         \x20   Return $n\n\
+         EndFunc\n",
+    );
+    for expected in 1..=3 {
+        let v = runtime.call_function("Tick", vec![]).unwrap();
+        assert_eq!(v.to_int(), expected, "call {expected}: got {v:?}");
+    }
+}
+
+#[test]
+fn static_initializer_runs_once() {
+    // The initializer reads a global the function bumps on every call, so a
+    // re-evaluated initializer would show up as a growing result.
+    let mut runtime = rt(
+        "Global $inits = 0\n\
+         Func F()\n\
+         \x20   Static $n = $inits\n\
+         \x20   $inits += 1\n\
+         \x20   Return $n\n\
+         EndFunc\n",
+    );
+    runtime.assign_variable("$inits", Value::Int(5), true, false);
+    assert_eq!(runtime.call_function("F", vec![]).unwrap().to_int(), 5);
+    assert_eq!(runtime.call_function("F", vec![]).unwrap().to_int(), 5);
+    assert_eq!(
+        runtime
+            .variable_value("$inits")
+            .expect("global is set")
+            .to_int(),
+        7
+    );
+}
+
+#[test]
+fn static_is_per_function() {
+    let mut runtime = rt(
+        "Func A()\n\
+         \x20   Static $n = 0\n\
+         \x20   $n += 1\n\
+         \x20   Return $n\n\
+         EndFunc\n\
+         Func B()\n\
+         \x20   Static $n = 100\n\
+         \x20   $n += 1\n\
+         \x20   Return $n\n\
+         EndFunc\n",
+    );
+    assert_eq!(runtime.call_function("A", vec![]).unwrap().to_int(), 1);
+    assert_eq!(runtime.call_function("B", vec![]).unwrap().to_int(), 101);
+    assert_eq!(runtime.call_function("A", vec![]).unwrap().to_int(), 2);
+    assert_eq!(runtime.call_function("B", vec![]).unwrap().to_int(), 102);
+}
+
+#[test]
+fn static_is_shared_by_recursive_activations() {
+    // Every activation sees the same variable, so the depth counter counts
+    // the whole recursion rather than restarting per call.
+    let mut runtime = rt(
+        "Func Rec($d)\n\
+         \x20   Static $seen = 0\n\
+         \x20   $seen += 1\n\
+         \x20   If $d > 0 Then Return Rec($d - 1)\n\
+         \x20   Return $seen\n\
+         EndFunc\n",
+    );
+    assert_eq!(runtime.call_function("Rec", vec![Value::Int(3)]).unwrap().to_int(), 4);
+}
+
+#[test]
+fn static_local_spells_the_same_variable() {
+    let mut runtime = rt(
+        "Func F()\n\
+         \x20   Static Local $a = 0, $b = 100\n\
+         \x20   $a += 1\n\
+         \x20   $b += 1\n\
+         \x20   Return $a & \"/\" & $b\n\
+         EndFunc\n",
+    );
+    let first = runtime.call_function("F", vec![]).unwrap();
+    assert_eq!(first.to_autoit_string(), "1/101");
+    let second = runtime.call_function("F", vec![]).unwrap();
+    assert_eq!(second.to_autoit_string(), "2/102");
+}
+
+#[test]
+fn static_array_keeps_its_elements() {
+    let mut runtime = rt(
+        "Func F()\n\
+         \x20   Static $a[] = [0, 0]\n\
+         \x20   $a[0] += 1\n\
+         \x20   Return $a[0]\n\
+         EndFunc\n",
+    );
+    assert_eq!(runtime.call_function("F", vec![]).unwrap().to_int(), 1);
+    assert_eq!(runtime.call_function("F", vec![]).unwrap().to_int(), 2);
+}
+
+#[test]
+fn a_static_passed_byref_is_written_back() {
+    let mut runtime = rt(
+        "Func Bump(ByRef $n)\n\
+         \x20   $n += 1\n\
+         EndFunc\n\
+         Func F()\n\
+         \x20   Static $n = 0\n\
+         \x20   Bump($n)\n\
+         \x20   Return $n\n\
+         EndFunc\n",
+    );
+    assert_eq!(runtime.call_function("F", vec![]).unwrap().to_int(), 1);
+    assert_eq!(runtime.call_function("F", vec![]).unwrap().to_int(), 2);
+}
+
+#[test]
+fn a_static_is_not_visible_outside_its_function() {
+    let mut runtime = rt(
+        "Func F()\n\
+         \x20   Static $n = 7\n\
+         \x20   Return $n\n\
+         EndFunc\n",
+    );
+    assert_eq!(runtime.call_function("F", vec![]).unwrap().to_int(), 7);
+    assert!(runtime.variable_value("$n").is_none());
+}
+
+// ---------------------------------------------------------------------------
 // Loops, If, Select/Switch, control flow
 // ---------------------------------------------------------------------------
 
