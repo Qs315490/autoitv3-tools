@@ -203,13 +203,13 @@ Breakpoint 1, line 69
 | ---- | ---- |
 | `run` / `restart` | 启动脚本体；在断点处再敲一次 = 从头再来（断点保留） |
 | `continue` / `c` | 继续到下一个断点 |
-| `step` / `s` | 单步，进入函数调用 |
-| `next` / `n` | 单步，不进入调用（停在同层或更浅的语句） |
+| `step [n]` / `s` | 单步（或连跑 `n` 步，默认 1），进入函数调用 |
+| `next [n]` / `n` | 单步（或连跑 `n` 步），不进入调用（停在同层或更浅的语句） |
 | `finish` / `fin` | 跑到当前函数返回 |
-| `until <line>` / `u` | `tbreak <line>` 的别名（跑到某一行） |
-| `break <line\|func> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
-| `jmp <line>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |
-| `tbreak <line\|func>` / `tb` | 一次性断点：继续执行直到命中（命中自删）；`run` 前可用 |
+| `until <行表达式>` / `u` | `tbreak <行表达式>` 的别名（跑到某一行） |
+| `break <行表达式> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
+| `jmp <行表达式>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |
+| `tbreak <行表达式>` / `tb` | 一次性断点：继续执行直到命中（命中自删）；`run` 前可用 |
 | `eval [stmt]` | 在当前帧**执行语句**（赋值真实生效；`print` 是表达式求值）。裸 `eval` 进入多行块：逐行输入 AutoIt 源码（可含 If/For/函数定义），单独一行 `end` 结束；`-c` 参数里也可以直接内嵌换行（末尾的 `end` 行会被剥离） |
 | `ignore <id> <count>` | 给断点追加 skip 预算 |
 | `commands <id> [do <cmd> \| off]` | 查看/追加/清空**命中动作**——动作是调试命令（`print`/`eval`/`set`/`jmp`…），命中即执行；裸 `commands <id>` 进入多行块：每行一条命令，`end` 结束，整块作为该断点的动作 |
@@ -220,11 +220,23 @@ Breakpoint 1, line 69
 | `set $x = <expr>` | 在当前帧赋值，**会真的改到正在跑的程序** |
 | `info breakpoints\|locals\|globals\|functions` | 查看断点/局部/全局/函数 |
 | `backtrace` / `bt` / `where` | 调用栈（`#0` 为最内层） |
-| `list [line]` / `l` | 看停点附近的源码，`=>` 标出当前行 |
+| `list [行表达式]` / `l` | 看停点附近的源码，`=>` 标出当前行 |
 | `trace on\|off` | 打开后逐条打印执行的语句 |
 | `catch on\|off` | 未捕获异常时是否停下（默认 on） |
 | `source <file>` | 把一个命令文件的命令插到队首执行，然后回到提示符 |
 | `quit` / `q` | 退出 |
+
+**行表达式**（`break`/`tbreak`/`until`/`jmp`/`list` 的行号参数都接受）：
+
+| 写法 | 含义 |
+| ---- | ---- |
+| `123` | 绝对行号 |
+| `+N` / `-N` | 相对当前停点 |
+| `Func` | 函数第一条语句 |
+| `Func+N` / `Func-N` | 函数入口行加减偏移（如 `Main-1` 是函数声明行） |
+
+配合计数步进就能方便地走循环体：`next 5` 连走 5 条同层语句，`step 20` 连走 20 条
+（会进入调用），`break Main+1` 直接钉在函数体的第一条语句上。
 
 ### 未捕获异常时停下（post-mortem）
 
