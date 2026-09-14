@@ -184,6 +184,36 @@ pub fn evaluate_with_options(
     options: SubstituteOptions,
     max_steps: u64,
 ) -> EvaluateReport {
+    evaluate_inner(prog, profile, platform, options, max_steps, None)
+}
+
+/// [`evaluate_with_options`] with a [`Debugger`](autoitv3_runtime::debug::Debugger)
+/// attached to the runtime.
+///
+/// This is the seam a caller uses to watch — or interrupt — a long run: the
+/// runtime offers every statement to the debugger, so an implementation that
+/// answers `Continue` and reads `host.globals()` once a second is a progress
+/// reporter (the CLI's is one). The debugger lives for the whole evaluation and
+/// is dropped when this returns.
+pub fn evaluate_with_debugger(
+    prog: &mut Program,
+    profile: ExecutionProfile,
+    platform: Box<dyn autoitv3_runtime::platform::Platform>,
+    options: SubstituteOptions,
+    max_steps: u64,
+    debugger: Box<dyn autoitv3_runtime::debug::Debugger>,
+) -> EvaluateReport {
+    evaluate_inner(prog, profile, platform, options, max_steps, Some(debugger))
+}
+
+fn evaluate_inner(
+    prog: &mut Program,
+    profile: ExecutionProfile,
+    platform: Box<dyn autoitv3_runtime::platform::Platform>,
+    options: SubstituteOptions,
+    max_steps: u64,
+    debugger: Option<Box<dyn autoitv3_runtime::debug::Debugger>>,
+) -> EvaluateReport {
     let mut report = EvaluateReport::default();
 
     // Run the script body. A failure part-way through is expected and useful:
@@ -192,6 +222,9 @@ pub fn evaluate_with_options(
     rt.set_platform(platform);
     rt.set_profile(profile);
     rt.set_max_steps(max_steps);
+    if let Some(debugger) = debugger {
+        rt.set_debugger(debugger);
+    }
     match rt.run_script() {
         Ok(flow) => {
             report.completed = flow.is_normal();
