@@ -138,6 +138,34 @@ fn match_leaves_error_clear_and_reports_next_offset() {
 }
 
 #[test]
+fn extended_is_absolute_even_when_the_search_starts_later() {
+    // The position is measured from the start of the subject, not from
+    // `offset`: a relative answer would send a caller that feeds `@extended`
+    // back as the next offset backwards, into an endless loop.
+    assert_eq!(text(r#"StringRegExp("ab12cd", "\d+", 1, 3)
+    Return @extended"#), "5");
+}
+
+#[test]
+fn a_scan_that_feeds_extended_back_advances() {
+    let out = text(
+        r#"
+Local $s = "1a2b3c"
+Local $off = 1, $n = 0
+While 1
+    StringRegExp($s, "\d", 1, $off)
+    If @error Then ExitLoop
+    $n += 1
+    Local $next = @extended
+    If $next <= $off Then ExitLoop
+    $off = $next
+WEnd
+Return $n"#,
+    );
+    assert_eq!(out, "3");
+}
+
+#[test]
 fn offset_parameter_starts_the_search_later() {
     // `offset` is the position the search *starts* at (1-based), not a position
     // the match is pinned to: from 1 the digit is found, from 2 it is skipped.

@@ -352,10 +352,7 @@ pub(crate) fn call(
                     }
                     Ok(Some(caps)) => {
                         let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
-                        rt.set_error_value(
-                            0,
-                            crate::regexp::byte_to_char_offset(tail, end) as i64,
-                        );
+                        rt.set_error_value(0, match_end_offset(offset, tail, end));
                         let mut out: Vec<Value> = Vec::new();
                         if re.captures_len() == 1 {
                             // No capturing groups: the match itself is returned.
@@ -384,10 +381,7 @@ pub(crate) fn call(
                     }
                     Ok(Some(caps)) => {
                         let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
-                        rt.set_error_value(
-                            0,
-                            crate::regexp::byte_to_char_offset(tail, end) as i64,
-                        );
+                        rt.set_error_value(0, match_end_offset(offset, tail, end));
                         let mut out: Vec<Value> = Vec::new();
                         for i in 0..re.captures_len() {
                             out.push(Value::Str(
@@ -1111,4 +1105,24 @@ fn ubound(value: &Value, dim: i64) -> i64 {
         Value::Str(s) => s.chars().count() as i64,
         _ => 0,
     }
+}
+
+/// The 1-based offset just past a match.
+///
+/// `end` is a byte index into `tail`, which itself starts at the caller's
+/// 1-based `offset`. AutoIt reports the result as an **absolute** offset so a
+/// scan loop can hand `@extended` straight back as the next `offset`:
+///
+/// ```autoit
+/// While $pos <= StringLen($s)
+///     $m = StringRegExp($s, $pat, 1, $pos)
+///     If @error Then ExitLoop
+///     $pos = @extended
+/// WEnd
+/// ```
+///
+/// Reporting the position *within* `tail` instead makes such a loop oscillate
+/// between two offsets and never finish.
+fn match_end_offset(offset: i64, tail: &str, end: usize) -> i64 {
+    (offset - 1).max(0) + crate::regexp::byte_to_char_offset(tail, end) as i64
 }
