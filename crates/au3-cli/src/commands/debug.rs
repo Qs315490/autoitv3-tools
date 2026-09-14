@@ -43,6 +43,13 @@ use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, Stop
 use autoitv3_runtime::RuntimeError;
 use autoitv3_runtime::Runtime;
 use clap::Args;
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
     load_input, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
@@ -241,6 +248,120 @@ impl Debugger for SharedShell {
     }
 }
 
+/// Every command word offered at the start of a line.
+///
+/// Kept in step with the parser in [`Shell::execute`]; aliases are included so
+/// completion matches what can actually be typed.
+const COMMAND_WORDS: &[&str] = &[
+    "run", "restart", "continue", "c", "step", "s", "next", "n", "finish", "fin", "until", "u",
+    "untilcall", "untilc", "untilgui", "gui", "break", "b", "tbreak", "tb", "jmp", "j",
+    "delete", "d", "del", "enable", "disable", "print", "p", "set", "info", "i", "backtrace",
+    "bt", "where", "w", "list", "l", "eval", "watch", "unwatch", "ignore", "commands",
+    "nostop", "stop", "catch", "source", "trace", "help", "h", "?", "quit", "q", "exit",
+];
+
+/// `info <topic>` arguments.
+const INFO_TOPICS: &[&str] = &["breakpoints", "locals", "globals", "functions", "frame"];
+
+/// Completion candidates, snapshotted from the live session before each prompt
+/// (the completer runs under rustyline's borrow, so it cannot reach the shell).
+#[derive(Default)]
+struct CompletionData {
+    commands: Vec<String>,
+    functions: Vec<String>,
+    builtins: Vec<String>,
+    macros: Vec<String>,
+    globals: Vec<String>,
+    breakpoints: Vec<String>,
+}
+
+/// The debug prompt's editor.
+type LineEditor = Editor<DebugCompleter, DefaultHistory>;
+
+/// Tab completion for the debugger prompt.
+#[derive(Default)]
+struct DebugCompleter {
+    data: CompletionData,
+}
+
+impl Completer for DebugCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> RustyResult<(usize, Vec<Pair>)> {
+        let (start, word, head) = current_word(line, pos);
+        Ok((start, self.data.candidates(head.as_deref(), word)))
+    }
+}
+
+impl Hinter for DebugCompleter {
+    type Hint = String;
+}
+impl Highlighter for DebugCompleter {}
+impl Validator for DebugCompleter {}
+impl rustyline::Helper for DebugCompleter {}
+
+impl CompletionData {
+    /// Candidates for the word being completed; `head` is the command word
+    /// already typed, or `None` when the cursor is on the first word.
+    fn candidates(&self, head: Option<&str>, word: &str) -> Vec<Pair> {
+        let mut pool: Vec<String> = Vec::new();
+        match head {
+            None => pool.extend(self.commands.iter().cloned()),
+            Some(head) => match head.to_ascii_lowercase().as_str() {
+                "break" | "b" | "tbreak" | "tb" | "until" | "u" | "jmp" | "j" => {
+                    pool.extend(self.functions.iter().cloned())
+                }
+                "untilcall" | "untilc" => {
+                    pool.extend(self.builtins.iter().cloned());
+                    pool.extend(self.functions.iter().cloned());
+                }
+                "print" | "p" | "set" | "eval" | "watch" => {
+                    pool.extend(self.globals.iter().cloned());
+                    pool.extend(self.macros.iter().cloned());
+                }
+                "help" | "h" | "?" => pool.extend(self.commands.iter().cloned()),
+                "info" | "i" => pool.extend(INFO_TOPICS.iter().map(|s| s.to_string())),
+                "delete" | "d" | "del" | "enable" | "disable" | "nostop" | "stop"
+                | "ignore" | "commands" | "unwatch" => {
+                    pool.extend(self.breakpoints.iter().cloned())
+                }
+                _ => {}
+            },
+        }
+        let lower = word.to_ascii_lowercase();
+        pool.retain(|c| c.to_ascii_lowercase().starts_with(&lower));
+        pool.sort();
+        pool.dedup();
+        pool.into_iter()
+            .map(|c| Pair {
+                display: c.clone(),
+                replacement: c,
+            })
+            .collect()
+    }
+}
+
+/// The word under the cursor: its start byte, the partial text, and the
+/// command word already typed on the line (`None` when completing the first).
+fn current_word(line: &str, pos: usize) -> (usize, &str, Option<String>) {
+    let before = &line[..pos];
+    let start = before
+        .rfind(char::is_whitespace)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let word = &line[start..pos];
+    let head = line[..start]
+        .split_whitespace()
+        .next()
+        .map(|s| s.to_string());
+    (start, word, head)
+}
+
 /// What a command asked the caller to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
@@ -357,6 +478,9 @@ struct Shell {
     until_call: Option<String>,
     /// The `untilcall` target has been seen; stop at the next statement.
     until_hit: bool,
+    /// Line editor with completion. Present only when stdin is a terminal;
+    /// pipes, `-c` and command files keep the plain reader.
+    editor: Option<LineEditor>,
     /// Stop where an uncaught error was raised.
     catching: bool,
     /// An error was already shown at its source, so the end-of-run report
@@ -390,11 +514,22 @@ impl Shell {
         for raw in &args.commands {
             queue.extend(split_commands(raw));
         }
+        let show_prompts = std::io::stdin().is_terminal();
+        let editor = if show_prompts {
+            LineEditor::new()
+                .ok()
+                .map(|mut editor| {
+                    editor.set_helper(Some(DebugCompleter::default()));
+                    editor
+                })
+        } else {
+            None
+        };
         Self {
             script,
             lines: source.lines().map(|l| l.to_string()).collect(),
             queue,
-            show_prompts: std::io::stdin().is_terminal(),
+            show_prompts,
             finished: false,
             step: StepMode::Run,
             stop_at_start: args.stop_at_start,
@@ -406,6 +541,7 @@ impl Shell {
             call_stack: Vec::new(),
             until_call: None,
             until_hit: false,
+            editor,
             catching: !args.no_catch,
             reported_error: false,
             pending: None,
@@ -488,7 +624,11 @@ impl Shell {
     // ----- command source -----
 
     /// The next command: a queued one, then a line from stdin.
-    fn next_command(&mut self) -> Option<String> {
+    ///
+    /// On a terminal the line is read through rustyline, so tab completion and
+    /// history work; a pipe uses the plain reader. `host` is only needed to
+    /// offer live candidates (function names, variables, breakpoints).
+    fn next_command(&mut self, host: Option<&dyn DebugHost>) -> Option<String> {
         if self.finished {
             return None;
         }
@@ -499,7 +639,39 @@ impl Shell {
             return Some(cmd);
         }
         if self.show_prompts {
-            print!("{}", self.prompt());
+            let prompt = self.prompt();
+            let data = self.completion_data(host);
+            if let Some(editor) = self.editor.as_mut() {
+                if let Some(helper) = editor.helper_mut() {
+                    helper.data = data;
+                }
+                loop {
+                    match editor.readline(&prompt) {
+                        Ok(line) => {
+                            // rustyline only records history when
+                            // `Config::auto_add_history` is set (off by
+                            // default), so keep the line ourselves or Up
+                            // would recall nothing.
+                            let _ = editor.add_history_entry(line.as_str());
+                            return Some(line);
+                        }
+                        // Ctrl-C clears the line and keeps the session, as at
+                        // any other prompt.
+                        Err(ReadlineError::Interrupted) => {
+                            println!("^C");
+                            continue;
+                        }
+                        Err(ReadlineError::Eof) => {
+                            self.finished = true;
+                            return None;
+                        }
+                        // No usable terminal after all: fall through to the
+                        // plain reader below.
+                        Err(_) => break,
+                    }
+                }
+            }
+            print!("{prompt}");
             let _ = std::io::stdout().flush();
         }
         let mut line = String::new();
@@ -512,6 +684,35 @@ impl Shell {
                 None
             }
             Ok(_) => Some(line),
+        }
+    }
+
+    /// Snapshot the completion candidates from the live session.
+    fn completion_data(&self, host: Option<&dyn DebugHost>) -> CompletionData {
+        let mut functions = host.map(|h| h.function_names()).unwrap_or_default();
+        functions.sort();
+        CompletionData {
+            commands: COMMAND_WORDS.iter().map(|s| s.to_string()).collect(),
+            functions,
+            builtins: autoitv3_runtime::vocab::FUNCTIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            macros: autoitv3_runtime::vocab::MACROS
+                .iter()
+                .map(|s| format!("@{s}"))
+                .collect(),
+            globals: host
+                .map(|h| h.globals().into_iter().map(|(k, _)| format!("${k}")).collect())
+                .unwrap_or_default(),
+            breakpoints: host
+                .map(|h| {
+                    h.breakpoints()
+                        .into_iter()
+                        .map(|b| b.id.to_string())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -1680,7 +1881,7 @@ impl Shell {
     /// embedded newlines — passes through as one line.
     fn next_logical(&mut self, mut host: Option<&mut dyn DebugHost>) -> Option<String> {
         loop {
-        let cmd = self.next_command()?;
+        let cmd = self.next_command(host.as_deref())?;
         let trimmed = cmd.trim_start();
         let (first, rest) = match trimmed.split_once(char::is_whitespace) {
             Some((w, r)) => (w, r.trim_start()),
@@ -1692,7 +1893,7 @@ impl Shell {
         if word == "eval" && rest.is_empty() {
             let mut body = String::new();
             loop {
-                match self.next_command() {
+                match self.next_command(host.as_deref()) {
                     None => break, // EOF: finalize with what we have
                     Some(l) => {
                         if l.trim().eq_ignore_ascii_case("end") {
@@ -1711,7 +1912,7 @@ impl Shell {
             if let Ok(id) = rest.parse::<u32>() {
                 let mut actions: Vec<String> = Vec::new();
                 loop {
-                    match self.next_command() {
+                    match self.next_command(host.as_deref()) {
                         None => break,
                         Some(l) => {
                             if l.trim().eq_ignore_ascii_case("end") {
@@ -1877,3 +2078,9 @@ fn help_for(topic: &str) -> String {
         other => format!("no help for {other:?}"),
     }
 }
+
+// Unit tests live under `tests/unit/`; `#[path]` pulls the file back in as a
+// module of this crate so it can reach the private completer and helpers.
+#[cfg(test)]
+#[path = "../../tests/unit/debug_completion.rs"]
+mod completion_tests;

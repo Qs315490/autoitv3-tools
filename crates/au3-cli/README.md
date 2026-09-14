@@ -20,13 +20,14 @@
           deobfuscate.rs au3 deobfuscate（DeobfuscateArgs + run，含 --evaluate）
           evaluate.rs   au3 evaluate（EvaluateArgs + run）
           run.rs        au3 run（RunArgs + run，含 --trace 用的 Debugger 示例实现）
-          debug.rs      au3 debug（DebugArgs + 交互式 shell：命令解析、步进策略、提示符）
+          debug.rs      au3 debug（DebugArgs + 交互式 shell：命令解析、步进策略、提示符、Tab 补全）
           unpack.rs     au3 unpack（UnpackArgs + run：--script/--raw/--table/--at）
       tests/
-        debug.rs     端到端驱动真实二进制：断点/单步/条件/求值/重启/stdin（21 项）
+        debug.rs     端到端驱动真实二进制：断点/单步/条件/求值/重启/stdin/trace 过滤（46 项）
         steps.rs     --max-steps / --no-progress 的端到端校验
         input.rs     FILE 走源码路径 / 编译产物路径 / 两者都不是
         unit/args.rs 输入加载器的构建识别（`#[path]` 回挂进 src/args.rs）
+        unit/debug_completion.rs Tab 补全的候选集与分词（`#[path]` 回挂进 commands/debug.rs）
 ```
 
 ## 使用
@@ -254,6 +255,24 @@ Breakpoint 1, line 69
 (au3) trace skip SomeHotFunc    # 这个函数体不再打印
 (au3) trace depth 3             # 只打印深度 <= 3 的语句
 ```
+
+### Tab 补全与历史
+
+stdin 是终端时，提示符走 `rustyline`：**Tab 补全**、**上/下键翻历史**、`Ctrl-C` 清空当前行
+不退出、`Ctrl-D` 退出。补全是**按命令逐个子集**给的，取的是当前会话的实时内容：
+
+| 补齐位置 | 候选来源 |
+| ---- | ---- |
+| 第一个词 | 所有调试命令（含简写，如 `b`/`c`/`p`） |
+| `break` / `tbreak` / `until` / `jmp` 的参数 | 脚本函数名 |
+| `untilcall` 的参数 | **内置函数** + 脚本函数名（`untilcall GUI<Tab>` → `GUICreate`） |
+| `print` / `set` / `eval` / `watch` 的参数 | 当前全局变量 `$x` + `@宏` |
+| `info` 的参数 | `breakpoints` / `locals` / `globals` / `functions` / `frame` |
+| `delete` / `enable` / `disable` / `ignore` / `commands` 等 | 断点 id |
+
+候选在**每次提示符前**从会话里现取（函数名、全局变量、断点都是那一刻的真值），所以
+`run` 之后变量出现了，`p $<Tab>` 就补得出来。stdin 是管道时照旧用朴素读行、不画提示符，
+脚本化行为不变；终端不可用时也会安静回落到朴素读行。
 
 ### 未捕获异常时停下（post-mortem）
 

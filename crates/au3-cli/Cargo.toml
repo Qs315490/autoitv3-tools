@@ -15,6 +15,11 @@ autoitv3-unpack = { path = "../autoitv3-unpack" }
 # CLI parsing: subcommand aliases + unambiguous abbreviations (`au3 deob`).
 clap = { version = "4.5", features = ["derive"] }
 
+# Tab completion / line editing for the interactive `au3 debug` shell. Only
+# used when stdin is a terminal; pipes, `-c` and command files keep the plain
+# reader (see `Shell::next_command`).
+rustyline = "14"
+
 [[bin]]
 name = "au3"
 path = "src/main.rs"
