@@ -301,8 +301,10 @@ pub(crate) fn call(
         }
 
         // ---------------- regular expressions ----------------
-        // AutoIt uses PCRE; `crate::regexp` implements the same surface with a
-        // pure-Rust engine, so these behave identically on every platform.
+        // AutoIt uses PCRE; `crate::regexp` implements the same surface with the
+        // pure-Rust `fancy-regex` engine, so these behave identically on every
+        // platform. A match-time engine error (e.g. the backtrack limit) is
+        // reported like a bad pattern: `@error = 2`.
         "stringregexp" => {
             let subject = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
             let pattern = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
@@ -325,18 +327,27 @@ pub(crate) fn call(
 
             match flag {
                 // $STR_REGEXPMATCH — "does it match?"
-                0 => {
-                    let hit = re.is_match(tail);
-                    rt.set_error_value(0, 0);
-                    Value::Int(i64::from(hit))
-                }
+                0 => match re.is_match(tail) {
+                    Ok(hit) => {
+                        rt.set_error_value(0, 0);
+                        Value::Int(i64::from(hit))
+                    }
+                    Err(_) => {
+                        rt.set_error_value(2, 0);
+                        Value::Int(0)
+                    }
+                },
                 // $STR_REGEXPARRAYMATCH — captured groups of the first match.
                 1 => match re.captures(tail) {
-                    None => {
+                    Err(_) => {
+                        rt.set_error_value(2, 0);
+                        Value::Int(0)
+                    }
+                    Ok(None) => {
                         rt.set_error_value(1, 0);
                         Value::Int(0)
                     }
-                    Some(caps) => {
+                    Ok(Some(caps)) => {
                         let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
                         rt.set_error_value(
                             0,
@@ -360,11 +371,15 @@ pub(crate) fn call(
                 },
                 // $STR_REGEXPARRAYFULLMATCH — full match first, then groups.
                 2 => match re.captures(tail) {
-                    None => {
+                    Err(_) => {
+                        rt.set_error_value(2, 0);
+                        Value::Int(0)
+                    }
+                    Ok(None) => {
                         rt.set_error_value(1, 0);
                         Value::Int(0)
                     }
-                    Some(caps) => {
+                    Ok(Some(caps)) => {
                         let end = caps.get(0).map(|m| m.end()).unwrap_or(0);
                         rt.set_error_value(
                             0,
@@ -381,11 +396,21 @@ pub(crate) fn call(
                 },
                 // $STR_REGEXPARRAYGLOBALMATCH — every match.
                 3 => {
-                    let all: Vec<Value> = re
-                        .find_iter(tail)
-                        .map(|m| Value::Str(m.as_str().to_string()))
-                        .collect();
-                    if all.is_empty() {
+                    let mut all: Vec<Value> = Vec::new();
+                    let mut engine_error = false;
+                    for m in re.find_iter(tail) {
+                        match m {
+                            Ok(m) => all.push(Value::Str(m.as_str().to_string())),
+                            Err(_) => {
+                                engine_error = true;
+                                break;
+                            }
+                        }
+                    }
+                    if engine_error {
+                        rt.set_error_value(2, 0);
+                        Value::Int(0)
+                    } else if all.is_empty() {
                         rt.set_error_value(1, 0);
                         Value::Int(0)
                     } else {
@@ -395,19 +420,28 @@ pub(crate) fn call(
                 }
                 // $STR_REGEXPARRAYGLOBALFULLMATCH — every match with groups.
                 4 => {
-                    let all: Vec<Value> = re
-                        .captures_iter(tail)
-                        .map(|caps| {
-                            let mut inner: Vec<Value> = Vec::new();
-                            for i in 0..re.captures_len() {
-                                inner.push(Value::Str(
-                                    caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string(),
-                                ));
+                    let mut all: Vec<Value> = Vec::new();
+                    let mut engine_error = false;
+                    for caps in re.captures_iter(tail) {
+                        let caps = match caps {
+                            Ok(caps) => caps,
+                            Err(_) => {
+                                engine_error = true;
+                                break;
                             }
-                            Value::array(inner)
-                        })
-                        .collect();
-                    if all.is_empty() {
+                        };
+                        let mut inner: Vec<Value> = Vec::new();
+                        for i in 0..re.captures_len() {
+                            inner.push(Value::Str(
+                                caps.get(i).map(|m| m.as_str()).unwrap_or("").to_string(),
+                            ));
+                        }
+                        all.push(Value::array(inner));
+                    }
+                    if engine_error {
+                        rt.set_error_value(2, 0);
+                        Value::Int(0)
+                    } else if all.is_empty() {
                         rt.set_error_value(1, 0);
                         Value::Int(0)
                     } else {
@@ -438,14 +472,29 @@ pub(crate) fn call(
                 }
             };
             let rep = crate::regexp::translate_replacement(&replacement);
-            let limit = if count > 0 { count as usize } else { usize::MAX };
-            let performed = re.find_iter(&subject).take(limit).count();
-            let out = if count > 0 {
-                re.replacen(&subject, count as usize, rep.as_str()).to_string()
-            } else {
-                re.replace_all(&subject, rep.as_str()).to_string()
+            // `fancy-regex` uses a limit of 0 for "replace all".
+            let limit = if count > 0 { count as usize } else { 0 };
+
+            // `@extended` reports how many replacements were made; count the
+            // matches that will be replaced, capped at `count` when it is set.
+            let cap = if count > 0 { count as usize } else { usize::MAX };
+            let mut performed = 0usize;
+            for m in re.find_iter(&subject).take(cap) {
+                match m {
+                    Ok(_) => performed += 1,
+                    Err(_) => {
+                        rt.set_error_value(2, 0);
+                        return Ok(Some(Value::Str(subject)));
+                    }
+                }
+            }
+            let out = match re.try_replacen(&subject, limit, rep.as_str()) {
+                Ok(out) => out.to_string(),
+                Err(_) => {
+                    rt.set_error_value(2, 0);
+                    return Ok(Some(Value::Str(subject)));
+                }
             };
-            // @extended reports how many replacements were made.
             rt.set_error_value(0, performed as i64);
             Value::Str(out)
         }

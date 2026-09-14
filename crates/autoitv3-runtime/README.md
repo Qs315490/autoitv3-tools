@@ -17,13 +17,13 @@
         host.rs       Host trait——嵌入方接入原生函数的接口（优先级高于平台层）
         platform/     Platform trait（仅接口；实现见 autoitv3-platform）
         profile.rs    执行配置：忠实语义 vs 确定性分析语义（见下文「执行配置」）
-        regexp.rs     StringRegExp* ——基于纯 Rust regex 引擎，平台无关
+        regexp.rs     StringRegExp* ——基于纯 Rust fancy-regex 引擎（含回溯特性），平台无关
         debug.rs      Debugger / DebugHost / Breakpoint / FrameInfo——调试接口（`au3 debug` 的实现端）
         error.rs      RuntimeError 与控制流信号 Flow
         lib.rs        公共 API
       tests/
         runtime.rs    解释器/host/debug 接口 + 可选样本集成测试（63 项）
-        regexp.rs     StringRegExp / StringRegExpReplace（27 项）
+        regexp.rs     StringRegExp / StringRegExpReplace（29 项）
         unit/vocab.rs 内置函数 / 宏词表的单元测试（3 项，`#[path]` 回挂）
 ```
 

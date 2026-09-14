@@ -17,7 +17,7 @@
 //! | [`value`] | runtime values (`Int`, `Str`, `Array`, `Map`, ...) and AutoIt coercion rules |
 //! | [`interp`] | the [`Runtime`]: load a program, call functions, evaluate expressions |
 //! | [`builtins`] | the implemented subset of AutoIt's function library |
-//! | [`regexp`] | `StringRegExp*` on a pure-Rust engine (platform-independent) |
+//! | [`regexp`] | `StringRegExp*` on the pure-Rust `fancy-regex` engine (platform-independent) |
 //! | [`profile`] | [`ExecutionProfile`] — faithful AutoIt semantics vs. fast, reproducible deobfuscation |
 //! | [`host`] | [`host::Host`] — how a *complete* runtime plugs native functions in |
 //! | [`platform`] | [`platform::Platform`] — OS-specific builtins (Linux generic / Windows) |

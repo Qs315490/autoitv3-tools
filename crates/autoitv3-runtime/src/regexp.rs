@@ -2,28 +2,25 @@
 //!
 //! AutoIt uses **PCRE**. That is an implementation detail of the engine, not
 //! something the operating system provides, so this module implements the
-//! AutoIt-visible surface on top of the pure-Rust [`regex`] crate — no C
+//! AutoIt-visible surface on top of the pure-Rust [`fancy_regex`] crate — no C
 //! dependency, no platform module, identical behaviour on Linux and Windows.
 //!
 //! # Fidelity
 //!
-//! [`regex`] is a finite-automaton engine: it deliberately omits the
-//! backtracking-only features of PCRE. Anything it cannot compile is reported
-//! as a *bad pattern* (`@error = 2`) rather than approximated, so a caller
-//! never silently gets a wrong answer. Known PCRE features that are **not**
-//! available: lookaround (`(?=)`, `(?!)`, `(?<=)`, `(?<!)`), backreferences
-//! (`\1`), atomic groups (`(?>)`), possessive quantifiers, conditionals and
-//! recursion. Everything AutoIt's own documentation highlights for everyday
-//! use — literal text, `.`, character classes, POSIX classes, `\d \s \w \b`,
-//! anchors, quantifiers, alternatives, capturing/named/non-capturing groups
-//! and the `(?imsxU)` option groups — is supported.
+//! [`fancy_regex`] keeps the `regex` crate's syntax and delegates patterns
+//! without backtracking features to its linear-time engine, while adding a
+//! backtracking VM for the constructs PCRE scripts actually use: lookaround,
+//! backreferences, atomic groups and conditionals (including variable-length
+//! lookbehind). A pattern it cannot compile is reported as a *bad pattern*
+//! (`@error = 2`) rather than approximated, so a caller never silently gets a
+//! wrong answer.
 //!
 //! The global settings AutoIt allows at the head of a pattern (`(*UCP)`,
-//! `(*CRLF)`, `(*ANYCRLF)`, `(*BSR_*)`, ...) are recognised and removed:
-//! [`regex`] is Unicode-aware and multi-line handling is configured through
-//! the `(?m)`/`(?s)` options it already understands.
+//! `(*CRLF)`, `(*ANYCRLF)`, `(*BSR_*)`, ...) are PCRE directives, not engine
+//! syntax, so [`compile`] recognises and removes them before handing the rest
+//! to the engine.
 
-use regex::Regex;
+use fancy_regex::Regex;
 
 /// A pattern that could not be compiled.
 #[derive(Debug, Clone)]
@@ -37,7 +34,7 @@ pub struct RegexError {
 
 /// Global settings AutoIt permits at the very start of a pattern.
 ///
-/// They are stripped before handing the pattern to [`regex`]; see the module
+/// They are stripped before handing the pattern to the engine; see the module
 /// documentation for why.
 const PROLOGUE_OPTIONS: &[&str] = &[
     "(*UCP)",
@@ -93,28 +90,22 @@ pub fn compile(pattern: &str) -> Result<Regex, RegexError> {
     match Regex::new(&body) {
         Ok(re) => Ok(re),
         Err(e) => {
-            let message = e.to_string();
-            // `regex` does not expose a structured offset; pull the one it
-            // prints ("... at offset N") when present, and shift it back to a
-            // position in the original AutoIt pattern.
-            let offset = extract_offset(&message)
-                .map(|o| o + stripped + 1)
-                .unwrap_or(0);
-            Err(RegexError { offset, message })
+            // A parse error carries the byte position within the pattern;
+            // shift it back to a 1-based offset in the original AutoIt pattern.
+            let offset = match &e {
+                fancy_regex::Error::ParseError(pos, _) => pos + stripped + 1,
+                _ => 0,
+            };
+            Err(RegexError {
+                offset,
+                message: e.to_string(),
+            })
         }
     }
 }
 
-/// Pull `offset N` out of a `regex` error message, if it is there.
-fn extract_offset(message: &str) -> Option<usize> {
-    let idx = message.find("offset ")?;
-    let rest = &message[idx + "offset ".len()..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
-}
-
 /// Rewrite an AutoIt replacement string into the `$n` / `${n}` form the
-/// [`regex`] crate understands.
+/// [`fancy_regex`] crate understands.
 ///
 /// AutoIt accepts `\0`-`\9` and `$0`-`$9` (with `${1}5` to separate a
 /// back-reference from following digits), and requires a literal backslash to
