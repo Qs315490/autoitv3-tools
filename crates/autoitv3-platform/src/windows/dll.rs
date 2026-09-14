@@ -629,8 +629,19 @@ pub(crate) fn load_function(module: usize, name: &str) -> Option<usize> {
     if module == 0 || name.is_empty() {
         return None;
     }
-    let proc = unsafe { GetProcAddress(module as _, format!("{name}\0").as_ptr() as *const u8) };
-    proc.map(|f| f as usize)
+    // AutoIt resolves an unsuffixed name to its ANSI variant first
+    // (`MessageBox` → `MessageBoxA`), so `CryptAcquireContext` has to be tried
+    // as `CryptAcquireContextA` too — advapi32.dll exports no bare name.
+    let ansi = format!("{name}A");
+    for candidate in [name, ansi.as_str()] {
+        let proc = unsafe {
+            GetProcAddress(module as _, format!("{candidate}\0").as_ptr() as *const u8)
+        };
+        if let Some(f) = proc {
+            return Some(f as usize);
+        }
+    }
+    None
 }
 
 pub(crate) fn free_library(module: usize) {
@@ -852,6 +863,8 @@ mod probe_tests {
         assert!(load_function(m, "lstrlenW").is_some());
         assert!(load_function(m, "GetVersionExW").is_some());
         assert!(load_function(m, "RtlMoveMemory").is_some());
+        // AutoIt appends the ANSI suffix when the bare name has no export.
+        assert!(load_function(m, "GetModuleHandle").is_some());
         assert!(load_function(m, "NoSuchExportInTheDll").is_none());
     }
 }
