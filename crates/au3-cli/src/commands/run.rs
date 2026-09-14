@@ -77,6 +77,9 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
     )?);
+    // A `.exe`/`.a3x` input is a compiled build, so `@Compiled` answers 1 the
+    // way it did for the program the script came out of.
+    rt.set_compiled(input.resource_module.is_some());
     rt.set_max_steps(args.steps.max_steps);
     // Probing a script wants reproducibility and no side effects; `--faithful`
     // switches to AutoIt's own semantics instead. `--allow`/`--deny` then

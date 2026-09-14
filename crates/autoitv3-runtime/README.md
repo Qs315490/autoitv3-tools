@@ -86,9 +86,17 @@ au3 run sample.au3 F --faithful   # 真的 Sleep、真的随机、真的写文�
 `$CmdLine`/`$CmdLineRaw`；写了函数时 `--arg` 是该函数的入参，`--cmdline` 仍供
 `--init` 跑的脚本体读取。
 
+`@Compiled` 由 `Runtime::set_compiled` 决定：CLI 以 `.exe`/`.a3x` 为输入时是 1、
+`.au3` 是 0，脚本据此选择"重开 x64 进程 / 剥离自身命令行"的分支时与真实产物一致。
+时钟宏 `@YEAR`/`@MON`/`@MDAY`/`@HOUR`/`@MIN`/`@SEC`/`@MSEC`/`@WDAY`/`@YDAY`
+（解释器直接提供，不再落回平台的 `Null`）按 AutoIt 的零填充字符串格式返回；
+确定性配置下是固定时刻，否则取宿主时钟。
+
 其余仍属**有意为之的近似**（与执行配置无关，已在模块文档逐条标注）：
 
 - `FileGetTime` 返回 **UTC**（本地时区需要时区数据库），`YYYY/MM/DD HH:MM:SS` 格式与 AutoIt 一致
+- `@YEAR`…`@YDAY` 同样按 **UTC** 分解；格式（零填充、`@WDAY` 1=周日、`@YDAY`
+  001-366）与 AutoIt 一致
 - `FileGetAttrib` 返回 `D`（目录）/`A`（普通文件），只读时加 `R`；Windows 专有的 `S`/`H` 无对应概念，不设置
 - `FileGetShortName` 无 8.3 短名概念，原样返回长名
 - 文本按 UTF-8 读写；`FileOpen` 的 `$FO_UNICODE` 系列标志被接受但按 UTF-8 处理

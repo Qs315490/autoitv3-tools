@@ -37,6 +37,12 @@ use crate::value::{MapKey, Value};
 pub const DEFAULT_MAX_STEPS: u64 = 20_000_000;
 /// Default recursion guard.
 pub const DEFAULT_MAX_DEPTH: usize = 256;
+/// The instant the deterministic profile reports: 2024-01-01T00:00:00Z.
+///
+/// The clock macros have to answer *something*, and a fixed instant keeps a
+/// deobfuscation run reproducible (`SRandom(@MSEC & @SEC & @MIN)` would
+/// otherwise seed differently every time).
+const DETERMINISTIC_CLOCK_MS: i64 = 1_704_067_200_000;
 
 /// Upper bound on callback invocations drained after a single platform call,
 /// so a scripted enumerator cannot flood the run.
@@ -112,6 +118,12 @@ pub struct Runtime {
     adlib_handlers: Vec<AdlibHandler>,
     /// How faithfully AutoIt's observable behaviour is reproduced.
     profile: ExecutionProfile,
+    /// Whether the script is running as a compiled build (`@Compiled`).
+    ///
+    /// A build's own script answered `1` while it was running; a plain `.au3`
+    /// run under `AutoIt3.exe` answers `0`. Matching that keeps a script that
+    /// branches on `@Compiled` on the path it actually took.
+    compiled: bool,
     /// Top-level (script) statements, executed by [`Runtime::run_script`].
     script: Vec<Stmt>,
 }
@@ -261,6 +273,7 @@ impl Runtime {
             exit_handlers: Vec::new(),
             adlib_handlers: Vec::new(),
             profile: ExecutionProfile::default(),
+            compiled: false,
             script: Vec::new(),
         }
     }
@@ -485,6 +498,15 @@ impl Runtime {
     /// script rather than run it (see [`crate::profile`]).
     pub fn set_profile(&mut self, profile: ExecutionProfile) {
         self.profile = profile;
+    }
+
+    /// Set `@Compiled`: true when the script came from a compiled build.
+    ///
+    /// The CLI derives this from the input (a `.exe`/`.a3x` answers 1, a
+    /// `.au3` answers 0), so a script that relaunches itself or strips its own
+    /// command line takes the branch its build would have taken.
+    pub fn set_compiled(&mut self, compiled: bool) {
+        self.compiled = compiled;
     }
 
     /// The code passed to `Exit`, if the script exited.
@@ -1235,6 +1257,14 @@ impl Runtime {
             "numparams" => Value::Int(
                 self.frames.last().map(|f| f.arg_count as i64).unwrap_or(0),
             ),
+            // Script state: whether this is running as a compiled build.
+            "compiled" => Value::Int(self.compiled as i64),
+            // The clock. AutoIt reports local time; this reports the fixed
+            // instant the deterministic profile runs at, or the host's time
+            // otherwise (see [`Runtime::clock_parts`]).
+            "year" | "mon" | "mday" | "hour" | "min" | "sec" | "msec" | "wday" | "yday" => {
+                self.clock_macro(&key)
+            }
             // Universal character constants.
             "crlf" => Value::Str("\r\n".into()),
             "cr" => Value::Str("\r".into()),
@@ -1246,6 +1276,61 @@ impl Runtime {
                 None => Value::Null,
             },
         }
+    }
+
+    /// One of the clock macros, from [`Runtime::clock_parts`].
+    ///
+    /// AutoIt returns these as zero-padded strings (`@MON` is `01`..`12`,
+    /// `@MSEC` is `000`..`999`, `@YDAY` is `001`..`366`), which is what makes
+    /// `@MSEC & @SEC & @MIN` a fixed-width seed.
+    fn clock_macro(&self, key: &str) -> Value {
+        let (year, month, day, hour, minute, second, weekday, yearday) = self.clock_parts();
+        let text = match key {
+            "year" => format!("{year:04}"),
+            "mon" => format!("{month:02}"),
+            "mday" => format!("{day:02}"),
+            "hour" => format!("{hour:02}"),
+            "min" => format!("{minute:02}"),
+            "sec" => format!("{second:02}"),
+            "msec" => format!("{:03}", self.clock_millis() % 1000),
+            "wday" => weekday.to_string(),
+            "yday" => format!("{yearday:03}"),
+            _ => return Value::Null,
+        };
+        Value::Str(text)
+    }
+
+    /// Milliseconds since the Unix epoch: fixed for a deterministic run, the
+    /// host clock otherwise.
+    fn clock_millis(&self) -> i64 {
+        if self.profile.is_deterministic() {
+            DETERMINISTIC_CLOCK_MS
+        } else {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(DETERMINISTIC_CLOCK_MS)
+        }
+    }
+
+    /// `(@YEAR, @MON, @MDAY, @HOUR, @MIN, @SEC, @WDAY, @YDAY)`.
+    ///
+    /// AutoIt reports local time; this decomposes the instant in UTC, which is
+    /// where it has to stop without a timezone database. Scripts use the clock
+    /// overwhelmingly to seed `Random`, so the offset does not change what they
+    /// compute. `@WDAY` is 1 (Sunday) through 7 (Saturday), `@YDAY` is 1-based.
+    fn clock_parts(&self) -> (i64, i64, i64, i64, i64, i64, i64, i64) {
+        let millis = self.clock_millis();
+        let days = millis.div_euclid(86_400_000);
+        let ms_of_day = millis.rem_euclid(86_400_000);
+        let hour = ms_of_day / 3_600_000;
+        let minute = (ms_of_day / 60_000) % 60;
+        let second = (ms_of_day / 1_000) % 60;
+        let (year, month, day) = civil_from_days(days);
+        // 1970-01-01 was a Thursday; AutoIt counts Sunday as 1.
+        let weekday = (days.rem_euclid(7) + 4) % 7 + 1;
+        let yearday = days - days_from_civil(year, 1, 1) + 1;
+        (year, month, day, hour, minute, second, weekday, yearday)
     }
 
     fn tick(&mut self) -> Result<(), RuntimeError> {
@@ -1883,6 +1968,34 @@ fn quote_cmdline_arg(arg: &str) -> String {
     }
     quoted.push('"');
     quoted
+}
+
+/// Days since 1970-01-01 to `(year, month, day)`, proleptic Gregorian.
+///
+/// Howard Hinnant's `civil_from_days`, which avoids both a timezone database
+/// and any dependency.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as i64;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as i64;
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
+/// The inverse of [`civil_from_days`].
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let mp = if month > 2 { month - 3 } else { month + 9 } as u64;
+    let doy = (153 * mp + 2) / 5 + (day as u64) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe as i64 - 719_468
 }
 
 /// Variable names are case-insensitive in AutoIt and stored without the `$`.
