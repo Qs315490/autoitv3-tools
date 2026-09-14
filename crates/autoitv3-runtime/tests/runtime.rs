@@ -61,6 +61,70 @@ fn string_concat_and_coercion() {
 }
 
 #[test]
+fn compound_concat_builds_a_string_in_a_loop() {
+    // `$s &= x` in statement position appends onto the buffer the variable
+    // already owns. The observable result matches `$s = $s & x`; the loop just
+    // no longer reallocates and copies the whole accumulator every iteration.
+    let src = r#"
+Func F()
+    Local $s = ""
+    For $i = 1 To 5
+        $s &= $i
+    Next
+    Return $s
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "12345"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_concat_coerces_like_the_operator() {
+    let src = r#"
+Func F()
+    Local $s = "n"
+    $s &= 2.5
+    $s &= True
+    $s &= Null
+    Return $s
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "n2.5True"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_concat_declares_an_unset_variable() {
+    let src = "Func F()\n    $s &= \"x\"\n    Return $s\nEndFunc\n";
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "x"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_concat_leaves_an_earlier_copy_alone() {
+    // Strings are values: a read hands out a copy, so the append has to land in
+    // the slot and not in a value somebody else is holding.
+    let src = r#"
+Func F()
+    Local $s = "a"
+    Local $t = $s
+    $s &= "b"
+    Return $t & "/" & $s
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "a/ab"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
 fn integer_division_stays_integral() {
     let src = "Func F()\n    Return 20 / 5\nEndFunc\n";
     assert!(matches!(call(src, "F", vec![]), Value::Int(4)));

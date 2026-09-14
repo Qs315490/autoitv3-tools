@@ -1109,6 +1109,63 @@ impl Runtime {
         })
     }
 
+    /// Run an expression statement — one whose value is thrown away.
+    ///
+    /// A bare `$s &= x` is the obfuscator's string builder, and the statement
+    /// does not need the concatenated result. Going through `eval_expr` makes
+    /// `apply_arith` allocate a fresh `String` and copy the whole accumulator
+    /// on every iteration, which is quadratic in the final length; appending to
+    /// the buffer the variable already owns keeps such a loop linear.
+    fn exec_expr_stmt(&mut self, e: &Expr, span: Span) -> Result<(), RuntimeError> {
+        if let ExprKind::Binary(BinaryOp::AmpAssign, target, rhs) = &e.kind {
+            if let ExprKind::Var(v) = &target.kind {
+                if v.indices.is_empty() {
+                    // The right side is evaluated first, exactly as the
+                    // generic operator path does, so a side effect it has on
+                    // the target is already in the slot when the append runs.
+                    let rhs = self.eval_expr(rhs)?;
+                    match &rhs {
+                        Value::Str(s) => self.append_var_str(&v.name.name, s, span),
+                        other => self.append_var_str(&v.name.name, &other.to_autoit_string(), span),
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        let _ = self.eval_expr(e)?;
+        Ok(())
+    }
+
+    /// Append `text` to `$name` in place, declaring it as `text` when it is not
+    /// bound yet.
+    ///
+    /// AutoIt strings are values and every read clones, so a variable slot owns
+    /// its buffer outright: mutating it here cannot be observed through a value
+    /// read earlier.
+    fn append_var_str(&mut self, name: &str, text: &str, span: Span) {
+        let key = var_key(name);
+        // The same lookup order `read_var` uses: the innermost frame shadows
+        // the globals.
+        if let Some(frame) = self.frames.last_mut() {
+            if let Some(slot) = frame.vars.get_mut(&key) {
+                append_text(slot, text);
+                if let Some(dbg) = self.debugger.as_mut() {
+                    dbg.on_variable_write(&key, slot);
+                }
+                return;
+            }
+        }
+        if let Some(slot) = self.globals.get_mut(&key) {
+            append_text(slot, text);
+            if let Some(dbg) = self.debugger.as_mut() {
+                dbg.on_variable_write(&key, slot);
+            }
+            return;
+        }
+        // An unset variable reads as "", so `$s &= x` declares it holding `x`.
+        self.write_var(name, Value::Str(text.to_string()), VarScope::Auto, span);
+    }
+
     /// Write `value` into the lvalue expression `target`.
     fn assign_to(&mut self, target: &Expr, value: Value, span: Span) -> Result<(), RuntimeError> {
         match &target.kind {
@@ -1391,7 +1448,7 @@ impl Runtime {
         match &s.kind {
             StmtKind::Directive(_) => Ok(Flow::Normal),
             StmtKind::Expr(e) => {
-                self.eval_expr(e)?;
+                self.exec_expr_stmt(e, s.span)?;
                 Ok(Flow::Normal)
             }
             StmtKind::VarDecl(v) => {
@@ -2037,6 +2094,18 @@ fn loop_levels(rt: &mut Runtime, e: &Option<Expr>) -> Result<usize, RuntimeError
             Ok(if n < 1 { 1 } else { n as usize })
         }
         None => Ok(1),
+    }
+}
+
+/// Append `text` to a value that is about to become a string, coercing it the
+/// way `&` does when it is not one already.
+fn append_text(slot: &mut Value, text: &str) {
+    match slot {
+        Value::Str(s) => s.push_str(text),
+        other => {
+            let prefix = other.to_autoit_string();
+            *other = Value::Str(prefix + text);
+        }
     }
 }
 
