@@ -72,8 +72,9 @@ pub struct SubstituteOptions {
     ///
     /// **Off by default.** The declaration is the only record of *how* the
     /// script built the table, and for a runtime table the literal is a lot of
-    /// output — the reference sample's string table alone is several thousand entries.
-    /// Turn it on when the goal is to read the data rather than the code.
+    /// output — a large obfuscated script's string table can be thousands of
+    /// entries on its own. Turn it on when the goal is to read the data rather
+    /// than the code.
     pub inline_declarations: bool,
 }
 

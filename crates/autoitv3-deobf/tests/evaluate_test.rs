@@ -495,48 +495,62 @@ EndFunc
     assert!(out.contains("Build()"), "declaration should be untouched: {out}");
 }
 
-/// Run the optional `AU3_SAMPLE` script with the PE image that sits next to it.
+/// Evaluate the optional `AU3_SAMPLE` script.
 ///
 /// A compiled AutoIt script keeps its encrypted tables in the image's
-/// resources, which is why the resource module is discovered from the sample's
-/// own directory rather than configured by hand.
+/// resources, which is why the image that sits next to the script is discovered
+/// from the sample's own directory rather than configured by hand. Pass `None`
+/// to evaluate without it.
 ///
 /// The script body takes a few minutes to interpret in a debug build, so run
-/// this one with `--release` (about eight seconds there).
-fn sample_evaluate() -> Option<(String, autoitv3_deobf::EvaluateReport)> {
+/// this one with `--release` (tens of seconds there).
+fn sample_evaluate(module: Option<&std::path::Path>) -> Option<autoitv3_deobf::EvaluateReport> {
     let path = std::env::var("AU3_SAMPLE").ok().filter(|p| !p.is_empty())?;
     let src = std::fs::read_to_string(&path).ok()?;
     let mut prog = parse(&src).expect("sample parses");
     let mut emu = autoitv3_platform::WindowsEmulation::new();
-    if let Some(found) =
-        autoitv3_platform::find_resource_module(Some(std::path::Path::new(&path)))
-    {
-        emu = emu.with_module_file(found);
+    if let Some(module) = module {
+        emu = emu.with_module_file(module);
     }
-    let report = evaluate_with_options(
+    Some(evaluate_with_options(
         &mut prog,
         ExecutionProfile::deterministic(),
         autoitv3_platform::host_platform_with(emu),
         SubstituteOptions::default(),
-    );
-    // Rendering the whole sample through the pretty printer is slow in a debug
-    // build, so this reports the counts the pass produced rather than text.
-    Some((String::new(), report))
+    ))
 }
 
 #[test]
 fn the_encrypted_tables_come_out_when_the_resource_image_is_present() {
-    // Without the image the sample stops inside its string-table builder with a
-    // few hundred substitutions; with it the CryptoAPI chain runs and tens of
-    // thousands of references are inlined.
-    let Some((_out, report)) = sample_evaluate() else {
+    // The image carries the encrypted tables; without it the sample stops
+    // inside its string-table builder, with it the CryptoAPI chain runs and many
+    // more references are inlined. The assertion is a *comparison* rather than a
+    // pinned count, so it holds for any obfuscated sample instead of one build.
+    let Some(path) = std::env::var("AU3_SAMPLE").ok().filter(|p| !p.is_empty()) else {
         return;
     };
+    let Some(module) =
+        autoitv3_platform::find_resource_module(Some(std::path::Path::new(&path)))
+    else {
+        return;
+    };
+    let (Some(without), Some(with)) = (sample_evaluate(None), sample_evaluate(Some(&module)))
+    else {
+        return;
+    };
+
     assert!(
-        report.substitutions > 20_000,
-        "only {} substitutions (stopped at {:?})",
-        report.substitutions,
-        report.stopped
+        with.tables > without.tables,
+        "the image added no tables: with {} vs without {} (stopped at {:?})",
+        with.tables,
+        without.tables,
+        with.stopped
     );
-    assert_eq!(report.tables, 9, "the string table should have been built");
+    assert!(
+        with.substitutions > without.substitutions,
+        "the image inlined no more: with {} vs without {} (stopped at {:?})",
+        with.substitutions,
+        without.substitutions,
+        with.stopped
+    );
 }
