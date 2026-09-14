@@ -1590,6 +1590,30 @@ EndFunc
 }
 
 #[test]
+fn expandenvironmentstrings_maps_windows_identity_names() {
+    // `%USERNAME%` / `%COMPUTERNAME%` are the Windows spellings; on a Unix host
+    // the emulation maps them onto the host identity rather than leaving them
+    // unexpanded (which a Windows-targeted script would not expect).
+    let emu = WindowsEmulation::new();
+    let src = r#"
+Func F()
+    Local $w = ObjCreate("WScript.Shell")
+    Local $user = $w.ExpandEnvironmentStrings("%USERNAME%")
+    Local $host = $w.ExpandEnvironmentStrings("%COMPUTERNAME%")
+    Return ($user <> "%USERNAME%") & "|" & ($host <> "%COMPUTERNAME%")
+EndFunc
+"#;
+    let prog = autoitv3_ast::parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(emu));
+    rt.run_script().expect("script body");
+    assert_eq!(
+        rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
+        "True|True"
+    );
+}
+
+#[test]
 fn filesystemobject_answers_pure_path_arithmetic() {
     let emu = WindowsEmulation::new()
         .with_file(r"C:\probe\payload.bin", b"x".to_vec());
