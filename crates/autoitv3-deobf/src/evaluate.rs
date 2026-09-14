@@ -125,9 +125,15 @@ impl Tables {
         // Bare variable reads are only safe to inline when the script itself
         // promises the value never changes.
         let consts = const_globals(prog);
+        // An indexed read is only safe to inline when nothing ever assigns the
+        // variable: the snapshot is one run's value, and a global the script
+        // writes at runtime (a `DllOpen` handle, a CryptoAPI provider handle)
+        // holds a different one next time.
+        let written = written_globals(prog);
         let mut ctx = SubstituteCtx {
             tables: &self.values,
             consts: &consts,
+            written: &written,
             inline_declarations: options.inline_declarations,
             substitutions: 0,
             calls_resolved: 0,
@@ -261,6 +267,9 @@ struct SubstituteCtx<'a> {
     tables: &'a HashMap<String, Value>,
     /// Names declared `Global Const`, which a bare read may be replaced by.
     consts: &'a HashSet<String>,
+    /// Names the program assigns somewhere; a read of one is never replaced by
+    /// the evaluation run's snapshot of its value.
+    written: &'a HashSet<String>,
     /// Whether a `Global Const` table may be replaced by its value.
     inline_declarations: bool,
     substitutions: usize,
@@ -463,15 +472,21 @@ impl SubstituteCtx<'_> {
     ///
     /// A bare `$name` is only substituted when it is `Global Const`: a mutable
     /// global could be reassigned later, and inlining its value would then be
-    /// wrong. Indexed reads assume the table is immutable once built, which is
-    /// how the obfuscator uses them.
+    /// wrong. An indexed read is also substituted for a global that is never
+    /// assigned — the obfuscator's tables are built once and never touched
+    /// again — but *not* for one the script writes at runtime (`$hDll`,
+    /// `$hProv`): freezing those to the values one evaluation happened to see
+    /// produces a script that only runs where it was evaluated. See
+    /// [`written_globals`].
     fn var(&mut self, e: &mut Expr) {
         let ExprKind::Var(v) = &e.kind else { return };
-        if v.indices.is_empty() {
-            let key = v.name.name.trim_start_matches('$').to_ascii_lowercase();
-            if !self.consts.contains(&key) {
-                return;
-            }
+        let inline = if v.indices.is_empty() {
+            self.is_const(&v.name.name)
+        } else {
+            self.may_inline(&v.name.name)
+        };
+        if !inline {
+            return;
         }
         let Some(value) = self.resolve(&v.name.name, &v.indices) else {
             return;
@@ -482,9 +497,25 @@ impl SubstituteCtx<'_> {
         }
     }
 
+    /// Whether `$name` is declared `Global Const`.
+    fn is_const(&self, name: &str) -> bool {
+        self.consts
+            .contains(&name.trim_start_matches('$').to_ascii_lowercase())
+    }
+
+    /// Whether an indexed read of `$name` may stand in for the value the
+    /// evaluation run saw: a constant, or a global nothing ever assigns.
+    fn may_inline(&self, name: &str) -> bool {
+        let key = name.trim_start_matches('$').to_ascii_lowercase();
+        self.consts.contains(&key) || !self.written.contains(&key)
+    }
+
     /// Replace `$table[i](args)` with a call to the function the table holds.
     fn index_call(&mut self, e: &mut Expr) {
         let ExprKind::IndexCall(v, _) = &e.kind else { return };
+        if !self.may_inline(&v.name.name) {
+            return;
+        }
         let Some(value) = self.resolve(&v.name.name, &v.indices) else {
             return;
         };
@@ -689,4 +720,244 @@ fn is_assign(op: &BinaryOp) -> bool {
             | BinaryOp::CaretAssign
             | BinaryOp::AmpAssign
     )
+}
+
+/// Names the program assigns somewhere, lower-cased without the `$`.
+///
+/// The evaluation run captures one value per global, but that is a snapshot:
+/// a script keeps *runtime* state in plain globals (`$hDll = DllOpen(…)`,
+/// `$hProv = CryptAcquireContext(…)`) and reads it back through accessor
+/// functions, so `Func H() Return $state[2] EndFunc` has to keep reading the
+/// live variable. Rewriting it to the snapshot produced a deobfuscated script
+/// whose every CryptoAPI call failed with a stale handle — the emulated layer
+/// happened to hand out the same handle, native Windows did not.
+///
+/// The scan is deliberately conservative: a name assigned anywhere — even one
+/// the reader scopes locally — blocks indexed reads of a global with that name.
+fn written_globals(prog: &Program) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for item in &prog.items {
+        collect_writes_item(item, &mut out);
+    }
+    out
+}
+
+fn collect_writes_item(item: &Item, out: &mut HashSet<String>) {
+    match &item.kind {
+        // At file scope every assignment target is a global.
+        ItemKind::Stmt(s) => collect_writes_stmt(s, &HashSet::new(), out),
+        ItemKind::Func(f) => {
+            // A name the function declares itself shadows the global, so the
+            // `$m` a builder assigns locally is not the `$m` table it returns.
+            let mut locals: HashSet<String> =
+                f.params.iter().map(|p| var_key(&p.name.name)).collect();
+            for s in &f.body {
+                collect_locals(std::slice::from_ref(s), &mut locals);
+            }
+            for s in &f.body {
+                collect_writes_stmt(s, &locals, out);
+            }
+        }
+        ItemKind::Region(r) => {
+            for it in &r.items {
+                collect_writes_item(it, out);
+            }
+        }
+        ItemKind::Directive(_) => {}
+    }
+}
+
+/// Names the function introduces itself: `Dim`/`Local`/`Static` declarations
+/// and `For` counters. AutoIt has function-wide scope, so they are collected
+/// before the body is scanned for assignments.
+fn collect_locals(stmts: &[Stmt], locals: &mut HashSet<String>) {
+    for s in stmts {
+        match &s.kind {
+            StmtKind::VarDecl(v) if !matches!(v.kind, VarKind::Global) => {
+                for item in &v.vars {
+                    locals.insert(var_key(&item.name.name));
+                }
+            }
+            StmtKind::If(if_) => {
+                if let Some(ts) = &if_.then_stmt {
+                    collect_locals(std::slice::from_ref(ts), locals);
+                }
+                collect_locals(&if_.then_block, locals);
+                for (_, body) in &if_.else_ifs {
+                    collect_locals(body, locals);
+                }
+                collect_locals(&if_.else_block, locals);
+            }
+            StmtKind::While(w) => collect_locals(&w.body, locals),
+            StmtKind::DoUntil(d) => collect_locals(&d.body, locals),
+            StmtKind::For(f) => {
+                locals.insert(var_key(&f.var.name));
+                collect_locals(&f.body, locals);
+            }
+            StmtKind::Select(cases) => {
+                for c in cases {
+                    collect_locals(&c.body, locals);
+                }
+            }
+            StmtKind::Switch(sw) => {
+                for c in &sw.cases {
+                    collect_locals(&c.body, locals);
+                }
+            }
+            StmtKind::With(w) => collect_locals(&w.body, locals),
+            _ => {}
+        }
+    }
+}
+
+fn collect_writes_stmts(stmts: &[Stmt], locals: &HashSet<String>, out: &mut HashSet<String>) {
+    for s in stmts {
+        collect_writes_stmt(s, locals, out);
+    }
+}
+
+fn collect_writes_stmt(s: &Stmt, locals: &HashSet<String>, out: &mut HashSet<String>) {
+    match &s.kind {
+        StmtKind::VarDecl(v) => {
+            // `ReDim $a[...]` resizes an existing array in place.
+            if v.is_redim {
+                for item in &v.vars {
+                    let key = var_key(&item.name.name);
+                    if !locals.contains(&key) {
+                        out.insert(key);
+                    }
+                }
+            }
+        }
+        StmtKind::Expr(e) => collect_writes_expr(e, locals, out),
+        StmtKind::Return(Some(e))
+        | StmtKind::Exit(Some(e))
+        | StmtKind::ExitLoop(Some(e))
+        | StmtKind::ContinueLoop(Some(e)) => collect_writes_expr(e, locals, out),
+        StmtKind::If(if_) => {
+            collect_writes_expr(&if_.cond, locals, out);
+            if let Some(ts) = &if_.then_stmt {
+                collect_writes_stmt(ts, locals, out);
+            }
+            collect_writes_stmts(&if_.then_block, locals, out);
+            for (cond, body) in &if_.else_ifs {
+                collect_writes_expr(cond, locals, out);
+                collect_writes_stmts(body, locals, out);
+            }
+            collect_writes_stmts(&if_.else_block, locals, out);
+        }
+        StmtKind::While(w) => {
+            collect_writes_expr(&w.cond, locals, out);
+            collect_writes_stmts(&w.body, locals, out);
+        }
+        StmtKind::DoUntil(d) => {
+            collect_writes_stmts(&d.body, locals, out);
+            collect_writes_expr(&d.cond, locals, out);
+        }
+        StmtKind::For(f) => {
+            if let Some(it) = &f.iter {
+                collect_writes_expr(it, locals, out);
+            }
+            collect_writes_expr(&f.from, locals, out);
+            collect_writes_expr(&f.to, locals, out);
+            if let Some(step) = &f.step {
+                collect_writes_expr(step, locals, out);
+            }
+            collect_writes_stmts(&f.body, locals, out);
+        }
+        StmtKind::Select(cases) => {
+            for c in cases {
+                collect_writes_case(c, locals, out);
+            }
+        }
+        StmtKind::Switch(sw) => {
+            collect_writes_expr(&sw.expr, locals, out);
+            for c in &sw.cases {
+                collect_writes_case(c, locals, out);
+            }
+        }
+        StmtKind::With(w) => {
+            collect_writes_expr(&w.expr, locals, out);
+            collect_writes_stmts(&w.body, locals, out);
+        }
+        StmtKind::Directive(_)
+        | StmtKind::Return(None)
+        | StmtKind::Exit(None)
+        | StmtKind::ExitLoop(None)
+        | StmtKind::ContinueLoop(None)
+        | StmtKind::ContinueCase => {}
+    }
+}
+
+fn collect_writes_case(c: &CaseClause, locals: &HashSet<String>, out: &mut HashSet<String>) {
+    for v in &c.values {
+        collect_writes_expr(v, locals, out);
+    }
+    collect_writes_stmts(&c.body, locals, out);
+}
+
+fn collect_writes_expr(e: &Expr, locals: &HashSet<String>, out: &mut HashSet<String>) {
+    match &e.kind {
+        ExprKind::Binary(op, a, b) => {
+            if is_assign(op) {
+                if let ExprKind::Var(v) = &a.kind {
+                    let key = var_key(&v.name.name);
+                    if !locals.contains(&key) {
+                        out.insert(key);
+                    }
+                }
+            }
+            collect_writes_expr(a, locals, out);
+            collect_writes_expr(b, locals, out);
+        }
+        ExprKind::Unary(_, a) | ExprKind::Paren(a) | ExprKind::Member(a, _) => {
+            collect_writes_expr(a, locals, out)
+        }
+        ExprKind::Ternary(c, a, b) => {
+            collect_writes_expr(c, locals, out);
+            collect_writes_expr(a, locals, out);
+            collect_writes_expr(b, locals, out);
+        }
+        ExprKind::Call(c) => {
+            for a in &c.args {
+                collect_writes_expr(a, locals, out);
+            }
+        }
+        ExprKind::ArrayLit(items) => {
+            for it in items {
+                collect_writes_expr(it, locals, out);
+            }
+        }
+        ExprKind::Subscript(base, indices) => {
+            collect_writes_expr(base, locals, out);
+            for i in indices {
+                collect_writes_expr(i, locals, out);
+            }
+        }
+        ExprKind::IndexCall(v, args) => {
+            for i in &v.indices {
+                collect_writes_expr(i, locals, out);
+            }
+            for a in args {
+                collect_writes_expr(a, locals, out);
+            }
+        }
+        ExprKind::MethodCall(recv, _, args) => {
+            collect_writes_expr(recv, locals, out);
+            for a in args {
+                collect_writes_expr(a, locals, out);
+            }
+        }
+        ExprKind::Var(v) => {
+            for i in &v.indices {
+                collect_writes_expr(i, locals, out);
+            }
+        }
+        ExprKind::Lit(_) | ExprKind::Macro(_) | ExprKind::Ident(_) | ExprKind::WithSubject => {}
+    }
+}
+
+/// A variable name as the tables key it: lower-cased, without the `$`.
+fn var_key(name: &str) -> String {
+    name.trim_start_matches('$').to_ascii_lowercase()
 }

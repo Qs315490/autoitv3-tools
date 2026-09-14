@@ -204,6 +204,52 @@ EndFunc
 }
 
 #[test]
+fn a_global_the_script_assigns_keeps_reading_live() {
+    // Real scripts keep runtime handles in plain globals — `$hProv =
+    // CryptAcquireContext(…)` — and read them back through accessors. The
+    // evaluation run only saw one handle; freezing it made every later crypto
+    // call pass a stale one (the emulated layer happened to return the same
+    // value, native Windows did not).
+    let src = r#"
+Global $state[3]
+Func Acquire()
+    $state[1] = 7
+    Return 1
+EndFunc
+Func Handle()
+    Return $state[1]
+EndFunc
+Acquire()
+"#;
+    let (out, report) = run(src);
+    assert!(report.completed, "script should run: {:?}", report.stopped);
+    assert_eq!(report.substitutions, 0, "assign-target global was frozen: {out}");
+    assert!(
+        out.contains("$state[1]"),
+        "the accessor must keep reading the global: {out}"
+    );
+}
+
+#[test]
+fn a_global_nothing_ever_assigns_is_still_inlined() {
+    // The counterpart: the obfuscator's tables are plain (non-`Const`) globals
+    // that only the declaration writes, so their reads stay inlined.
+    let src = r#"
+Global $table = Build()
+Func Build()
+    Local $t[] = [2, "alpha", "beta"]
+    Return $t
+EndFunc
+Func F()
+    Return $table[1]
+EndFunc
+"#;
+    let (out, report) = run(src);
+    assert_eq!(report.substitutions, 1, "{out}");
+    assert!(out.contains("\"alpha\""), "not inlined: {out}");
+}
+
+#[test]
 fn unrepresentable_strings_are_not_inlined() {
     // AutoIt has no escape for a line break inside a literal, so a value
     // containing one must be left alone: inlining it would not re-parse.
