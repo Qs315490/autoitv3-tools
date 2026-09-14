@@ -98,6 +98,65 @@ EndFunc
 }
 
 #[test]
+fn the_long_concat_form_is_inlined_too() {
+    // `$s = $s & x` is the same accumulation spelled the long way. Its right
+    // side is appended in place when it cannot reassign the target.
+    let src = r#"
+Func F()
+    Local $s = ""
+    For $i = 1 To 5
+        $s = $s & $i
+    Next
+    Return $s
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "12345"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn the_long_concat_form_still_reads_the_target_first() {
+    // The in-place rewrite reads the target *after* the right side runs, so it
+    // must not fire when that side can reassign it: `Bump()` writes `$s`, and
+    // the value concatenated has to stay the one read before the call.
+    let src = r#"
+Global $s
+Func Bump()
+    $s = $s & "B"
+    Return "x"
+EndFunc
+Func F()
+    $s = "a"
+    $s = $s & Bump()
+    Return $s
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "ax", "the operand must be read before the call"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn the_long_concat_form_handles_a_different_source_variable() {
+    let src = r#"
+Func F()
+    Local $s = "a"
+    Local $t = "b"
+    $s = $s & $t
+    $t = "c"
+    Return $s & "/" & $t
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "ab/c"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
 fn compound_concat_declares_an_unset_variable() {
     let src = "Func F()\n    $s &= \"x\"\n    Return $s\nEndFunc\n";
     match call(src, "F", vec![]) {

@@ -1111,29 +1111,59 @@ impl Runtime {
 
     /// Run an expression statement — one whose value is thrown away.
     ///
-    /// A bare `$s &= x` is the obfuscator's string builder, and the statement
-    /// does not need the concatenated result. Going through `eval_expr` makes
-    /// `apply_arith` allocate a fresh `String` and copy the whole accumulator
-    /// on every iteration, which is quadratic in the final length; appending to
-    /// the buffer the variable already owns keeps such a loop linear.
+    /// A bare `$s &= x` (or the `$s = $s & x` spelling of it) is the
+    /// obfuscator's string builder, and the statement does not need the
+    /// concatenated result. Going through `eval_expr` makes `apply_arith`
+    /// allocate a fresh `String` and copy the whole accumulator on every
+    /// iteration, which is quadratic in the final length; appending to the
+    /// buffer the variable already owns keeps such a loop linear.
     fn exec_expr_stmt(&mut self, e: &Expr, span: Span) -> Result<(), RuntimeError> {
-        if let ExprKind::Binary(BinaryOp::AmpAssign, target, rhs) = &e.kind {
-            if let ExprKind::Var(v) = &target.kind {
-                if v.indices.is_empty() {
-                    // The right side is evaluated first, exactly as the
-                    // generic operator path does, so a side effect it has on
-                    // the target is already in the slot when the append runs.
-                    let rhs = self.eval_expr(rhs)?;
-                    match &rhs {
-                        Value::Str(s) => self.append_var_str(&v.name.name, s, span),
-                        other => self.append_var_str(&v.name.name, &other.to_autoit_string(), span),
+        if let ExprKind::Binary(op, target, value) = &e.kind {
+            if let ExprKind::Var(t) = &target.kind {
+                if t.indices.is_empty() {
+                    match op {
+                        // `$s &= x` — the right side is evaluated first, just
+                        // as the generic operator path does, so a side effect it
+                        // has on the target is already in the slot below.
+                        BinaryOp::AmpAssign => {
+                            let rhs = self.eval_expr(value)?;
+                            self.append_value_str(&t.name.name, &rhs, span);
+                            return Ok(());
+                        }
+                        // `$s = $s & x` — the same accumulation written the
+                        // long way. Appending here reads the target *after* the
+                        // right side has run, so it stays equivalent only while
+                        // nothing in that right side can reassign it; a
+                        // side-effect-free operand guarantees exactly that.
+                        BinaryOp::Assign => {
+                            if let ExprKind::Binary(BinaryOp::Concat, left, right) = &value.kind {
+                                if let ExprKind::Var(l) = &left.kind {
+                                    if l.indices.is_empty()
+                                        && t.name.name.eq_ignore_ascii_case(&l.name.name)
+                                        && expr_is_pure(right)
+                                    {
+                                        let rhs = self.eval_expr(right)?;
+                                        self.append_value_str(&t.name.name, &rhs, span);
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
-                    return Ok(());
                 }
             }
         }
         let _ = self.eval_expr(e)?;
         Ok(())
+    }
+
+    /// Append the string form of `value` to `$name` in place.
+    fn append_value_str(&mut self, name: &str, value: &Value, span: Span) {
+        match value {
+            Value::Str(s) => self.append_var_str(name, s, span),
+            other => self.append_var_str(name, &other.to_autoit_string(), span),
+        }
     }
 
     /// Append `text` to `$name` in place, declaring it as `text` when it is not
@@ -2094,6 +2124,42 @@ fn loop_levels(rt: &mut Runtime, e: &Option<Expr>) -> Result<usize, RuntimeError
             Ok(if n < 1 { 1 } else { n as usize })
         }
         None => Ok(1),
+    }
+}
+
+/// Whether evaluating `e` can change a variable.
+///
+/// Only a call can: AutoIt's assignment operators are statement-level, so a
+/// `=` inside an expression is the comparison, and every other operator reads
+/// its operands and returns a value. `Call`/`IndexCall`/`MethodCall` cover the
+/// ways a script reaches a function — including `Execute`, `Eval` and `Assign`,
+/// which are builtins. `Member` is treated as impure because a property getter
+/// may run code.
+fn expr_is_pure(e: &Expr) -> bool {
+    use BinaryOp::*;
+    match &e.kind {
+        ExprKind::Lit(_) | ExprKind::Macro(_) | ExprKind::Ident(_) | ExprKind::WithSubject => true,
+        ExprKind::Call(_)
+        | ExprKind::IndexCall(..)
+        | ExprKind::MethodCall(..)
+        | ExprKind::Member(..) => false,
+        ExprKind::Var(v) => v.indices.iter().all(expr_is_pure),
+        ExprKind::Unary(_, a) | ExprKind::Paren(a) => expr_is_pure(a),
+        // An assignment parses as a statement, so this cannot turn up inside an
+        // expression — but if it ever does, it is not pure.
+        ExprKind::Binary(op, a, b) => {
+            !matches!(
+                op,
+                Assign | PlusAssign | MinusAssign | StarAssign | SlashAssign | CaretAssign
+                    | AmpAssign
+            ) && expr_is_pure(a)
+                && expr_is_pure(b)
+        }
+        ExprKind::Ternary(c, a, b) => expr_is_pure(c) && expr_is_pure(a) && expr_is_pure(b),
+        ExprKind::ArrayLit(items) => items.iter().all(expr_is_pure),
+        ExprKind::Subscript(base, indices) => {
+            expr_is_pure(base) && indices.iter().all(expr_is_pure)
+        }
     }
 }
 
