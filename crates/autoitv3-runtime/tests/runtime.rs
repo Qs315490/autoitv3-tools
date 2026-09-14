@@ -209,6 +209,32 @@ EndFunc
     assert!(matches!(call(src, "F", vec![]), Value::Int(709)));
 }
 
+#[test]
+fn clock_macros_follow_the_autoit_format_and_the_profile() {
+    let mut rt = rt(
+        r#"
+Func F()
+    Return @YEAR & "-" & @MON & "-" & @MDAY & " " & @HOUR & ":" & @MIN & ":" & @SEC & "." & @MSEC & " wday=" & @WDAY & " yday=" & @YDAY
+EndFunc
+"#,
+    );
+    rt.set_profile(autoitv3_runtime::ExecutionProfile::deterministic());
+    // The deterministic profile runs at 2024-01-01T00:00:00Z (a Monday);
+    // `@MSEC`/`@YDAY` are zero-padded strings, as AutoIt documents.
+    assert_eq!(
+        rt.call_function("F", vec![]).unwrap().to_autoit_string(),
+        "2024-01-01 00:00:00.000 wday=2 yday=001"
+    );
+}
+
+#[test]
+fn compiled_macro_reflects_how_the_script_was_loaded() {
+    let mut rt = rt("Func F()\n    Return @Compiled\nEndFunc\n");
+    assert_eq!(rt.call_function("F", vec![]).unwrap().to_int(), 0);
+    rt.set_compiled(true);
+    assert_eq!(rt.call_function("F", vec![]).unwrap().to_int(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Builtins
 // ---------------------------------------------------------------------------

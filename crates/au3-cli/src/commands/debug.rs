@@ -170,6 +170,8 @@ fn build_runtime(
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
     }
+    // The build the script came out of answered `@Compiled = 1`.
+    rt.set_compiled(resource_module.is_some());
     rt.set_max_steps(args.steps.max_steps);
     match args.effects.apply(args.profile.profile()) {
         Ok(p) => rt.set_profile(p),

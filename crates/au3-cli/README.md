@@ -43,6 +43,7 @@ au3 --help                                 # 查看全部命令
 au3 parse build.exe
 au3 debug build.exe                        # 源码视图就是解出来的脚本
 au3 deobf build.exe --evaluate -o clean.au3
+# 产物输入时 @Compiled = 1，.au3 输入时 = 0（脚本据此选重开 x64 / 剥离命令行等分支）
 
 # parse：只做解析与统计（顶层条目数、函数数）
 au3 parse some.au3
