@@ -1379,7 +1379,16 @@ impl WindowsEmulation {
             .map(|pair| (pair[0].to_autoit_string(), pair[1].clone()))
             .collect();
 
-        let outcome = self.dll_call_inner(&function, &pairs);
+        let outcome = self.dll_call_inner(&function, &pairs).or_else(|| {
+            // AutoIt resolves an unsuffixed name to its ANSI variant
+            // (`MessageBox` → `MessageBoxA`), so an arm written for `...A`
+            // must also answer the bare name.
+            let lower = function.trim().to_ascii_lowercase();
+            if lower.is_empty() || lower.ends_with('a') || lower.ends_with('w') {
+                return None;
+            }
+            self.dll_call_inner(&format!("{lower}A"), &pairs)
+        });
 
         match outcome {
             Some(out) => {

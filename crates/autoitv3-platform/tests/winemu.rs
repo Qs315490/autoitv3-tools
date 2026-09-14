@@ -305,6 +305,16 @@ fn an_unimplemented_dllcall_sets_error_and_returns_zero() {
     assert_eq!(text(win10(), body), "0:1");
 }
 
+#[test]
+fn a_bare_ansi_name_answers_its_a_arm() {
+    // AutoIt appends the ANSI suffix when the bare name has no export
+    // (`lstrlen` → `lstrlenA`); the emulation must do the same, or a script
+    // that omits the suffix diverges from Windows.
+    let body = r#"Local $r = DllCall("kernel32.dll", "int", "lstrlen", "str", "abc")
+    Return $r[0] & ":" & @error"#;
+    assert_eq!(text(win10(), body), "3:0");
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
