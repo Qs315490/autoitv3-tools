@@ -24,7 +24,7 @@
       tests/
         deobf.rs      反混淆 pass 单元测试（35 项）
         table_test.rs 函数表解析测试（最小 + 全量样本，2 项）
-        evaluate_test.rs 运行时求值测试（25 项，含可选 AU3_SAMPLE 集成测试）
+        evaluate_test.rs 运行时求值测试（26 项，含可选 AU3_SAMPLE 集成测试）
         unit/rename.rs `#forceref` 重写的单元测试（`#[path]` 回挂）
 ```
 
@@ -191,6 +191,10 @@ Deobfuscator::renaming()
 au3 evaluate sample.au3 -o resolved.au3     # 跑脚本主体，内联它算出来的值
 au3 deobfuscate sample.au3 --evaluate -o clean.au3   # 求值 + 常规反混淆一步到位
 ```
+
+求值那一轮也看得到 `@Compiled`：产物输入默认是 1（脚本本来就是在编译状态下跑的，
+否则凡是拿它选分支的地方都会走错边），`.au3` 输入默认是 0，两个方向都能用
+`--compiled` / `--no-compiled` 覆盖。
 
 实现（`autoitv3-deobf/src/evaluate.rs`）：跑脚本顶层主体 → 把每个**常量下标**的表引用
 换成运行时真正得到的值：

@@ -11,8 +11,8 @@ use autoitv3_runtime::{Flow, Runtime, Value};
 use clap::Args;
 
 use crate::args::{
-    load_input, parse_arg_value, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs,
-    WinEmuArgs,
+    load_input, parse_arg_value, CliError, CliResult, CompiledArgs, EffectArgs, ProfileArgs,
+    StepArgs, WinEmuArgs,
 };
 use crate::output::format_value;
 use std::path::Path;
@@ -61,6 +61,10 @@ pub struct RunArgs {
     #[command(flatten)]
     pub steps: StepArgs,
 
+    /// `@Compiled` selection (see `CompiledArgs`).
+    #[command(flatten)]
+    pub compiled: CompiledArgs,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 }
@@ -78,8 +82,9 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
         input.resource_module.as_deref(),
     )?);
     // A `.exe`/`.a3x` input is a compiled build, so `@Compiled` answers 1 the
-    // way it did for the program the script came out of.
-    rt.set_compiled(input.resource_module.is_some());
+    // way it did for the program the script came out of; `--compiled` /
+    // `--no-compiled` override that when comparing a source against a build.
+    rt.set_compiled(args.compiled.resolve(input.resource_module.is_some()));
     rt.set_max_steps(args.steps.max_steps);
     // Probing a script wants reproducibility and no side effects; `--faithful`
     // switches to AutoIt's own semantics instead. `--allow`/`--deny` then

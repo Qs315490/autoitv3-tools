@@ -24,6 +24,7 @@
           unpack.rs     au3 unpack（UnpackArgs + run：--script/--raw/--table/--at）
       tests/
         debug.rs     端到端驱动真实二进制：断点/单步/条件/求值/重启/stdin/trace 过滤（46 项）
+        run.rs       FILE [FUNC] 的参数顺序、`@Compiled` 覆盖（7 项）
         steps.rs     --max-steps / --no-progress 的端到端校验
         input.rs     FILE 走源码路径 / 编译产物路径 / 两者都不是
         unit/args.rs 输入加载器的构建识别（`#[path]` 回挂进 src/args.rs）
@@ -44,7 +45,9 @@ au3 --help                                 # 查看全部命令
 au3 parse build.exe
 au3 debug build.exe                        # 源码视图就是解出来的脚本
 au3 deobf build.exe --evaluate -o clean.au3
-# 产物输入时 @Compiled = 1，.au3 输入时 = 0（脚本据此选重开 x64 / 剥离命令行等分支）
+# 产物输入时 @Compiled = 1，.au3 输入时 = 0（脚本据此选重开 x64 / 剥离命令行等分支）；
+# 两个方向都能用 --compiled / --no-compiled 强制，方便拿解出来的源码和产物对照：
+au3 debug deobf.au3 --compiled             # 源码按"编译产物"跑，走产物那一侧分支
 
 # parse：只做解析与统计（顶层条目数、函数数）
 au3 parse some.au3
@@ -138,9 +141,9 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 1 秒，就会在 stderr 每秒打印一次当前进度（不影响 stdout 的程序输出）：
 
 ```text
-evaluating: 296 globals, 10 tables (1.0s)
-evaluating: 296 globals, 10 tables (2.0s)
-evaluated: 296 globals, 10 tables, 30449 values inlined, 11668 calls resolved
+evaluating: 120 globals, 4 tables (1.0s)
+evaluating: 120 globals, 4 tables (2.0s)
+evaluated: 120 globals, 4 tables, 1800 values inlined, 420 calls resolved
 ```
 
 它由 `evaluate_with_debugger` 在运行时挂一个 `Debugger` 实现——解释器每条

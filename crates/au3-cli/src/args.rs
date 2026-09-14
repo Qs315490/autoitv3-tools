@@ -96,6 +96,38 @@ impl EffectArgs {
     }
 }
 
+/// `@Compiled` selection shared by the commands that run the script body.
+///
+/// By default the input decides: a compiled build (`.exe`/`.a3x`) answers 1 and
+/// a `.au3` source answers 0. A script extracted from a build is still `.au3`
+/// though — `deobf -o script.au3` writes exactly that — and real scripts branch
+/// on the macro (e.g. to read their payload out of the image instead of a
+/// sibling file), so both directions can be forced to compare like with like.
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct CompiledArgs {
+    /// Answer `@Compiled = 1` even when the input is `.au3` source
+    #[arg(long, conflicts_with = "no_compiled")]
+    pub compiled: bool,
+
+    /// Answer `@Compiled = 0` even when the input is a compiled build
+    #[arg(long)]
+    pub no_compiled: bool,
+}
+
+impl CompiledArgs {
+    /// The value `@Compiled` should answer: a flag wins, otherwise the input
+    /// decides (`input_is_build`).
+    pub fn resolve(&self, input_is_build: bool) -> bool {
+        if self.compiled {
+            true
+        } else if self.no_compiled {
+            false
+        } else {
+            input_is_build
+        }
+    }
+}
+
 /// Execution-semantics selection shared by the commands that run a script.
 ///
 /// The default is the deterministic analysis profile; `--faithful` switches to

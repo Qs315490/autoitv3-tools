@@ -125,3 +125,14 @@ ConsoleWrite($CmdLine[0] & "|" & $CmdLine[1] & "|" & $CmdLine[2] & @CRLF)
     let out = au3(&["run", path.to_str().unwrap(), "--cmdline", "a", "--arg", "b"]);
     assert!(out.contains("2|a|b"), "got:\n{out}");
 }
+
+#[test]
+fn the_input_decides_compiled_and_the_flag_overrides_it() {
+    let path = script("compiled", r#"
+ConsoleWrite("[" & @Compiled & "]" & @CRLF)
+"#);
+    let source = au3(&["run", path.to_str().unwrap()]);
+    assert!(source.contains("[0]"), "a .au3 answers 0: {source}");
+    let forced = au3(&["run", path.to_str().unwrap(), "--compiled"]);
+    assert!(forced.contains("[1]"), "--compiled was ignored: {forced}");
+}

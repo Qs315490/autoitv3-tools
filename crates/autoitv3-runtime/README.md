@@ -88,6 +88,8 @@ au3 run sample.au3 F --faithful   # 真的 Sleep、真的随机、真的写文�
 
 `@Compiled` 由 `Runtime::set_compiled` 决定：CLI 以 `.exe`/`.a3x` 为输入时是 1、
 `.au3` 是 0，脚本据此选择"重开 x64 进程 / 剥离自身命令行"的分支时与真实产物一致。
+解出来的 `.au3` 想按产物那一侧跑（或反过来）时，`run`/`debug`/`evaluate`/`deobf`
+都接受 `--compiled` / `--no-compiled` 覆盖这个默认值。
 时钟宏 `@YEAR`/`@MON`/`@MDAY`/`@HOUR`/`@MIN`/`@SEC`/`@MSEC`/`@WDAY`/`@YDAY`
 （解释器直接提供，不再落回平台的 `Null`）按 AutoIt 的零填充字符串格式返回；
 确定性配置下是固定时刻，否则取宿主时钟。

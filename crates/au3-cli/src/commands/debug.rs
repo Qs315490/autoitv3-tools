@@ -52,7 +52,7 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
-    load_input, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
+    load_input, CliError, CliResult, CompiledArgs, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
 };
 use crate::output::format_value;
 use std::path::Path;
@@ -107,6 +107,10 @@ pub struct DebugArgs {
     /// Interpreter step budget (see `StepArgs`).
     #[command(flatten)]
     pub steps: StepArgs,
+
+    /// `@Compiled` selection (see `CompiledArgs`).
+    #[command(flatten)]
+    pub compiled: CompiledArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -177,8 +181,9 @@ fn build_runtime(
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
     }
-    // The build the script came out of answered `@Compiled = 1`.
-    rt.set_compiled(resource_module.is_some());
+    // The build the script came out of answered `@Compiled = 1`; the flags
+    // override that when a `.au3` is being compared against its build.
+    rt.set_compiled(args.compiled.resolve(resource_module.is_some()));
     rt.set_max_steps(args.steps.max_steps);
     match args.effects.apply(args.profile.profile()) {
         Ok(p) => rt.set_profile(p),
