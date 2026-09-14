@@ -141,10 +141,17 @@ impl Deobfuscator {
         table_var: impl Into<String>,
         builder_func: impl Into<String>,
     ) -> Self {
-        self.table = TableOptions {
-            table_var: Some(table_var.into()),
-            builder_func: Some(builder_func.into()),
-        };
+        // Mutate in place so a step budget set earlier survives.
+        self.table.table_var = Some(table_var.into());
+        self.table.builder_func = Some(builder_func.into());
+        self
+    }
+
+    /// Interpreter step budget for evaluating the table builder (`0` = no
+    /// limit). Defaults to
+    /// [`DEFAULT_MAX_STEPS`](autoitv3_runtime::interp::DEFAULT_MAX_STEPS).
+    pub fn with_max_steps(mut self, max_steps: u64) -> Self {
+        self.table.max_steps = max_steps;
         self
     }
 

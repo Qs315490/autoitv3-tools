@@ -20,10 +20,11 @@
 
 use autoitv3_deobf::{evaluate_with_options, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
-use autoitv3_runtime::ExecutionProfile;
 use clap::Args;
 
-use crate::args::{load_program, CliResult, OutputArgs, WinEmuArgs};
+use crate::args::{
+    load_program, CliResult, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs, WinEmuArgs,
+};
 use crate::output::write_output;
 use std::path::Path;
 
@@ -34,29 +35,23 @@ pub struct EvaluateArgs {
     #[arg(value_name = "FILE")]
     pub input: String,
 
-    /// Run with AutoIt semantics (real delays, entropy, side effects) instead
-    /// of the deterministic analysis profile
-    #[arg(long)]
-    pub faithful: bool,
+    /// Execution semantics (see `ProfileArgs`).
+    #[command(flatten)]
+    pub profile: ProfileArgs,
 
-    /// Also rewrite `Global Const $t = Build()` into the table's literal value
-    #[arg(long)]
-    pub inline_tables: bool,
+    /// Interpreter step budget (see `StepArgs`).
+    #[command(flatten)]
+    pub steps: StepArgs,
+
+    /// Substitution knobs (see `SubstituteArgs`).
+    #[command(flatten)]
+    pub substitute: SubstituteArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
 
     #[command(flatten)]
     pub output: OutputArgs,
-}
-
-/// The profile `evaluate` uses unless `--faithful` is given.
-pub fn profile(faithful: bool) -> ExecutionProfile {
-    if faithful {
-        ExecutionProfile::faithful()
-    } else {
-        ExecutionProfile::deterministic()
-    }
 }
 
 /// Report an evaluation outcome to stderr.
@@ -94,11 +89,12 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
 
     let outcome = evaluate_with_options(
         &mut prog,
-        profile(args.faithful),
+        args.profile.profile(),
         args.win.platform(Some(Path::new(&args.input)))?,
         SubstituteOptions {
-            inline_declarations: args.inline_tables,
+            inline_declarations: args.substitute.inline_tables,
         },
+        args.steps.max_steps,
     );
     report(&outcome);
 

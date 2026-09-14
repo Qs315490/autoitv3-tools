@@ -6,10 +6,13 @@
 //! the future debug module consumes.
 
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
-use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
+use autoitv3_runtime::{Runtime, Value};
 use clap::Args;
 
-use crate::args::{load_program, parse_arg_value, CliError, CliResult, EffectArgs, WinEmuArgs};
+use crate::args::{
+    load_program, parse_arg_value, CliError, CliResult, EffectArgs, ProfileArgs, StepArgs,
+    WinEmuArgs,
+};
 use crate::output::format_value;
 use std::path::Path;
 
@@ -38,17 +41,17 @@ pub struct RunArgs {
     #[arg(long)]
     pub trace: bool,
 
-    /// Run with AutoIt semantics: really wait in Sleep(), really randomise
-    /// Random(), and let file/environment writes happen.
-    ///
-    /// The default is the deterministic analysis profile, which is fast,
-    /// reproducible and refuses writes (see `ExecutionProfile`).
-    #[arg(long)]
-    pub faithful: bool,
+    /// Execution semantics (see `ProfileArgs`).
+    #[command(flatten)]
+    pub profile: ProfileArgs,
 
     /// Per-effect allow/deny overrides (see `EffectArgs`).
     #[command(flatten)]
     pub effects: EffectArgs,
+
+    /// Interpreter step budget (see `StepArgs`).
+    #[command(flatten)]
+    pub steps: StepArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -62,15 +65,11 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
     // layer answers first, with the version these arguments select.
     let mut rt = Runtime::with_program(&prog);
     rt.set_platform(args.win.platform(Some(Path::new(&args.input)))?);
+    rt.set_max_steps(args.steps.max_steps);
     // Probing a script wants reproducibility and no side effects; `--faithful`
     // switches to AutoIt's own semantics instead. `--allow`/`--deny` then
     // fine-tune individual effects on top of either preset.
-    let base = if args.faithful {
-        ExecutionProfile::faithful()
-    } else {
-        ExecutionProfile::deterministic()
-    };
-    rt.set_profile(args.effects.apply(base)?);
+    rt.set_profile(args.effects.apply(args.profile.profile())?);
 
     if args.trace {
         rt.set_debugger(Box::new(TracePrinter::new()));

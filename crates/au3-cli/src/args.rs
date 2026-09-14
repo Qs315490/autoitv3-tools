@@ -10,6 +10,7 @@ use autoitv3_platform::{
     find_resource_module, has_staged_resources, resource_search_dirs, PlatformOptions,
     WindowsArch, WindowsEmulation, WindowsVersion,
 };
+use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
 use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::profile::{EffectKind, ExecutionProfile};
 use clap::Args;
@@ -93,6 +94,45 @@ impl EffectArgs {
         }
         Ok(profile)
     }
+}
+
+/// Execution-semantics selection shared by the commands that run a script.
+///
+/// The default is the deterministic analysis profile; `--faithful` switches to
+/// AutoIt's own semantics instead.
+#[derive(Args, Debug, Clone, Default)]
+pub struct ProfileArgs {
+    /// Run with AutoIt semantics (real delays, entropy, side effects) instead
+    /// of the deterministic analysis profile
+    #[arg(long)]
+    pub faithful: bool,
+}
+
+impl ProfileArgs {
+    /// The profile these arguments select.
+    pub fn profile(&self) -> ExecutionProfile {
+        if self.faithful {
+            ExecutionProfile::faithful()
+        } else {
+            ExecutionProfile::deterministic()
+        }
+    }
+}
+
+/// Runaway-loop guard shared by every command that runs the interpreter.
+#[derive(Args, Debug, Clone)]
+pub struct StepArgs {
+    /// Maximum interpreter steps before giving up (0 = no limit)
+    #[arg(long = "max-steps", value_name = "N", default_value_t = DEFAULT_MAX_STEPS)]
+    pub max_steps: u64,
+}
+
+/// Substitution knobs shared by the commands that inline runtime values.
+#[derive(Args, Debug, Clone, Default)]
+pub struct SubstituteArgs {
+    /// Rewrite `Global Const $t = Build()` into the table's literal value
+    #[arg(long)]
+    pub inline_tables: bool,
 }
 
 /// Expand an `--emulate` area alias into the function names routed to the
