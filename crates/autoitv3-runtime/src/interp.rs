@@ -29,7 +29,12 @@ use crate::profile::ExecutionProfile;
 use crate::value::{MapKey, Value};
 
 /// Default runaway-loop guard.
-pub const DEFAULT_MAX_STEPS: u64 = 5_000_000;
+///
+/// The single budget every entry point starts from: a bare [`Runtime`] and the
+/// deobfuscation passes (which evaluate the obfuscator's own table builders) all
+/// use this value, so there is one default to reason about. `0` disables the
+/// check; callers override it with [`Runtime::set_max_steps`].
+pub const DEFAULT_MAX_STEPS: u64 = 20_000_000;
 /// Default recursion guard.
 pub const DEFAULT_MAX_DEPTH: usize = 256;
 
