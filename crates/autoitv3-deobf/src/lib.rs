@@ -27,8 +27,8 @@ pub mod simplify;
 pub mod table;
 
 pub use evaluate::{
-    evaluate, evaluate_with_options, evaluate_with_platform, EvaluateReport,
-    SubstituteOptions, SubstitutionCount, Tables,
+    evaluate, evaluate_with_debugger, evaluate_with_options, evaluate_with_platform,
+    EvaluateReport, SubstituteOptions, SubstitutionCount, Tables,
 };
 pub use orchestrator::{deobfuscate, DeobfReport, Deobfuscator, Pass};
 pub use rename::{rename_program, rename_program_with, RenameOptions, RenameReport};

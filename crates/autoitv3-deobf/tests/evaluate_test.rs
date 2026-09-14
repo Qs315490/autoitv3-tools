@@ -557,3 +557,33 @@ fn the_encrypted_tables_come_out_when_the_resource_image_is_present() {
         with.stopped
     );
 }
+
+#[test]
+fn a_debugger_installed_for_the_run_sees_every_statement() {
+    // `evaluate_with_debugger` is the seam behind the CLI's progress reporter,
+    // so the run has to hand statements to the debugger it is given.
+    use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Counter(Rc<Cell<usize>>);
+    impl Debugger for Counter {
+        fn on_statement(&mut self, _span: autoitv3_ast::span::Span, _depth: usize, _host: &mut dyn DebugHost) -> DebugAction {
+            self.0.set(self.0.get() + 1);
+            DebugAction::Continue
+        }
+    }
+
+    let seen = Rc::new(Cell::new(0usize));
+    let mut prog = parse("Func F()\n    Local $x = 1\n    Return $x\nEndFunc\nF()\n").unwrap();
+    let report = autoitv3_deobf::evaluate_with_debugger(
+        &mut prog,
+        ExecutionProfile::deterministic(),
+        autoitv3_platform::host_platform(),
+        SubstituteOptions::default(),
+        DEFAULT_MAX_STEPS,
+        Box::new(Counter(seen.clone())),
+    );
+    assert!(report.completed, "stopped at: {:?}", report.stopped);
+    assert!(seen.get() > 0, "the debugger saw no statements");
+}
