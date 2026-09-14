@@ -128,6 +128,26 @@ fn next_steps_over_a_call_and_step_enters_it() {
 }
 
 #[test]
+fn step_before_run_stops_at_the_first_statement() {
+    // `step` with no `run` first starts the script *and* stops; the request
+    // must survive `begin_run`, which used to reset it to plain running.
+    let path = script("step-start", SCRIPT);
+    let out = shell(&path, &["step 1", "print $counter", "quit"]);
+    assert!(out.contains("Stopped at line 1"), "got:\n{out}");
+    assert!(has_line(&out, "\"\""), "the body has not run yet:\n{out}");
+}
+
+#[test]
+fn a_finished_run_does_not_leak_its_step_budget() {
+    // `run` finishes, then a fresh `step 1` starts over and stops at the first
+    // statement rather than inheriting the old budget.
+    let path = script("step-restart", SCRIPT);
+    let out = shell(&path, &["run", "step 1", "print $counter", "quit"]);
+    assert!(out.contains("Stopped at line 1"), "got:\n{out}");
+    assert!(has_line(&out, "\"\""), "the fresh run has not stepped:\n{out}");
+}
+
+#[test]
 fn step_and_next_take_a_statement_count() {
     // `step 2` counts every statement, so it walks into `Add`.
     let path = script("step-count-into", SCRIPT);
