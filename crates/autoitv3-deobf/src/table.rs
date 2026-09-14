@@ -378,10 +378,7 @@ impl ResolveCtx {
                     if let Some(idx) = idx {
                         if let Some(name) = self.index.get(&idx) {
                             self.report.refs_rewritten += 1;
-                            e.kind = ExprKind::Ident(Ident {
-                                name: name.clone(),
-                                span: e.span,
-                            });
+                            e.kind = ExprKind::Ident(Ident::new(name.clone(), e.span));
                             return;
                         }
                     }
@@ -416,10 +413,7 @@ impl ResolveCtx {
                             }
                             self.report.calls_rewritten += 1;
                             e.kind = ExprKind::Call(CallExpr {
-                                callee: Ident {
-                                    name: name.clone(),
-                                    span: e.span,
-                                },
+                                callee: Ident::new(name.clone(), e.span),
                                 args: call_args,
                             });
                             return;

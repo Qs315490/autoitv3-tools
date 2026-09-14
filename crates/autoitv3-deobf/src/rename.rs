@@ -656,9 +656,9 @@ impl RenameCtx {
                 ItemKind::Func(f) => {
                     let id = self.next_func;
                     self.next_func += 1;
-                    f.name.name = self.func_alias(&f.name.name.clone());
+                    f.name.set_name(self.func_alias(&f.name.name.clone()));
                     for p in &mut f.params {
-                        p.name.name = self.var_alias(id, &p.name.name.clone());
+                        p.name.set_name(self.var_alias(id, &p.name.name.clone()));
                         if let Some(d) = &mut p.default {
                             self.visit_expr(d, id);
                         }
@@ -682,7 +682,7 @@ impl RenameCtx {
         match &mut s.kind {
             StmtKind::VarDecl(v) => {
                 for item in &mut v.vars {
-                    item.name.name = self.var_alias(func, &item.name.name.clone());
+                    item.name.set_name(self.var_alias(func, &item.name.name.clone()));
                     for d in &mut item.dims {
                         self.visit_expr(d, func);
                     }
@@ -719,7 +719,7 @@ impl RenameCtx {
                 self.visit_expr(&mut d.cond, func);
             }
             StmtKind::For(f) => {
-                f.var.name = self.var_alias(func, &f.var.name.clone());
+                f.var.set_name(self.var_alias(func, &f.var.name.clone()));
                 if let Some(it) = &mut f.iter {
                     self.visit_expr(it, func);
                 }
@@ -771,7 +771,7 @@ impl RenameCtx {
         match &mut e.kind {
             ExprKind::Lit(_) => {}
             ExprKind::Var(v) => {
-                v.name.name = self.var_alias(func, &v.name.name.clone());
+                v.name.set_name(self.var_alias(func, &v.name.name.clone()));
                 for i in &mut v.indices {
                     self.visit_expr(i, func);
                 }
@@ -780,16 +780,16 @@ impl RenameCtx {
             // `@CRLF`, ...); there is nothing script-defined to rename.
             ExprKind::Macro(_) => {}
             ExprKind::Ident(id) => {
-                id.name = self.func_alias(&id.name.clone());
+                id.set_name(self.func_alias(&id.name.clone()));
             }
             ExprKind::Call(c) => {
-                c.callee.name = self.func_alias(&c.callee.name.clone());
+                c.callee.set_name(self.func_alias(&c.callee.name.clone()));
                 for a in &mut c.args {
                     self.visit_expr(a, func);
                 }
             }
             ExprKind::IndexCall(v, args) => {
-                v.name.name = self.var_alias(func, &v.name.name.clone());
+                v.name.set_name(self.var_alias(func, &v.name.name.clone()));
                 for i in &mut v.indices {
                     self.visit_expr(i, func);
                 }

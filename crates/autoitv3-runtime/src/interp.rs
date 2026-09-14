@@ -807,14 +807,18 @@ impl Runtime {
         }
     }
 
-    fn read_var(&self, name: &str, span: Span) -> Result<Value, RuntimeError> {
-        let key = var_key(name);
+    /// Read the variable `key` names (a lower-cased name, see
+    /// [`Ident::key`](autoitv3_ast::ast::Ident::key)).
+    ///
+    /// The key is cached on the identifier, so a read costs neither an
+    /// allocation nor a lower-casing — this is the interpreter's hottest loop.
+    fn read_var_key(&self, key: &str, span: Span) -> Result<Value, RuntimeError> {
         if let Some(f) = self.frames.last() {
-            if let Some(v) = f.vars.get(&key) {
+            if let Some(v) = f.vars.get(key) {
                 return Ok(v.clone());
             }
         }
-        if let Some(v) = self.globals.get(&key) {
+        if let Some(v) = self.globals.get(key) {
             return Ok(v.clone());
         }
         // Unset variables read as "" in AutoIt when no `MustDeclareVars` is set.
@@ -823,31 +827,34 @@ impl Runtime {
     }
 
     fn write_var(&mut self, name: &str, value: Value, scope: VarScope, span: Span) {
-        let key = var_key(name);
+        self.write_var_key(&var_key(name), value, scope, span)
+    }
+
+    /// [`Runtime::write_var`] for callers that already hold the lookup key.
+    ///
+    /// Rebinding an existing variable goes through `get_mut`, which reuses the
+    /// key the map already owns instead of allocating a copy of it.
+    fn write_var_key(&mut self, key: &str, value: Value, scope: VarScope, span: Span) {
         if let Some(dbg) = self.debugger.as_mut() {
-            dbg.on_variable_write(&key, &value);
+            dbg.on_variable_write(key, &value);
         }
         let _ = span;
         match scope {
-            VarScope::Global => {
-                self.globals.insert(key, value);
-            }
-            VarScope::Local => {
-                self.current_vars().insert(key, value);
-            }
+            VarScope::Global => bind_var(&mut self.globals, key, value),
+            VarScope::Local => bind_var(self.current_vars(), key, value),
             VarScope::Auto => {
                 // Prefer an existing binding: local first, then global.
                 if let Some(f) = self.frames.last_mut() {
-                    if f.vars.contains_key(&key) {
-                        f.vars.insert(key, value);
+                    if let Some(slot) = f.vars.get_mut(key) {
+                        *slot = value;
                         return;
                     }
                 }
-                if self.globals.contains_key(&key) {
-                    self.globals.insert(key, value);
+                if let Some(slot) = self.globals.get_mut(key) {
+                    *slot = value;
                     return;
                 }
-                self.current_vars().insert(key, value);
+                bind_var(self.current_vars(), key, value);
             }
         }
     }
@@ -912,7 +919,7 @@ impl Runtime {
             ExprKind::Macro(name) => Ok(self.eval_macro(name)),
             ExprKind::Ident(id) => Ok(Value::FuncRef(id.name.clone())),
             ExprKind::Var(v) => {
-                let base = self.read_var(&v.name.name, e.span)?;
+                let base = self.read_var_key(v.name.key(), e.span)?;
                 self.index_value(base, &v.indices, e.span)
             }
             ExprKind::Call(c) => {
@@ -924,7 +931,7 @@ impl Runtime {
             }
             ExprKind::IndexCall(v, args) => {
                 let callee = {
-                    let base = self.read_var(&v.name.name, e.span)?;
+                    let base = self.read_var_key(v.name.key(), e.span)?;
                     self.index_value(base, &v.indices, e.span)?
                 };
                 let mut argv = Vec::with_capacity(args.len());
@@ -1128,7 +1135,7 @@ impl Runtime {
                         // has on the target is already in the slot below.
                         BinaryOp::AmpAssign => {
                             let rhs = self.eval_expr(value)?;
-                            self.append_value_str(&t.name.name, &rhs, span);
+                            self.append_value_str(t.name.key(), &rhs, span);
                             return Ok(());
                         }
                         // `$s = $s & x` — the same accumulation written the
@@ -1144,7 +1151,7 @@ impl Runtime {
                                         && expr_is_pure(right)
                                     {
                                         let rhs = self.eval_expr(right)?;
-                                        self.append_value_str(&t.name.name, &rhs, span);
+                                        self.append_value_str(t.name.key(), &rhs, span);
                                         return Ok(());
                                     }
                                 }
@@ -1159,53 +1166,52 @@ impl Runtime {
         Ok(())
     }
 
-    /// Append the string form of `value` to `$name` in place.
-    fn append_value_str(&mut self, name: &str, value: &Value, span: Span) {
+    /// Append the string form of `value` to the variable `key` names.
+    fn append_value_str(&mut self, key: &str, value: &Value, span: Span) {
         match value {
-            Value::Str(s) => self.append_var_str(name, s, span),
-            other => self.append_var_str(name, &other.to_autoit_string(), span),
+            Value::Str(s) => self.append_var_str(key, s, span),
+            other => self.append_var_str(key, &other.to_autoit_string(), span),
         }
     }
 
-    /// Append `text` to `$name` in place, declaring it as `text` when it is not
-    /// bound yet.
+    /// Append `text` to the variable `key` names, declaring it as `text` when
+    /// it is not bound yet.
     ///
     /// AutoIt strings are values and every read clones, so a variable slot owns
     /// its buffer outright: mutating it here cannot be observed through a value
     /// read earlier.
-    fn append_var_str(&mut self, name: &str, text: &str, span: Span) {
-        let key = var_key(name);
+    fn append_var_str(&mut self, key: &str, text: &str, span: Span) {
         // The same lookup order `read_var` uses: the innermost frame shadows
         // the globals.
         if let Some(frame) = self.frames.last_mut() {
-            if let Some(slot) = frame.vars.get_mut(&key) {
+            if let Some(slot) = frame.vars.get_mut(key) {
                 append_text(slot, text);
                 if let Some(dbg) = self.debugger.as_mut() {
-                    dbg.on_variable_write(&key, slot);
+                    dbg.on_variable_write(key, slot);
                 }
                 return;
             }
         }
-        if let Some(slot) = self.globals.get_mut(&key) {
+        if let Some(slot) = self.globals.get_mut(key) {
             append_text(slot, text);
             if let Some(dbg) = self.debugger.as_mut() {
-                dbg.on_variable_write(&key, slot);
+                dbg.on_variable_write(key, slot);
             }
             return;
         }
         // An unset variable reads as "", so `$s &= x` declares it holding `x`.
-        self.write_var(name, Value::Str(text.to_string()), VarScope::Auto, span);
+        self.write_var_key(key, Value::Str(text.to_string()), VarScope::Auto, span);
     }
 
     /// Write `value` into the lvalue expression `target`.
     fn assign_to(&mut self, target: &Expr, value: Value, span: Span) -> Result<(), RuntimeError> {
         match &target.kind {
             ExprKind::Var(v) if v.indices.is_empty() => {
-                self.write_var(&v.name.name, value, VarScope::Auto, span);
+                self.write_var_key(v.name.key(), value, VarScope::Auto, span);
                 Ok(())
             }
             ExprKind::Var(v) => {
-                let base = self.read_var(&v.name.name, span)?;
+                let base = self.read_var_key(v.name.key(), span)?;
                 self.assign_index(base, &v.indices, value, span)
             }
             other => Err(RuntimeError::Unsupported {
@@ -1536,11 +1542,11 @@ impl Runtime {
         let mut enum_next: Option<i64> = None;
 
         for item in &v.vars {
-            let key = var_key(&item.name.name);
+            let key = item.name.key();
             if v.is_redim {
                 // `ReDim $a[n]` / `ReDim $a[n][m]` — resize in place, keeping
                 // the values that still fit.
-                let cur = self.read_var(&item.name.name, span)?;
+                let cur = self.read_var_key(item.name.key(), span)?;
                 match (&cur, item.dims.len()) {
                     (Value::Array(a), dims) if dims > 1 => {
                         let rows = self.dim_size(&item.dims, span)?;
@@ -1562,7 +1568,7 @@ impl Runtime {
                     }
                     _ => {
                         let value = self.array_with_dims(&item.dims, span)?;
-                        self.write_var(&item.name.name, value, scope, span);
+                        self.write_var_key(item.name.key(), value, scope, span);
                     }
                 }
                 continue;
@@ -1594,11 +1600,11 @@ impl Runtime {
                     },
                 };
                 enum_next = Some(value);
-                self.write_var(&item.name.name, Value::Int(value), scope, span);
+                self.write_var_key(item.name.key(), Value::Int(value), scope, span);
                 continue;
             }
             let _ = key;
-            self.write_var(&item.name.name, value, scope, span);
+            self.write_var_key(item.name.key(), value, scope, span);
         }
         Ok(())
     }
@@ -1823,7 +1829,7 @@ impl Runtime {
                 other => vec![other.clone()],
             };
             for item in items {
-                self.write_var(&f.var.name, item, VarScope::Auto, f.var.span);
+                self.write_var_key(f.var.key(), item, VarScope::Auto, f.var.span);
                 match self.exec_block(&f.body)? {
                     Flow::Normal => {}
                     Flow::Break(n) if n <= 1 => break,
@@ -1860,7 +1866,7 @@ impl Runtime {
                 break;
             }
             let v = if integral { Value::Int(cur as i64) } else { Value::Float(cur) };
-            self.write_var(&f.var.name, v, VarScope::Auto, f.var.span);
+            self.write_var_key(f.var.key(), v, VarScope::Auto, f.var.span);
             match self.exec_block(&f.body)? {
                 Flow::Normal => {}
                 Flow::Break(n) if n <= 1 => break,
@@ -2092,6 +2098,16 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 /// Variable names are case-insensitive in AutoIt and stored without the `$`.
+/// Bind `value` under `key`, reusing the stored key when it exists.
+fn bind_var(vars: &mut HashMap<String, Value>, key: &str, value: Value) {
+    match vars.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            vars.insert(key.to_string(), value);
+        }
+    }
+}
+
 fn var_key(name: &str) -> String {
     name.trim_start_matches('$').to_ascii_lowercase()
 }

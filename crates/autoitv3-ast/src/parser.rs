@@ -1090,10 +1090,7 @@ impl Parser {
                 self.bump();
                 Ok(Expr {
                     kind: ExprKind::Var(VarExpr {
-                        name: Ident {
-                            name,
-                            span: t.span,
-                        },
+                        name: Ident::new(name, t.span),
                         indices: Vec::new(),
                     }),
                     span: t.span,
@@ -1124,14 +1121,14 @@ impl Parser {
                     let span = Span::new(t.span.start, self.prev_span().end);
                     Ok(Expr {
                         kind: ExprKind::Call(CallExpr {
-                            callee: Ident { name, span: t.span },
+                            callee: Ident::new(name, t.span),
                             args,
                         }),
                         span,
                     })
                 } else {
                     Ok(Expr {
-                        kind: ExprKind::Ident(Ident { name, span: t.span }),
+                        kind: ExprKind::Ident(Ident::new(name, t.span)),
                         span: t.span,
                     })
                 }
@@ -1173,11 +1170,11 @@ impl Parser {
         match t.kind {
             Var(name) => {
                 self.bump();
-                Ok(Ident { name, span: t.span })
+                Ok(Ident::new(name, t.span))
             }
             IdentTok(name) => {
                 self.bump();
-                Ok(Ident { name, span: t.span })
+                Ok(Ident::new(name, t.span))
             }
             _ => Err(self.err_here("expected identifier or variable name")),
         }

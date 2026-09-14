@@ -543,6 +543,22 @@ EndFunc
 }
 
 #[test]
+fn a_variable_name_is_case_insensitive_everywhere() {
+    // The lookup key is cached on the identifier, so the cache has to agree
+    // with the name-based paths (`Eval`, `Assign`, `IsDeclared`) that build a
+    // key at runtime.
+    let src = r#"
+Func F()
+    Local $MixedCase = 1
+    $mixedCASE += 1
+    Assign("MIXEDcase", Eval("mixedcase") + 40)
+    Return $MixedCase & ":" & Eval("MIXEDCASE") & ":" & IsDeclared("mixedCase")
+EndFunc
+"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "42:42:1");
+}
+
+#[test]
 fn funcname_reports_the_function_name() {
     let src = "Func Target()\n    Return 1\nEndFunc\nFunc F()\n    Return FuncName(Target)\nEndFunc\n";
     assert_eq!(call(src, "F", vec![]).to_autoit_string(), "Target");

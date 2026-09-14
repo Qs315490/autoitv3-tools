@@ -283,6 +283,44 @@ pub struct VarExpr {
 pub struct Ident {
     pub name: String,
     pub span: Span,
+    /// `name` lower-cased and without a leading `$`: the key of every
+    /// case-insensitive lookup, variables and functions alike.
+    ///
+    /// Filled on first use and then never written again — a run does not edit
+    /// the AST, so this is a cache, not state. It exists because the interpreter
+    /// resolves a name millions of times and `to_ascii_lowercase()` allocates
+    /// on each of them.
+    key: std::cell::OnceCell<String>,
+}
+
+impl Ident {
+    /// An identifier for `name`. Use this rather than a struct literal: the
+    /// lookup cache is bookkeeping only the AST owns.
+    pub fn new(name: impl Into<String>, span: Span) -> Self {
+        Self {
+            name: name.into(),
+            span,
+            key: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The lower-cased lookup key for this name, computed once.
+    ///
+    /// A leading `$` (how the lexer spells a variable) is dropped, so the same
+    /// key serves variable and function lookups.
+    pub fn key(&self) -> &str {
+        self.key
+            .get_or_init(|| self.name.trim_start_matches('$').to_ascii_lowercase())
+    }
+
+    /// Rename the identifier, dropping the cached lookup key.
+    ///
+    /// Use this rather than assigning to [`Ident::name`] directly: a cached key
+    /// describes the old spelling, and a later lookup would silently use it.
+    pub fn set_name(&mut self, name: impl Into<String>) {
+        self.name = name.into();
+        self.key = std::cell::OnceCell::new();
+    }
 }
 
 #[derive(Debug, Clone)]

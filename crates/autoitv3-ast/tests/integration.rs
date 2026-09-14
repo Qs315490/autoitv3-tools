@@ -456,3 +456,22 @@ fn non_ascii_in_comments_is_kept_whole() {
     assert_eq!(prog.comments[0].text.trim(), "中文行注释，不应乱码");
     assert!(prog.comments[1].text.contains("中文块注释：测试"), "{:?}", prog.comments[1]);
 }
+
+#[test]
+fn an_identifier_caches_its_lookup_key() {
+    use autoitv3_ast::ast::Ident;
+    use autoitv3_ast::span::Span;
+
+    // The key drops the `$` and folds case, so one key serves the variable and
+    // function lookups the interpreter does.
+    let id = Ident::new("$MixedCase", Span::default());
+    assert_eq!(id.key(), "mixedcase");
+    assert_eq!(id.key(), "mixedcase", "cached, and stable");
+
+    // Renaming has to drop the cache, or a later lookup would use the old
+    // spelling's key.
+    let mut id = id;
+    id.set_name("OtherName");
+    assert_eq!(id.name, "OtherName");
+    assert_eq!(id.key(), "othername");
+}
