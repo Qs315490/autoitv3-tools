@@ -355,6 +355,9 @@ impl WindowsPlatform {
         for (i, slot) in slots.iter().enumerate() {
             out.push(slot.result(&types[i], &pairs[i].1));
         }
+        if trace_enabled() {
+            trace_resource_call(&function, out.first().map(|v| v.to_int()).unwrap_or(0));
+        }
         ctx.set_error(0, 0);
         Value::array(out)
     }
@@ -574,11 +577,12 @@ pub(crate) fn load_library(name: &str) -> usize {
 ///
 /// Used to answer `GetModuleHandleW(NULL)` with the image under analysis: the
 /// script then finds, sizes and locks its own resources exactly as it would
-/// when running as the compiled executable.
+/// when running as the compiled executable. The datafile mapping is the
+/// fallback if the image-resource one is refused.
 pub(crate) fn load_library_as_image_resource(path: &std::path::Path) -> usize {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::System::LibraryLoader::{
-        LoadLibraryExW, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+        LoadLibraryExW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE,
     };
     // An absolute path keeps the lookup independent of the loader search order.
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -587,8 +591,37 @@ pub(crate) fn load_library_as_image_resource(path: &std::path::Path) -> usize {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    (unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_AS_IMAGE_RESOURCE) })
-        as usize
+    for flags in [LOAD_LIBRARY_AS_IMAGE_RESOURCE, LOAD_LIBRARY_AS_DATAFILE] {
+        let handle = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), flags) };
+        if !handle.is_null() {
+            return handle as usize;
+        }
+    }
+    0
+}
+
+/// Whether `AU3_WINEMU_TRACE` asked for the diagnostic channel.
+pub(crate) fn trace_enabled() -> bool {
+    std::env::var_os("AU3_WINEMU_TRACE").is_some_and(|v| v != "0")
+}
+
+/// Report the module/resource chain's results under `AU3_WINEMU_TRACE`, so a
+/// run that fails to read its payload says where the handle went wrong.
+pub(crate) fn trace_resource_call(function: &str, result: i64) {
+    let lower = function.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "getmodulehandlew"
+            | "getmodulehandlea"
+            | "findresourcew"
+            | "findresourcea"
+            | "sizeofresource"
+            | "loadresource"
+            | "lockresource"
+            | "rtlmovememory"
+    ) {
+        eprintln!("[win32] DllCall {function} -> {result:#x}");
+    }
 }
 
 pub(crate) fn load_function(module: usize, name: &str) -> Option<usize> {

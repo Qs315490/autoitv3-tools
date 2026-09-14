@@ -144,9 +144,22 @@ impl WindowsPlatform {
         }
         let base = dll::load_library_as_image_resource(&path);
         if base == 0 {
+            if dll::trace_enabled() {
+                eprintln!(
+                    "[win32] GetModuleHandleW(NULL): cannot map resource image {} \
+                     (LoadLibraryExW failed)",
+                    path.display()
+                );
+            }
             return None;
         }
         self.resource_base = base;
+        if dll::trace_enabled() {
+            eprintln!(
+                "[win32] GetModuleHandleW(NULL) -> resource image {} @ {base:#x}",
+                path.display()
+            );
+        }
         Some(base)
     }
 
@@ -229,7 +242,7 @@ impl WindowsPlatform {
             return;
         }
         self.unimplemented_dll_calls.push(target.clone());
-        if std::env::var_os("AU3_WINEMU_TRACE").is_some_and(|v| v != "0") {
+        if dll::trace_enabled() {
             eprintln!("[win32] DllCall not resolved: {target}");
         }
     }
