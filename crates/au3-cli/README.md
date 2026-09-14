@@ -112,6 +112,12 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 其余函数仍走原生。编程接口：`ExecutionProfile::with_effect(EffectKind, bool)`、
 `HostContext::effect_allowed(kind)`、`host_platform_with_options(PlatformOptions)`。
 
+**执行预算**。`--max-steps <N>`（`0` = 不限）同时适用于 `run`、`debug`、
+`evaluate` 与 `deobfuscate`，默认 `20000000`。该默认值由
+`autoitv3_runtime::interp::DEFAULT_MAX_STEPS` 统一定义：裸 `Runtime`、
+`evaluate` 的脚本求值、`deobfuscate` 的函数表求值三条入口共用同一个值，
+不再各自写死。
+
 | 子命令 | 别名 | 说明 |
 | ------ | ---- | ---- |
 | `parse <FILE>` | `p`, `check` | 解析并报告顶层条目/函数数量 |
