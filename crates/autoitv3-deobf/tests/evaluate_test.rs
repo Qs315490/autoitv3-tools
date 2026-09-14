@@ -27,6 +27,15 @@ fn run_with(
     src: &str,
     options: SubstituteOptions,
 ) -> (String, autoitv3_deobf::EvaluateReport) {
+    run_with_compiled(src, options, false)
+}
+
+/// As [`run_with`], but the run answers `compiled` for `@Compiled`.
+fn run_with_compiled(
+    src: &str,
+    options: SubstituteOptions,
+    compiled: bool,
+) -> (String, autoitv3_deobf::EvaluateReport) {
     let mut prog = parse(src).expect("parses");
     let report = evaluate_with_options(
         &mut prog,
@@ -34,6 +43,7 @@ fn run_with(
         autoitv3_platform::host_platform(),
         options,
         DEFAULT_MAX_STEPS,
+        compiled,
     );
     (render(&prog), report)
 }
@@ -247,6 +257,23 @@ EndFunc
     let (out, report) = run(src);
     assert_eq!(report.substitutions, 1, "{out}");
     assert!(out.contains("\"alpha\""), "not inlined: {out}");
+}
+
+#[test]
+fn compiled_is_selectable_for_the_run() {
+    // A `.au3` lifted out of a build still ran as a compiled script, so the
+    // evaluation has to be able to say 1 or every `@Compiled` test in it takes
+    // the source side.
+    let src = r#"
+Global Const $side = @Compiled ? "build" : "source"
+Func F()
+    Return $side
+EndFunc
+"#;
+    let (source, _) = run_with_compiled(src, SubstituteOptions::default(), false);
+    assert!(source.contains("\"source\""), "{source}");
+    let (build, _) = run_with_compiled(src, SubstituteOptions::default(), true);
+    assert!(build.contains("\"build\""), "{build}");
 }
 
 #[test]
@@ -566,6 +593,7 @@ fn sample_evaluate(module: Option<&std::path::Path>) -> Option<autoitv3_deobf::E
         autoitv3_platform::host_platform_with(emu),
         SubstituteOptions::default(),
         DEFAULT_MAX_STEPS,
+        true,
     ))
 }
 
@@ -628,6 +656,7 @@ fn a_debugger_installed_for_the_run_sees_every_statement() {
         autoitv3_platform::host_platform(),
         SubstituteOptions::default(),
         DEFAULT_MAX_STEPS,
+        false,
         Box::new(Counter(seen.clone())),
     );
     assert!(report.completed, "stopped at: {:?}", report.stopped);

@@ -178,19 +178,25 @@ pub fn evaluate_with_platform(
         platform,
         SubstituteOptions::default(),
         DEFAULT_MAX_STEPS,
+        false,
     )
 }
 
 /// [`evaluate_with_platform`] with explicit [`SubstituteOptions`] and an
 /// interpreter step budget (`max_steps`; `0` means no limit).
+///
+/// `compiled` is what `@Compiled` answers for the run. `false` is right for a
+/// `.au3` input; pass `true` when the script came out of a build, or it takes
+/// the source-side branch of every `@Compiled` test it contains.
 pub fn evaluate_with_options(
     prog: &mut Program,
     profile: ExecutionProfile,
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
     options: SubstituteOptions,
     max_steps: u64,
+    compiled: bool,
 ) -> EvaluateReport {
-    evaluate_inner(prog, profile, platform, options, max_steps, None)
+    evaluate_inner(prog, profile, platform, options, max_steps, compiled, None)
 }
 
 /// [`evaluate_with_options`] with a [`Debugger`](autoitv3_runtime::debug::Debugger)
@@ -207,9 +213,18 @@ pub fn evaluate_with_debugger(
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
     options: SubstituteOptions,
     max_steps: u64,
+    compiled: bool,
     debugger: Box<dyn autoitv3_runtime::debug::Debugger>,
 ) -> EvaluateReport {
-    evaluate_inner(prog, profile, platform, options, max_steps, Some(debugger))
+    evaluate_inner(
+        prog,
+        profile,
+        platform,
+        options,
+        max_steps,
+        compiled,
+        Some(debugger),
+    )
 }
 
 fn evaluate_inner(
@@ -218,6 +233,7 @@ fn evaluate_inner(
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
     options: SubstituteOptions,
     max_steps: u64,
+    compiled: bool,
     debugger: Option<Box<dyn autoitv3_runtime::debug::Debugger>>,
 ) -> EvaluateReport {
     let mut report = EvaluateReport::default();
@@ -228,6 +244,10 @@ fn evaluate_inner(
     rt.set_platform(platform);
     rt.set_profile(profile);
     rt.set_max_steps(max_steps);
+    // The payload a build decodes is stored on the compiled side of every
+    // `@Compiled` test, so evaluating one as a source script reads the wrong
+    // file/resource and gets the wrong tables.
+    rt.set_compiled(compiled);
     if let Some(debugger) = debugger {
         rt.set_debugger(debugger);
     }

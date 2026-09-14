@@ -19,8 +19,8 @@ use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_input, CliResult, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs, StepArgs,
-    SubstituteArgs, WinEmuArgs,
+    load_input, CliResult, CompiledArgs, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs,
+    StepArgs, SubstituteArgs, WinEmuArgs,
 };
 use crate::output::write_output;
 use crate::progress::reporter;
@@ -81,6 +81,11 @@ pub struct DeobfuscateArgs {
     #[command(flatten)]
     pub progress: ProgressArgs,
 
+    /// `@Compiled` selection (see `CompiledArgs`); the input decides by
+    /// default, so a build is evaluated on its compiled side.
+    #[command(flatten)]
+    pub compiled: CompiledArgs,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 
@@ -105,6 +110,9 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         let platform = args
             .win
             .platform(Some(Path::new(&args.input)), input.resource_module.as_deref())?;
+        // A build's script saw `@Compiled = 1`; evaluating it as a source
+        // script would take the wrong branch wherever the macro is tested.
+        let compiled = args.compiled.resolve(input.resource_module.is_some());
         let outcome = match reporter(args.progress.no_progress) {
             Some(debugger) => evaluate_with_debugger(
                 &mut prog,
@@ -112,11 +120,17 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
                 platform,
                 options,
                 args.steps.max_steps,
+                compiled,
                 debugger,
             ),
-            None => {
-                evaluate_with_options(&mut prog, profile, platform, options, args.steps.max_steps)
-            }
+            None => evaluate_with_options(
+                &mut prog,
+                profile,
+                platform,
+                options,
+                args.steps.max_steps,
+                compiled,
+            ),
         };
         super::evaluate::report(&outcome);
         tables = Some(outcome.values);
