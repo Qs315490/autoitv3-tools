@@ -19,7 +19,8 @@ use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_program, CliResult, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs, WinEmuArgs,
+    load_program, CliResult, EffectArgs, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs,
+    WinEmuArgs,
 };
 use crate::output::write_output;
 use std::path::Path;
@@ -39,6 +40,11 @@ pub struct DeobfuscateArgs {
     /// Execution semantics (see `ProfileArgs`); only used with --evaluate.
     #[command(flatten)]
     pub profile: ProfileArgs,
+
+    /// Per-effect allow/deny overrides (see `EffectArgs`); only used with
+    /// --evaluate.
+    #[command(flatten)]
+    pub effects: EffectArgs,
 
     /// Rename identifiers: give every script-defined variable and function a
     /// deterministic `$l_str_003` / `f042` alias. Off by default, so the output
@@ -90,7 +96,7 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     if args.evaluate {
         let outcome = evaluate_with_options(
             &mut prog,
-            args.profile.profile(),
+            args.effects.apply(args.profile.profile())?,
             args.win.platform(Some(Path::new(&args.input)))?,
             options,
             args.steps.max_steps,

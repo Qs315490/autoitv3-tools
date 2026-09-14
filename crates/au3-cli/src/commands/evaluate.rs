@@ -23,7 +23,8 @@ use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_program, CliResult, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs, WinEmuArgs,
+    load_program, CliResult, EffectArgs, OutputArgs, ProfileArgs, StepArgs, SubstituteArgs,
+    WinEmuArgs,
 };
 use crate::output::write_output;
 use std::path::Path;
@@ -38,6 +39,10 @@ pub struct EvaluateArgs {
     /// Execution semantics (see `ProfileArgs`).
     #[command(flatten)]
     pub profile: ProfileArgs,
+
+    /// Per-effect allow/deny overrides (see `EffectArgs`).
+    #[command(flatten)]
+    pub effects: EffectArgs,
 
     /// Interpreter step budget (see `StepArgs`).
     #[command(flatten)]
@@ -89,7 +94,7 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
 
     let outcome = evaluate_with_options(
         &mut prog,
-        args.profile.profile(),
+        args.effects.apply(args.profile.profile())?,
         args.win.platform(Some(Path::new(&args.input)))?,
         SubstituteOptions {
             inline_declarations: args.substitute.inline_tables,
