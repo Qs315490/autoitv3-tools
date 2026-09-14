@@ -208,6 +208,8 @@ Breakpoint 1, line 69
 | `next [n]` / `n` | 单步（或连跑 `n` 步），不进入调用（停在同层或更浅的语句） |
 | `finish` / `fin` | 跑到当前函数返回 |
 | `until <行表达式>` / `u` | `tbreak <行表达式>` 的别名（跑到某一行） |
+| `untilcall <函数>` / `untilc` | 跑到下一次调用该函数（**内置函数也行**，`tbreak` 对内置函数无效）；停在调用后的那条语句 |
+| `untilgui` / `gui` | `untilcall GUICreate` 的简写，直接跑到建窗口 |
 | `break <行表达式> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
 | `jmp <行表达式>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |
 | `tbreak <行表达式>` / `tb` | 一次性断点：继续执行直到命中（命中自删）；`run` 前可用 |
@@ -222,7 +224,7 @@ Breakpoint 1, line 69
 | `info breakpoints\|locals\|globals\|functions` | 查看断点/局部/全局/函数 |
 | `backtrace` / `bt` / `where` | 调用栈（`#0` 为最内层） |
 | `list [行表达式]` / `l` | 看停点附近的源码，`=>` 标出当前行 |
-| `trace on\|off` | 打开后逐条打印执行的语句 |
+| `trace on\|off` | 打开后逐条打印执行的语句；`trace depth <n>` 只看深度 ≤ n 的语句，`trace skip <函数>` 折叠热点函数（可叠加、可 `unskip`），`trace` 查看当前配置 |
 | `catch on\|off` | 未捕获异常时是否停下（默认 on） |
 | `source <file>` | 把一个命令文件的命令插到队首执行，然后回到提示符 |
 | `quit` / `q` | 退出 |
@@ -238,6 +240,20 @@ Breakpoint 1, line 69
 
 配合计数步进就能方便地走循环体：`next 5` 连走 5 条同层语句，`step 20` 连走 20 条
 （会进入调用），`break Main+1` 直接钉在函数体的第一条语句上。
+
+**跑到建窗口**：脚本的 `GUICreate` 是通过函数表调用的内置函数，没有脚本行可下断点，
+`untilgui`（= `untilcall GUICreate`）监听解析后的调用名，跑到建窗口后的第一条语句停下；
+`untilcall <函数>` 对任意内置/脚本函数都适用。注意 GUI 模型默认是**无头**的（不渲染窗口），
+`untilgui` 只是让你跳到那段代码。
+
+**trace 过滤**：真实脚本的启动会执行上百万条语句，`trace on` 直接刷屏。用
+`trace skip <热点函数>` 折叠（例如随机 ID 生成器），`trace depth <n>` 只看浅层调用：
+
+```text
+(au3) trace on
+(au3) trace skip SomeHotFunc    # 这个函数体不再打印
+(au3) trace depth 3             # 只打印深度 <= 3 的语句
+```
 
 ### 未捕获异常时停下（post-mortem）
 

@@ -692,3 +692,78 @@ fn until_is_an_alias_of_tbreak() {
     assert!(has_line(&out, "run-to target reached, line 11"), "{out}");
     assert!(has_line(&out, "no breakpoints"), "{out}");
 }
+
+#[test]
+fn trace_skip_hides_a_hot_function() {
+    const TRACE: &str = "\
+Func Hot()
+    Local $x = 1
+    $x += 1
+EndFunc
+
+Func Main()
+    Hot()
+    Hot()
+EndFunc
+
+Main()
+";
+    let path = script("trace-skip", TRACE);
+    let out = shell(&path, &["trace on", "trace skip Hot", "run", "quit"]);
+    assert!(out.contains("not tracing inside Hot"), "got:\n{out}");
+    // Statements inside `Hot` are gone, the ones outside it are still echoed.
+    assert!(!out.contains("[trace] 2:"), "Hot body leaked:\n{out}");
+    assert!(!out.contains("[trace] 3:"), "Hot body leaked:\n{out}");
+    assert!(out.contains("[trace] 7:"), "Main body missing:\n{out}");
+}
+
+#[test]
+fn trace_depth_filters_by_frame() {
+    const TRACE: &str = "\
+Func Deep()
+    Local $x = 1
+EndFunc
+
+Func Main()
+    Deep()
+EndFunc
+
+Main()
+";
+    let path = script("trace-depth", TRACE);
+    let out = shell(&path, &["trace on", "trace depth 1", "run", "quit"]);
+    assert!(out.contains("tracing statements at depth <= 1"), "got:\n{out}");
+    // `Deep`'s body runs at depth 2 and is filtered out.
+    assert!(!out.contains("[trace] 2:"), "depth filter leaked:\n{out}");
+    assert!(out.contains("[trace] 6:"), "Main body missing:\n{out}");
+}
+
+#[test]
+fn untilcall_stops_after_a_builtin_call() {
+    const CALLS: &str = r#"Func Main()
+    ConsoleWrite("a")
+    ConsoleWrite("b")
+EndFunc
+
+Main()
+"#;
+    let path = script("untilcall", CALLS);
+    let out = shell(&path, &["untilcall ConsoleWrite", "list", "quit"]);
+    assert!(out.contains("running until ConsoleWrite is called"), "got:\n{out}");
+    assert!(out.contains("Stopped at line 3"), "got:\n{out}");
+}
+
+#[test]
+fn untilgui_stops_after_gui_create() {
+    const GUI: &str = r#"Func Main()
+    GUICreate("hi")
+    ConsoleWrite("made")
+EndFunc
+
+Main()
+"#;
+    let path = script("untilgui", GUI);
+    let out = shell(&path, &["untilgui", "list", "quit"]);
+    assert!(out.contains("running until GUICreate is called"), "got:\n{out}");
+    assert!(out.contains("Stopped at line 3"), "got:\n{out}");
+}

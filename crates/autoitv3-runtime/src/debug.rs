@@ -300,6 +300,17 @@ pub trait Debugger {
         let _ = (name, result);
     }
 
+    /// Called when the interpreter is about to invoke a builtin, host or
+    /// platform function.
+    ///
+    /// Script-defined functions go through [`Debugger::on_call_enter`]; this is
+    /// the counterpart for the calls the interpreter resolves itself
+    /// (`GUICreate`, `String`, `DllCall`, ...), which have no script body and
+    /// therefore no entry line. `name` is the spelling the script used.
+    fn on_builtin_call(&mut self, name: &str) {
+        let _ = name;
+    }
+
     /// Called after a variable is written.
     fn on_variable_write(&mut self, name: &str, value: &Value) {
         let _ = (name, value);
