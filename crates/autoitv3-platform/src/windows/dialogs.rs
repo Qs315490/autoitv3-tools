@@ -20,7 +20,7 @@ use std::ffi::c_void;
 use autoitv3_gui_model::{Progress, Splash};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::Com::CoTaskMemFree;
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::UI::Controls::Dialogs::{
     GetOpenFileNameW, GetSaveFileNameW, OPENFILENAMEW,
 };
@@ -29,7 +29,7 @@ use windows_sys::Win32::UI::Shell::{SHBrowseForFolderW, SHGetPathFromIDListW, BR
 use windows_sys::Win32::Graphics::Gdi::UpdateWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetDlgItem, GetMessageW,
-    IsDialogMessageW, MessageBoxW, RegisterClassExW, SendMessageW, SetWindowTextW, ShowWindow,
+    IsDialogMessageW, MessageBoxW, RegisterClassExW, SendMessageW, SetTimer, SetWindowTextW, ShowWindow,
     TranslateMessage, MSG, WNDCLASSEXW,
 };
 
@@ -56,6 +56,7 @@ const PBM_SETPOS: u32 = 0x0402;
 const PBM_SETRANGE: u32 = 0x0401;
 const WM_COMMAND: u32 = 0x0111;
 const WM_CLOSE: u32 = 0x0010;
+const WM_TIMER: u32 = 0x0113;
 
 /// The identifiers the input box's own controls answer with.
 const ID_PROMPT: i32 = 1000;
@@ -120,9 +121,50 @@ fn register_class(class: &str, proc: unsafe extern "system" fn(HWND, u32, WPARAM
 
 /// `MsgBox`, answered by the user. The flags are AutoIt's, which are the Win32
 /// `MB_*` values the same way the message box's own are.
-pub(crate) fn message_box(flags: i64, title: &str, text: &str) -> i64 {
+/// The non-public `MessageBoxTimeoutW`, which is how AutoIt itself implements
+/// `MsgBox`'s timeout: not in the headers, but in `user32.dll` since Windows XP.
+type MessageBoxTimeout =
+    unsafe extern "system" fn(HWND, *const u16, *const u16, u32, u16, u32) -> i32;
+
+/// `MessageBoxTimeoutW`, or `None` on a Windows that does not have it.
+fn message_box_timeout() -> Option<MessageBoxTimeout> {
+    static TIMEOUT: std::sync::OnceLock<Option<MessageBoxTimeout>> = std::sync::OnceLock::new();
+    *TIMEOUT.get_or_init(|| unsafe {
+        let module = GetModuleHandleW(to_wide("user32.dll").as_ptr());
+        if module.is_null() {
+            return None;
+        }
+        let name = b"MessageBoxTimeoutW\0";
+        let address = GetProcAddress(module, name.as_ptr())?;
+        Some(std::mem::transmute::<
+            unsafe extern "system" fn() -> isize,
+            MessageBoxTimeout,
+        >(address))
+    })
+}
+
+/// `MsgBox`, answered by the user. The flags are AutoIt's, which are the Win32
+/// `MB_*` values the same way the message box's own are.
+pub(crate) fn message_box(flags: i64, title: &str, text: &str, timeout: i64) -> i64 {
     let title = to_wide(title);
     let text = to_wide(text);
+    if timeout > 0 {
+        if let Some(call) = message_box_timeout() {
+            let answer = unsafe {
+                call(
+                    std::ptr::null_mut(),
+                    text.as_ptr(),
+                    title.as_ptr(),
+                    flags as u32,
+                    0,
+                    (timeout as u32).saturating_mul(1000),
+                )
+            };
+            // A timeout answers 0, which is no button at all, and AutoIt calls
+            // that `$IDTIMEOUT` (-1).
+            return if answer == 0 { -1 } else { answer as i64 };
+        }
+    }
     unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
@@ -183,7 +225,7 @@ unsafe extern "system" fn input_proc(
                 return 0;
             }
         }
-        WM_CLOSE => {
+        WM_CLOSE | WM_TIMER => {
             DestroyWindow(hwnd);
             return 0;
         }
@@ -202,6 +244,7 @@ pub(crate) fn input_box(
     prompt: &str,
     default: &str,
     password: bool,
+    timeout: i64,
 ) -> Option<Option<String>> {
     if !register_class("Au3EmulatedInputBox", input_proc) {
         return None;
@@ -307,6 +350,11 @@ pub(crate) fn input_box(
     with_input(|state| {
         *state = Some(InputState { answer: None });
     });
+    if timeout > 0 {
+        // The timer closing the window reads as "the user cancelled", which is
+        // what AutoIt's own timeout does.
+        unsafe { SetTimer(window, 1, (timeout as u32).saturating_mul(1000), None) };
+    }
     unsafe {
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);

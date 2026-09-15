@@ -42,18 +42,22 @@
 //!
 //! # Known limits
 //!
-//! The pixels are real, but not every one of them is drawn yet:
+//! The pixels are real; what is still missing is small and named here so it is
+//! not mistaken for a bug:
 //!
-//! * tooltips (`GUICtrlSetTip`) and window icons (`GUISetIcon`) are not shown;
-//! * a graphic control paints the *outlines* of its commands — the fill colour
-//!   behind `$GUI_GR_COLOR`'s second argument is not painted, and the command
-//!   types the model does not carry (bezier, pie, `$GUI_GR_PENSIZE`) are not
-//!   drawn at all;
-//! * a `ListView` row is one line with as many columns as it has cells; the
-//!   icon views, sorting and `$LVS_EX_CHECKBOXES` are not there;
+//! * a `ListView` row is one line with as many columns as it has cells — the
+//!   icon and small-icon views and the click-to-sort are not there; the check
+//!   boxes of `$LVS_EX_CHECKBOXES` are, because the common control draws them
+//!   itself and this backend only mirrors their state;
+//! * `$GUI_BKCOLOR_LV_ALTERNATE` (alternating row colours) and
+//!   `$GUI_WS_EX_PARENTDRAG` (dragging a window by a label or a picture) are
+//!   not implemented;
+//! * a control's `GUICtrlSetTip` bubble needs the tooltip to be given a handle
+//!   before it is shown, which the control's own `tooltips_class32` does; a
+//!   *balloon* tip (`$TIP_BALLOON`) is drawn as a plain one;
 //! * `WinGetPos` answers with the size the model keeps, which is the client
-//!   area; the frame is added for the real window, so the two differ from what
-//!   the official interpreter reports there.
+//!   area; the frame is added for the real window, so this end matches what the
+//!   official interpreter reports.
 //!
 //! The *semantics* of all of it still work: `GUICtrlRead` answers from the
 //! model, so only the pixels stay behind.
@@ -74,8 +78,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint,
-    GetStockObject, InvalidateRect, LineTo, MoveToEx, Rectangle, SelectObject, SetBkColor,
-    SetTextColor, TextOutW, UpdateWindow, HDC, PAINTSTRUCT,
+    GetStockObject, InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, SelectObject,
+    SetBkColor, SetTextColor, TextOutW, UpdateWindow, HDC, PAINTSTRUCT,
 };
 use windows_sys::Win32::Graphics::GdiPlus::{
     GdipCreateBitmapFromFile, GdipCreateHBITMAPFromBitmap, GdipDisposeImage, GdipGetImageHeight,
@@ -83,8 +87,9 @@ use windows_sys::Win32::Graphics::GdiPlus::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    InitCommonControlsEx, INITCOMMONCONTROLSEX, LVCOLUMNW, LVITEMW, TCITEMW, TVINSERTSTRUCTW,
-    TVITEMW,
+    InitCommonControlsEx, TOOLTIPS_CLASSW, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW,
+    TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTTOOLINFOW, INITCOMMONCONTROLSEX,
+    LVCOLUMNW, LVITEMW, TCITEMW, TVINSERTSTRUCTW, TVITEMW,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
@@ -97,6 +102,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
     WNDCLASSEXW,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{ICON_BIG, WM_SETICON};
 
 // ---------------------------------------------------------------------------
 // Win32 constants
@@ -111,6 +117,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
 const WS_CHILD: u32 = 0x4000_0000;
+const WS_POPUP: u32 = 0x8000_0000;
 const WS_TABSTOP: u32 = 0x0001_0000;
 const WS_GROUP: u32 = 0x0002_0000;
 const WS_BORDER: u32 = 0x0080_0000;
@@ -185,6 +192,9 @@ const TVS_DISABLEDRAGDROP: u32 = 0x0000_0010;
 const TVS_SHOWSELALWAYS: u32 = 0x0000_0020;
 const LVS_SINGLESEL: u32 = 0x0000_0004;
 const LVS_EX_FULLROWSELECT: u32 = 0x0000_0020;
+const LVS_EX_CHECKBOXES: u32 = 0x0000_0004;
+/// `$LVIS_STATEIMAGEMASK`: the four bits a `ListView` item's check box lives in.
+const LVIS_STATEIMAGEMASK: u32 = 0x0000_F000;
 const DTS_LONGDATEFORMAT: u32 = 0x0000_0004;
 const UDS_SETBUDDYINT: u32 = 0x0000_0002;
 
@@ -206,6 +216,7 @@ const LVM_SETCOLUMNW: u32 = 0x1060;
 const LVM_SETCOLUMNWIDTH: u32 = 0x101E;
 const LVM_SETITEMW: u32 = 0x1076;
 const LVM_SETITEMSTATE: u32 = 0x102B;
+const LVM_GETITEMSTATE: u32 = 0x102C;
 const LVIS_SELECTED: u32 = 0x0002;
 const LVIS_FOCUSED: u32 = 0x0001;
 const BM_SETIMAGE: u32 = 0x00F7;
@@ -289,6 +300,8 @@ const PM_REMOVE: u32 = 0x0001;
 const HTCLIENT: u32 = 1;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
+const SM_CXICON: i32 = 11;
+const SM_CYICON: i32 = 12;
 
 // `CreateFontW` arguments that are never anything else here.
 const DEFAULT_CHARSET: u32 = 1;
@@ -537,6 +550,8 @@ struct ControlState {
     image_handle: Option<LoadedImage>,
     /// Whether a subclass procedure paints this control.
     subclassed: bool,
+    /// The tip last handed to the window's tooltip control.
+    tip: String,
 }
 
 impl ControlState {
@@ -563,6 +578,7 @@ impl ControlState {
             image: None,
             image_handle: None,
             subclassed: false,
+            tip: String::new(),
         }
     }
 }
@@ -594,6 +610,11 @@ pub struct Win32Backend {
     focused: Option<i64>,
     /// The splash, progress and tooltip windows this backend has open.
     feedback: dialogs::Feedback,
+    /// The tooltip control of each window, once a control asked for one.
+    tooltips: HashMap<i64, HWND>,
+    /// The icon each window was given, and the path it came from.
+    icons: HashMap<i64, *mut c_void>,
+    icon_path: HashMap<i64, String>,
     next_win_id: i32,
     registered: bool,
 }
@@ -617,6 +638,9 @@ impl Win32Backend {
             topmost: HashMap::new(),
             focused: None,
             feedback: dialogs::Feedback::default(),
+            tooltips: HashMap::new(),
+            icons: HashMap::new(),
+            icon_path: HashMap::new(),
             next_win_id: 1000,
             registered: false,
         }
@@ -761,6 +785,7 @@ impl Win32Backend {
                 }
             }
         }
+        self.apply_window_icon(hwnd, window);
         if let Some(background) = window.bk_color {
             let _ = with_shared(|shared| {
                 shared.window_bk.insert(hwnd_key(hwnd), background);
@@ -835,6 +860,7 @@ impl Win32Backend {
                     ControlState::new(control, 0, std::ptr::null_mut()),
                 );
                 self.resync_list(control.parent);
+                self.apply_check(control);
                 return;
             }
             _ => {}
@@ -879,6 +905,7 @@ impl Win32Backend {
         self.push_items(&mut created, control);
         apply_font(&mut created, control);
         self.apply_buddy(&created, control);
+        self.apply_tip(&mut created, control);
         self.apply_image(&mut created, control);
         self.apply_value(&mut created, control);
         self.apply_colors(&mut created, control);
@@ -1001,6 +1028,7 @@ impl Win32Backend {
         };
         if state.hwnd.is_null() {
             self.resync_list(control.parent);
+            self.apply_check(control);
             return;
         }
         if state.items != control.data {
@@ -1013,6 +1041,7 @@ impl Win32Backend {
         self.apply_colors(&mut state, control);
         self.apply_cursor(&mut state, control);
         self.apply_subclass(&mut state, control);
+        self.apply_tip(&mut state, control);
         self.controls.insert(control.id, state);
     }
 
@@ -1389,6 +1418,94 @@ impl Win32Backend {
         }
     }
 
+    /// Push an item's check state into its `ListView`.
+    ///
+    /// A `ListView` with `$LVS_EX_CHECKBOXES` draws the box itself; the state
+    /// image is where its own checked/unchecked lives, and the model keeps the
+    /// same answer so `GUICtrlRead($item, 1)` sees it.
+    fn apply_check(&mut self, control: &Control) {
+        if control.kind != ControlKind::ListViewItem {
+            return;
+        }
+        let Some(owner_id) = self.list_owner_in(control.id) else {
+            return;
+        };
+        let Some(row) = control.row else {
+            return;
+        };
+        let Some(owner) = self.controls.get(&owner_id) else {
+            return;
+        };
+        if owner.hwnd.is_null() || owner.control.exstyle as u32 & LVS_EX_CHECKBOXES == 0 {
+            return;
+        }
+        let image: u32 = if control.is_checked() { 2 } else { 1 };
+        let mut item: LVITEMW = unsafe { std::mem::zeroed() };
+        item.state = image << 12;
+        item.stateMask = LVIS_STATEIMAGEMASK;
+        unsafe {
+            SendMessageW(
+                owner.hwnd,
+                LVM_SETITEMSTATE,
+                row,
+                &mut item as *mut _ as isize,
+            )
+        };
+    }
+
+    /// The check boxes a user clicked, which only the real control knows about.
+    fn check_updates(&mut self) -> Vec<GuiUpdate> {
+        let lists: Vec<i64> = self
+            .controls
+            .values()
+            .filter(|state| {
+                state.kind == ControlKind::ListView
+                    && !state.hwnd.is_null()
+                    && state.control.exstyle as u32 & LVS_EX_CHECKBOXES != 0
+            })
+            .map(|state| state.control.id)
+            .collect();
+        let mut updates = Vec::new();
+        for list in lists {
+            let Some(state) = self.controls.get(&list) else {
+                continue;
+            };
+            let (hwnd, rows) = (state.hwnd, state.control.data.len());
+            for row in 0..rows {
+                let bits = unsafe {
+                    SendMessageW(hwnd, LVM_GETITEMSTATE, row, LVIS_STATEIMAGEMASK as isize)
+                } as u32;
+                let checked = (bits & LVIS_STATEIMAGEMASK) >> 12 == 2;
+                let item = self
+                    .controls
+                    .values()
+                    .find(|candidate| {
+                        candidate.control.kind == ControlKind::ListViewItem
+                            && candidate.control.row == Some(row)
+                            && self.list_owner_in(candidate.control.id) == Some(list)
+                    })
+                    .map(|candidate| candidate.control.id);
+                let Some(item) = item else {
+                    continue;
+                };
+                let Some(candidate) = self.controls.get_mut(&item) else {
+                    continue;
+                };
+                if candidate.control.is_checked() != checked {
+                    candidate.control.state &= !0x01;
+                    if checked {
+                        candidate.control.state |= 0x01;
+                    }
+                    updates.push(GuiUpdate::SetChecked {
+                        id: item,
+                        checked,
+                    });
+                }
+            }
+        }
+        updates
+    }
+
     /// Attach an updown to the input control it was created for.
     ///
     /// `GUICtrlCreateUpdown($input)` takes an input rather than a position, and
@@ -1407,6 +1524,63 @@ impl Win32Backend {
             return;
         };
         unsafe { SendMessageW(state.hwnd, UDM_SETBUDDY, buddy as usize, 0) };
+    }
+
+    /// Hand a control's tip to the window's tooltip control.
+    ///
+    /// The tooltip is one window per GUI, created the first time a control asks
+    /// for a tip; `$TTF_SUBCLASS` is what makes it watch that control's mouse
+    /// messages, so nothing else has to.
+    fn apply_tip(&mut self, state: &mut ControlState, control: &Control) {
+        if state.hwnd.is_null() || state.tip == control.tip {
+            return;
+        }
+        let Some(parent) = self.windows.get(&control.window).copied() else {
+            return;
+        };
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            self.tooltips.entry(control.window)
+        {
+            let Some(tooltip) = create_tooltip(parent) else {
+                return;
+            };
+            slot.insert(tooltip);
+        }
+        let Some(tooltip) = self.tooltips.get(&control.window).copied() else {
+            return;
+        };
+        let mut text = to_wide(&control.tip);
+        let mut info: TTTOOLINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
+        info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        info.hwnd = parent;
+        info.uId = state.hwnd as usize;
+        info.lpszText = text.as_mut_ptr();
+        // The tool is added the first time; after that only its text changes.
+        let message = if state.tip.is_empty() {
+            TTM_ADDTOOLW
+        } else {
+            TTM_UPDATETIPTEXTW
+        };
+        unsafe { SendMessageW(tooltip, message, 0, &mut info as *mut _ as isize) };
+        state.tip = control.tip.clone();
+    }
+
+    /// Give a window the icon `GUISetIcon` asked for.
+    fn apply_window_icon(&mut self, hwnd: HWND, window: &Window) {
+        let wanted = window.icon.clone().unwrap_or_default();
+        if self.icon_path.get(&window.handle) == Some(&wanted) {
+            return;
+        }
+        if !wanted.is_empty() {
+            if let Some(icon) = load_window_icon(&wanted) {
+                if let Some(previous) = self.icons.insert(window.handle, icon) {
+                    unsafe { DestroyIcon(previous) };
+                }
+                unsafe { SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize) };
+            }
+        }
+        self.icon_path.insert(window.handle, wanted);
     }
 
     /// Keep the drawing commands of a graphic control where its paint procedure
@@ -1625,6 +1799,13 @@ impl GuiBackend for Win32Backend {
         }
         self.applied.remove(&handle);
         self.frames.remove(&handle);
+        if let Some(tooltip) = self.tooltips.remove(&handle) {
+            unsafe { DestroyWindow(tooltip) };
+        }
+        if let Some(icon) = self.icons.remove(&handle) {
+            unsafe { DestroyIcon(icon) };
+        }
+        self.icon_path.remove(&handle);
         // Its children went with it, but their fonts, their id table entries and
         // any menu they own are this side's to release.
         let children: Vec<i64> = self
@@ -1684,6 +1865,7 @@ impl GuiBackend for Win32Backend {
         // A tree or a tab reports a selection change through `WM_NOTIFY`, which
         // the window procedure does not read; both are asked instead.
         updates.extend(self.selection_updates());
+        updates.extend(self.check_updates());
         for id in dirty {
             let Some(state) = self.controls.get_mut(&id) else {
                 continue;
@@ -1752,12 +1934,9 @@ impl GuiBackend for Win32Backend {
         flags: i64,
         title: &str,
         text: &str,
-        _timeout: i64,
+        timeout: i64,
     ) -> Option<i64> {
-        // The timeout is AutoIt's "close the box by yourself"; Windows' own
-        // message box has no such thing, so a script that sets one waits like
-        // every other script.
-        Some(dialogs::message_box(flags, title, text))
+        Some(dialogs::message_box(flags, title, text, timeout))
     }
 
     fn input_box(
@@ -1766,9 +1945,9 @@ impl GuiBackend for Win32Backend {
         prompt: &str,
         default: &str,
         password: bool,
-        _timeout: i64,
+        timeout: i64,
     ) -> Option<Option<String>> {
-        dialogs::input_box(title, prompt, default, password)
+        dialogs::input_box(title, prompt, default, password, timeout)
     }
 
     fn file_dialog(
@@ -1858,6 +2037,12 @@ impl Drop for Win32Backend {
         }
         for (_, menu) in self.menus.drain() {
             unsafe { DestroyMenu(menu as _) };
+        }
+        for (_, tooltip) in self.tooltips.drain() {
+            unsafe { DestroyWindow(tooltip) };
+        }
+        for (_, icon) in self.icons.drain() {
+            unsafe { DestroyIcon(icon) };
         }
         for hwnd in self.windows.drain().map(|(_, hwnd)| hwnd) {
             unsafe { DestroyWindow(hwnd) };
@@ -2240,62 +2425,197 @@ unsafe extern "system" fn graphic_proc(
 
 /// Replay `GUICtrlSetGraphic`'s command list onto a device context.
 ///
-/// The pen is made per shape: a short command list is the normal case, and
-/// keeping a pen alive would mean tracking when the colour or the width changes.
+/// The pen is made per shape — a short command list is the normal case, and
+/// keeping one alive would mean tracking when the colour or the width changes —
+/// and the help page's order is kept: closed shapes first, then the lines.
 unsafe fn paint_commands(hdc: HDC, commands: &[DrawCmd], default_color: Option<i64>) {
-    let mut color = default_color.unwrap_or(0);
-    let mut width = 1i32;
-    for command in commands {
-        match command {
-            DrawCmd::SetColor(value) => color = *value,
-            // The fill colour only matters to closed shapes, and AutoIt's
-            // default is "no fill" (`$GUI_GR_NOBKCOLOR`), which the framed
-            // shapes below already draw.
-            DrawCmd::SetBkColor(_) => {}
-            DrawCmd::SetWidth(value) => width = (*value).max(1),
-            DrawCmd::SetStyle(_) => {}
-            DrawCmd::Clear => {
-                // The canvas is the control: clearing means painting over it,
-                // which the next `SetBkColor`-less paint does not do, so this
-                // only resets the pen.
-                color = default_color.unwrap_or(0);
-                width = 1;
-            }
-            DrawCmd::Line { x1, y1, x2, y2 } => {
-                let pen = CreatePen(PS_SOLID, width, colorref(color));
-                let old_pen = SelectObject(hdc, pen);
-                let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-                MoveToEx(hdc, *x1, *y1, std::ptr::null_mut());
-                LineTo(hdc, *x2, *y2);
-                SelectObject(hdc, old_brush);
-                SelectObject(hdc, old_pen);
-                DeleteObject(pen);
-            }
-            DrawCmd::Rect { x, y, w, h } => {
-                let pen = CreatePen(PS_SOLID, width, colorref(color));
-                let old_pen = SelectObject(hdc, pen);
-                let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-                Rectangle(hdc, *x, *y, x + w, y + h);
-                SelectObject(hdc, old_brush);
-                SelectObject(hdc, old_pen);
-                DeleteObject(pen);
-            }
-            DrawCmd::Ellipse { x, y, w, h } => {
-                let pen = CreatePen(PS_SOLID, width, colorref(color));
-                let old_pen = SelectObject(hdc, pen);
-                let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-                Ellipse(hdc, *x, *y, x + w, y + h);
-                SelectObject(hdc, old_brush);
-                SelectObject(hdc, old_pen);
-                DeleteObject(pen);
-            }
-            DrawCmd::Text { x, y, text } => {
-                let wide = to_wide(text);
-                SetTextColor(hdc, colorref(color));
-                TextOutW(hdc, *x, *y, wide.as_ptr(), wide.len() as i32 - 1);
+    for closed_pass in [true, false] {
+        let mut color = default_color.unwrap_or(0);
+        let mut background: Option<i64> = None;
+        let mut width = 1i32;
+        for command in commands {
+            match command {
+                DrawCmd::SetColor(value) => color = *value,
+                // `$GUI_GR_NOBKCOLOR` is negative, which is "do not fill".
+                DrawCmd::SetBkColor(value) => background = (*value >= 0).then_some(*value),
+                DrawCmd::SetWidth(value) => width = (*value).max(1),
+                DrawCmd::SetStyle(_) | DrawCmd::Clear => {}
+                DrawCmd::Rect { x, y, w, h } if closed_pass => {
+                    draw_shape(hdc, color, width, background, |hdc| {
+                        Rectangle(hdc, *x, *y, x + w, y + h);
+                    });
+                }
+                DrawCmd::Ellipse { x, y, w, h } if closed_pass => {
+                    draw_shape(hdc, color, width, background, |hdc| {
+                        Ellipse(hdc, *x, *y, x + w, y + h);
+                    });
+                }
+                DrawCmd::Pie {
+                    x,
+                    y,
+                    r,
+                    start,
+                    sweep,
+                } if closed_pass => {
+                    // `Pie` wants the two ends of the arc as points, and its
+                    // angles count upwards from the positive x axis while the
+                    // screen's `y` grows downwards.
+                    let from = (*start as f32).to_radians();
+                    let to = (*start as f32 + *sweep as f32).to_radians();
+                    let start_x = (*x as f32 + *r as f32 * from.cos()) as i32;
+                    let start_y = (*y as f32 - *r as f32 * from.sin()) as i32;
+                    let end_x = (*x as f32 + *r as f32 * to.cos()) as i32;
+                    let end_y = (*y as f32 - *r as f32 * to.sin()) as i32;
+                    draw_shape(hdc, color, width, background, |hdc| {
+                        Pie(
+                            hdc,
+                            x - r,
+                            y - r,
+                            x + r,
+                            y + r,
+                            start_x,
+                            start_y,
+                            end_x,
+                            end_y,
+                        );
+                    });
+                }
+                DrawCmd::Line { x1, y1, x2, y2 } if !closed_pass => {
+                    draw_shape(hdc, color, width, None, |hdc| {
+                        MoveToEx(hdc, *x1, *y1, std::ptr::null_mut());
+                        LineTo(hdc, *x2, *y2);
+                    });
+                }
+                DrawCmd::Bezier {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    x3,
+                    y3,
+                    x4,
+                    y4,
+                } if !closed_pass => {
+                    let points = [
+                        POINT {
+                            x: *x1,
+                            y: *y1,
+                        },
+                        POINT {
+                            x: *x2,
+                            y: *y2,
+                        },
+                        POINT {
+                            x: *x3,
+                            y: *y3,
+                        },
+                        POINT {
+                            x: *x4,
+                            y: *y4,
+                        },
+                    ];
+                    draw_shape(hdc, color, width, None, |hdc| {
+                        PolyBezier(hdc, points.as_ptr(), 4);
+                    });
+                }
+                DrawCmd::Dot { x, y } if !closed_pass => {
+                    // "the smallest square around the point", filled.
+                    let dot = width.max(1);
+                    draw_shape(hdc, color, width, Some(color), |hdc| {
+                        Rectangle(hdc, *x, *y, x + dot, y + dot);
+                    });
+                }
+                DrawCmd::Text { x, y, text } if !closed_pass => {
+                    let wide = to_wide(text);
+                    SetTextColor(hdc, colorref(color));
+                    TextOutW(hdc, *x, *y, wide.as_ptr(), wide.len() as i32 - 1);
+                }
+                _ => {}
             }
         }
     }
+}
+
+/// Draw one shape with a pen of `color`/`width` and, when the script asked for a
+/// fill, a brush of `background`.
+unsafe fn draw_shape(
+    hdc: HDC,
+    color: i64,
+    width: i32,
+    background: Option<i64>,
+    draw: impl FnOnce(HDC),
+) {
+    let pen = CreatePen(PS_SOLID, width, colorref(color));
+    let old_pen = SelectObject(hdc, pen);
+    let brush = match background {
+        Some(background) => CreateSolidBrush(colorref(background)),
+        None => GetStockObject(NULL_BRUSH),
+    };
+    let old_brush = SelectObject(hdc, brush);
+    draw(hdc);
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    DeleteObject(pen);
+    if background.is_some() {
+        DeleteObject(brush);
+    }
+}
+
+/// The tooltip control for one GUI.
+///
+/// It is the common control's own `tooltips_class32`, given `$TTS_ALWAYSTIP` so
+/// a tip shows even when the window is not active, and made topmost so the
+/// window it describes cannot cover it.
+fn create_tooltip(parent: HWND) -> Option<HWND> {
+    let tooltip = unsafe {
+        CreateWindowExW(
+            0x0000_0008, // WS_EX_TOPMOST
+            TOOLTIPS_CLASSW,
+            std::ptr::null(),
+            WS_POPUP | TTS_ALWAYSTIP,
+            0,
+            0,
+            0,
+            0,
+            parent,
+            std::ptr::null_mut(),
+            GetModuleHandleW(std::ptr::null()),
+            std::ptr::null(),
+        )
+    };
+    if tooltip.is_null() {
+        return None;
+    }
+    unsafe {
+        SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 300);
+        SetWindowPos(
+            tooltip,
+            HWND_TOPMOST as _,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+    Some(tooltip)
+}
+
+/// Load the icon a `GUISetIcon` named, at the size a title bar uses.
+fn load_window_icon(path: &str) -> Option<*mut c_void> {
+    let wide = to_wide(path);
+    let size = |index: i32| unsafe { GetSystemMetrics(index) };
+    let handle = unsafe {
+        LoadImageW(
+            std::ptr::null_mut(),
+            wide.as_ptr(),
+            IMAGE_ICON,
+            size(SM_CXICON),
+            size(SM_CYICON),
+            LR_LOADFROMFILE,
+        )
+    };
+    (!handle.is_null()).then_some(handle)
 }
 
 /// A NUL-terminated UTF-16 copy of `text`.

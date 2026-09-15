@@ -54,6 +54,69 @@ use autoitv3_gui_model::{
     GUI_CHECKED, GUI_DISABLE, GUI_ENABLE, GUI_HIDE, GUI_PAGE_HIDDEN, GUI_SHOW,
 };
 
+/// The docking a control gets when a script never called `GUICtrlSetResizing`.
+///
+/// The help pages name these defaults per control: a tab, a picture and an icon
+/// keep their size, a progress bar follows the window, and everything else keeps
+/// both its place and its size (which is what AutoIt does — a control does not
+/// move by itself).
+fn default_dock(kind: ControlKind) -> i64 {
+    match kind {
+        ControlKind::Tab | ControlKind::Pic | ControlKind::Icon => GUI_DOCKSIZE,
+        ControlKind::Progress => GUI_DOCKAUTO,
+        _ => GUI_DOCKALL,
+    }
+}
+
+/// Where a control ends up when its window changes size.
+///
+/// `dock` is a `$GUI_DOCK*` word: each flag names a side that does *not* move, so
+/// a control anchored to both sides of an axis grows along it instead.
+#[allow(clippy::too_many_arguments)]
+fn docked(
+    control: &Control,
+    dock: i64,
+    dx: i32,
+    dy: i32,
+    old_width: i32,
+    old_height: i32,
+    new_width: i32,
+    new_height: i32,
+) -> (i32, i32, i32, i32) {
+    if dock & GUI_DOCKAUTO != 0 {
+        // Everything scales with the window.
+        let scale_x = new_width as f32 / old_width as f32;
+        let scale_y = new_height as f32 / old_height as f32;
+        return (
+            (control.x as f32 * scale_x).round() as i32,
+            (control.y as f32 * scale_y).round() as i32,
+            (control.width as f32 * scale_x).round().max(1.0) as i32,
+            (control.height as f32 * scale_y).round().max(1.0) as i32,
+        );
+    }
+    let (left, right) = (dock & GUI_DOCKLEFT != 0, dock & GUI_DOCKRIGHT != 0);
+    let (top, bottom) = (dock & GUI_DOCKTOP != 0, dock & GUI_DOCKBOTTOM != 0);
+    let mut x = control.x;
+    let mut y = control.y;
+    let mut width = control.width;
+    let mut height = control.height;
+    if right && !left {
+        x += dx;
+    } else if !left && !right && dock & GUI_DOCKHCENTER != 0 {
+        x += dx / 2;
+    } else if left && right && dock & GUI_DOCKWIDTH == 0 {
+        width += dx;
+    }
+    if bottom && !top {
+        y += dy;
+    } else if !top && !bottom && dock & GUI_DOCKVCENTER != 0 {
+        y += dy / 2;
+    } else if top && bottom && dock & GUI_DOCKHEIGHT == 0 {
+        height += dy;
+    }
+    (x, y, width.max(1), height.max(1))
+}
+
 /// `$LVS_EX_CHECKBOXES`: a `ListView` whose items carry a check box.
 const LVS_EX_CHECKBOXES: i64 = 0x0000_0004;
 
@@ -64,6 +127,19 @@ const LVS_EX_CHECKBOXES: i64 = 0x0000_0004;
 /// expanded item — and neither is the generic `$GUI_SHOW | $GUI_ENABLE` word,
 /// which only `GUICtrlGetState` answers.
 const ITEM_STATE_MASK: i64 = GUI_CHECKED | 0x02 | 0x04 | 0x100 | 0x200;
+
+/// `$GUI_DOCK*`: what a control keeps when its window is resized.
+const GUI_DOCKAUTO: i64 = 1;
+const GUI_DOCKLEFT: i64 = 2;
+const GUI_DOCKRIGHT: i64 = 4;
+const GUI_DOCKHCENTER: i64 = 8;
+const GUI_DOCKTOP: i64 = 32;
+const GUI_DOCKBOTTOM: i64 = 64;
+const GUI_DOCKVCENTER: i64 = 128;
+const GUI_DOCKWIDTH: i64 = 256;
+const GUI_DOCKHEIGHT: i64 = 512;
+const GUI_DOCKSIZE: i64 = 768;
+const GUI_DOCKALL: i64 = 802;
 
 /// Messages a script can pass that change nothing the model keeps, so only a
 /// real control can act on them. Everything else is answered (and, where it
@@ -264,34 +340,48 @@ impl GuiState {
     fn apply_show_flag(&mut self, handle: i64, flag: i64) -> bool {
         let (visible, state) = show_flag(flag);
         let (desktop_width, desktop_height) = self.desktop_size();
-        let Some(window) = self.model.window_mut(handle) else {
+        let Some(window) = self.model.window(handle) else {
             return false;
         };
         let mut changed = window.visible != visible || window.state != state;
-        window.visible = visible;
+        let mut move_to: Option<(i32, i32)> = None;
+        let mut resize_to: Option<(i32, i32)> = None;
         match state {
             WindowState::Maximized => {
                 if window.state != WindowState::Maximized {
-                    window.restore = Some((window.x, window.y, window.width, window.height));
+                    let restore = (window.x, window.y, window.width, window.height);
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.restore = Some(restore);
+                    }
                 }
-                changed |= (window.width, window.height) != (desktop_width, desktop_height);
-                window.x = 0;
-                window.y = 0;
-                window.width = desktop_width;
-                window.height = desktop_height;
+                move_to = Some((0, 0));
+                resize_to = Some((desktop_width, desktop_height));
             }
             WindowState::Normal => {
-                if let Some((x, y, width, height)) = window.restore.take() {
+                if let Some((x, y, width, height)) = window.restore {
+                    move_to = Some((x, y));
+                    resize_to = Some((width, height));
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.restore = None;
+                    }
                     changed = true;
-                    window.x = x;
-                    window.y = y;
-                    window.width = width;
-                    window.height = height;
                 }
             }
             WindowState::Minimized => {}
         }
-        window.state = state;
+        if let Some(window) = self.model.window_mut(handle) {
+            window.visible = visible;
+            window.state = state;
+            if let Some((x, y)) = move_to {
+                window.x = x;
+                window.y = y;
+            }
+        }
+        // Maximising and restoring change the size, so the controls dock the
+        // same way they do for a hand-dragged window.
+        if let Some((width, height)) = resize_to {
+            changed |= self.resize_window(handle, width, height);
+        }
         changed
     }
 
@@ -403,16 +493,9 @@ impl GuiState {
                     height,
                 } => {
                     // The user dragged a window edge. AutoIt scripts see this
-                    // through WinGetPos/WinGetClientSize and $GUI_EVENT_RESIZED.
-                    let changed = match self.model.window_mut(handle) {
-                        Some(window) => {
-                            let changed = window.width != width || window.height != height;
-                            window.width = width.max(1);
-                            window.height = height.max(1);
-                            changed
-                        }
-                        None => false,
-                    };
+                    // through WinGetPos/WinGetClientSize and `$GUI_EVENT_RESIZED`,
+                    // and the controls move the way their docking asks.
+                    let changed = self.resize_window(handle, width, height);
                     if changed {
                         self.notify_window(handle);
                         self.events.push_back(GuiEvent::System(GUI_EVENT_RESIZED));
@@ -1081,13 +1164,16 @@ impl GuiState {
                         if let Some(y) = coordinate(3) {
                             window.y = y as i32;
                         }
-                        if let Some(width) = coordinate(4) {
-                            window.width = width as i32;
-                        }
-                        if let Some(height) = coordinate(5) {
-                            window.height = height as i32;
-                        }
                     }
+                    // A size change moves the controls, so it goes through the
+                    // same path a user's drag does.
+                    let width = coordinate(4).unwrap_or_else(|| {
+                        self.model.window(handle).map(|w| i64::from(w.width)).unwrap_or(0)
+                    });
+                    let height = coordinate(5).unwrap_or_else(|| {
+                        self.model.window(handle).map(|w| i64::from(w.height)).unwrap_or(0)
+                    });
+                    self.resize_window(handle, width as i32, height as i32);
                     self.notify_window(handle);
                 }
                 Value::Int(1)
@@ -2216,55 +2302,95 @@ impl GuiState {
     }
 
     /// `GUICtrlSetGraphic`: record a drawing command.
+    ///
+    /// The types are the ones `GUIConstantsEx.au3` defines — even numbers, in the
+    /// order the help page lists them — and the pen keeps its own position so a
+    /// line starts where the last one ended.
     fn set_graphic(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
         let Some(id) = self.resolve_control(args, 0) else {
             return Self::no_such_control(ctx);
         };
         let kind = arg_int(args, 1);
         let (pen_x, pen_y) = self.draw_pen;
-        let cmd = match kind {
-            0 => {
-                // $GUI_GR_MOVE
-                self.draw_pen = (arg_int(args, 2) as i32, arg_int(args, 3) as i32);
-                None
-            }
-            1 => Some(DrawCmd::SetColor(arg_int(args, 2))),
+        let end = (arg_int(args, 2) as i32, arg_int(args, 3) as i32);
+        let commands: Vec<DrawCmd> = match kind {
+            // $GUI_GR_CLOSE: the current drawing is closed by a line back to
+            // where it started, which the pen position already describes.
+            1 => Vec::new(),
+            // $GUI_GR_LINE
             2 => {
-                let end = (arg_int(args, 2) as i32, arg_int(args, 3) as i32);
                 self.draw_pen = end;
-                Some(DrawCmd::Line {
+                vec![DrawCmd::Line {
                     x1: pen_x,
                     y1: pen_y,
                     x2: end.0,
                     y2: end.1,
-                })
+                }]
             }
-            6 => Some(DrawCmd::Rect {
-                x: arg_int(args, 2) as i32,
-                y: arg_int(args, 3) as i32,
+            // $GUI_GR_BEZIER: x, y, x1, y1, x2, y2
+            4 => {
+                let command = DrawCmd::Bezier {
+                    x1: pen_x,
+                    y1: pen_y,
+                    x2: arg_int(args, 4) as i32,
+                    y2: arg_int(args, 5) as i32,
+                    x3: arg_int(args, 6) as i32,
+                    y3: arg_int(args, 7) as i32,
+                    x4: end.0,
+                    y4: end.1,
+                };
+                self.draw_pen = end;
+                vec![command]
+            }
+            // $GUI_GR_MOVE: the pen moves without drawing.
+            6 => {
+                self.draw_pen = end;
+                Vec::new()
+            }
+            // $GUI_GR_COLOR: colour [, background]; `$GUI_GR_NOBKCOLOR` (-2)
+            // means the closed shapes are not filled.
+            8 => {
+                let mut commands = vec![DrawCmd::SetColor(arg_int(args, 2))];
+                if let Some(background) = args.get(3) {
+                    commands.push(DrawCmd::SetBkColor(background.to_int()));
+                }
+                commands
+            }
+            // $GUI_GR_RECT
+            10 => vec![DrawCmd::Rect {
+                x: end.0,
+                y: end.1,
                 w: arg_int(args, 4) as i32,
                 h: arg_int(args, 5) as i32,
-            }),
-            7 | 8 => Some(DrawCmd::Ellipse {
-                x: arg_int(args, 2) as i32,
-                y: arg_int(args, 3) as i32,
+            }],
+            // $GUI_GR_ELLIPSE
+            12 => vec![DrawCmd::Ellipse {
+                x: end.0,
+                y: end.1,
                 w: arg_int(args, 4) as i32,
                 h: arg_int(args, 5) as i32,
-            }),
-            9 | 10 => Some(DrawCmd::Rect {
-                x: arg_int(args, 2) as i32,
-                y: arg_int(args, 3) as i32,
-                w: 1,
-                h: 1,
-            }),
-            13 => Some(DrawCmd::Clear),
-            _ => None,
+            }],
+            // $GUI_GR_PIE: x, y, r, startangle, sweepangle
+            14 => vec![DrawCmd::Pie {
+                x: end.0,
+                y: end.1,
+                r: arg_int(args, 4) as i32,
+                start: arg_int(args, 5) as i32,
+                sweep: arg_int(args, 6) as i32,
+            }],
+            // $GUI_GR_DOT and $GUI_GR_PIXEL
+            16 | 18 => vec![DrawCmd::Dot { x: end.0, y: end.1 }],
+            // $GUI_GR_HINT: control points are not drawn.
+            20 => Vec::new(),
+            // $GUI_GR_REFRESH: a redraw, which the notification below is.
+            22 => Vec::new(),
+            // $GUI_GR_PENSIZE
+            24 => vec![DrawCmd::SetWidth(arg_int(args, 2) as i32)],
+            _ => Vec::new(),
         };
-        if let Some(cmd) = cmd {
-            self.model.draw(id, cmd);
+        for command in commands {
+            self.model.draw(id, command);
         }
-        // A text command follows the same entry point in AutoIt via p1..p4;
-        // strings are not used, so nothing more to record here.
         self.notify_control(id);
         ctx.set_error(0, 0);
         Value::Int(1)
@@ -2280,6 +2406,60 @@ impl GuiState {
     }
 
     /// Resolve the `(window, control text)` pair `Control*` functions take.
+    /// Resize a window and move its controls the way their docking asks.
+    ///
+    /// AutoIt's `$GUI_DOCK*` flags say what does *not* change when the window
+    /// does; a control nobody set them on keeps its place. Returns whether the
+    /// size actually changed.
+    fn resize_window(&mut self, handle: i64, width: i32, height: i32) -> bool {
+        let Some(window) = self.model.window(handle) else {
+            return false;
+        };
+        let (old_width, old_height) = (window.width.max(1), window.height.max(1));
+        let (new_width, new_height) = (width.max(1), height.max(1));
+        if (old_width, old_height) == (new_width, new_height) {
+            return false;
+        }
+        let (dx, dy) = (new_width - old_width, new_height - old_height);
+        let controls = window.controls.clone();
+        for id in controls {
+            let Some(control) = self.model.control(id) else {
+                continue;
+            };
+            // A part is a row or a page, not a window of its own.
+            if control.kind.is_part() || control.parent.is_some() {
+                continue;
+            }
+            let dock = if control.resizing != 0 {
+                control.resizing
+            } else {
+                default_dock(control.kind)
+            };
+            let (x, y, control_width, control_height) = docked(
+                control,
+                dock,
+                dx,
+                dy,
+                old_width.max(1),
+                old_height.max(1),
+                new_width,
+                new_height,
+            );
+            if let Some(control) = self.model.control_mut(id) {
+                control.x = x;
+                control.y = y;
+                control.width = control_width;
+                control.height = control_height;
+            }
+            self.notify_control(id);
+        }
+        if let Some(window) = self.model.window_mut(handle) {
+            window.width = new_width;
+            window.height = new_height;
+        }
+        true
+    }
+
     /// Hand the splash window's state to the backend, which may show one.
     fn show_splash(&mut self, off: bool) {
         let splash = self.model.splash.clone();
