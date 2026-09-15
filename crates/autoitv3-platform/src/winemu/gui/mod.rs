@@ -57,6 +57,14 @@ use autoitv3_gui_model::{
 /// `$LVS_EX_CHECKBOXES`: a `ListView` whose items carry a check box.
 const LVS_EX_CHECKBOXES: i64 = 0x0000_0004;
 
+/// The bits a part reports through `GUICtrlRead`: its own checked, focus and
+/// default-button state.
+///
+/// `$GUI_EXPAND` is not one of them — the official interpreter answers 0 for an
+/// expanded item — and neither is the generic `$GUI_SHOW | $GUI_ENABLE` word,
+/// which only `GUICtrlGetState` answers.
+const ITEM_STATE_MASK: i64 = GUI_CHECKED | 0x02 | 0x04 | 0x100 | 0x200;
+
 /// Messages a script can pass that change nothing the model keeps, so only a
 /// real control can act on them. Everything else is answered (and, where it
 /// mutates, applied) by the model, because a `lParam` that points at script
@@ -745,11 +753,13 @@ impl GuiState {
                         control.state &= !0x08;
                     }
                     // A `TreeViewItem` is painted bold while `$GUI_DEFBUTTON`
-                    // is set, and the documented way to turn that off again is
-                    // to set the state to 0.
+                    // is set, and any call that does not ask for it turns it off
+                    // again — the official interpreter clears it for
+                    // `GUICtrlSetState($item, 0)` even though the control's state
+                    // word still carries `$GUI_SHOW | $GUI_ENABLE`.
                     if state & 0x200 != 0 {
                         control.state |= 0x200;
-                    } else if state == 0 {
+                    } else {
                         control.state &= !0x200;
                     }
                     if state & 0x400 != 0 {
@@ -1673,8 +1683,10 @@ impl GuiState {
             style: arg_int(args, base + 4),
             exstyle: arg_int(args, base + 5),
             // The official interpreter answers `$GUI_SHOW | $GUI_ENABLE` for a
-            // control nobody has touched yet.
-            state: if kind.is_part() { 0 } else { GUI_SHOW | GUI_ENABLE },
+            // control nobody has touched yet — parts included: a fresh
+            // `TabItem`/`TreeViewItem` answers `GUICtrlGetState` with 0x50 even
+            // though `GUICtrlRead` masks those bits out.
+            state: GUI_SHOW | GUI_ENABLE,
             parent: None,
             row: None,
             data: Vec::new(),
@@ -1792,7 +1804,9 @@ impl GuiState {
             height: 0,
             style: 0,
             exstyle: 0,
-            state: 0,
+            // Parts answer `GUICtrlGetState` with the same `0x50` a control
+            // does; `GUICtrlRead` is what masks those bits out again.
+            state: GUI_SHOW | GUI_ENABLE,
             parent,
             row: None,
             data: Vec::new(),
@@ -1998,9 +2012,13 @@ impl GuiState {
                 if advanced {
                     Value::Str(self.item_text(id, control))
                 } else {
-                    Value::Int(control.public_state())
+                    Value::Int(control.state & ITEM_STATE_MASK)
                 }
             }
+            // A tab page has no readable value of its own: the official
+            // interpreter answers an empty string in both modes, and the page's
+            // title is what its label shows.
+            ControlKind::TabItem => Value::str(""),
             ControlKind::Tab => {
                 let tab = id;
                 match control.selection {
@@ -2164,11 +2182,16 @@ impl GuiState {
             if field.is_empty() && index != last {
                 continue;
             }
-            // A cell written past the end of the row keeps its column.
-            while cells.len() < index {
-                cells.push(String::new());
-            }
             if index >= cells.len() {
+                // An empty field only ever *erases* a cell that is there: the
+                // official interpreter answers `"a|b|c|"` for `"|||"`, so a row
+                // is never grown by an empty last field.
+                if field.is_empty() {
+                    continue;
+                }
+                while cells.len() < index {
+                    cells.push(String::new());
+                }
                 cells.push((*field).to_string());
             } else {
                 cells[index] = (*field).to_string();

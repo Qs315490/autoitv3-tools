@@ -1255,6 +1255,67 @@ impl GuiBackend for VisibilityBackend {
 }
 
 #[test]
+fn an_expanded_tree_item_does_not_say_so_when_it_is_read() {
+    // The probe against the official interpreter: a fresh item answers
+    // `$GUI_SHOW | $GUI_ENABLE` to `GUICtrlGetState`, while `GUICtrlRead` gives
+    // its own state — 0 even after `$GUI_EXPAND`, because expanding a node is
+    // applied to the real tree rather than remembered in the state word.
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $tree = GUICtrlCreateTreeView(0, 0, 200, 150)
+Local $root = GUICtrlCreateTreeViewItem("root", $tree)
+Local $child = GUICtrlCreateTreeViewItem("child", $root)
+Local $fresh = GUICtrlGetState($root)
+GUICtrlSetState($child, 1024)
+Local $expanded = GUICtrlRead($child)
+GUICtrlSetState($child, 256)
+Local $focused = GUICtrlRead($child)
+GUICtrlSetState($child, 512)
+Local $bold = GUICtrlRead($child)
+GUICtrlSetState($child, 0)
+Local $plain = GUICtrlRead($child)
+Return $fresh & ":" & $expanded & ":" & $focused & ":" & $bold & ":" & $plain
+"#;
+    assert_eq!(text(win10(), body), "80:0:256:768:256");
+}
+
+#[test]
+fn a_tabitem_has_no_readable_value_of_its_own() {
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $tab = GUICtrlCreateTab(0, 0, 200, 150)
+Local $page = GUICtrlCreateTabItem("one")
+GUICtrlCreateTabItem("")
+Local $read = GUICtrlRead($page)
+Local $advanced = GUICtrlRead($page, 1)
+Local $state = GUICtrlGetState($page)
+GUICtrlSetData($page, "renamed")
+Local $after = GUICtrlRead($page)
+Return $read & ":" & $advanced & ":" & $state & ":" & $after
+"#;
+    assert_eq!(text(win10(), body), "::80:");
+}
+
+#[test]
+fn an_item_update_never_grows_the_row() {
+    // `"|||"` leaves a three-column row alone: an empty field only erases a cell
+    // that is there. `"x||z"` writes the first and third, the official way.
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $list = GUICtrlCreateListView("a|b|c", 0, 0, 200, 100)
+Local $item = GUICtrlCreateListViewItem("1|2|3", $list)
+GUICtrlSetData($item, "|||")
+Local $seps = GUICtrlRead($item)
+GUICtrlSetData($item, "x||z")
+Local $sparse = GUICtrlRead($item)
+GUICtrlSetData($item, "x|")
+Local $erase = GUICtrlRead($item)
+Return $seps & ":" & $sparse & ":" & $erase
+"#;
+    assert_eq!(text(win10(), body), "1|2|3|:x|2|z|:x||z|");
+}
+
+#[test]
 fn a_tab_page_hides_the_controls_of_the_pages_nobody_selected() {
     let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let body = r#"
