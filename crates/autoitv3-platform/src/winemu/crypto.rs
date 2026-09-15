@@ -14,8 +14,15 @@
 //! the `Crypt*` call fail, so the script takes its own error path instead of
 //! silently working on garbage.
 //!
-//! The hash functions are the textbook constructions and are checked against
-//! the published test vectors in the module tests.
+//! The primitives come from RustCrypto (`md-5`/`sha1`/`sha2`/`aes`/`rc4`) —
+//! this module used to carry hand-written MD5, SHA-1, SHA-256, AES and RC4,
+//! which was a lot of security-relevant code to keep correct. Only the
+//! CryptoAPI-specific glue lives here now: which `CALG_*` id is which
+//! algorithm, and the `CryptDeriveKey` rule below. The published test vectors
+//! in `tests/unit/winemu_crypto.rs` pin the wrappers just as tightly as they
+//! pinned the originals.
+
+use sha2::Digest;
 
 /// Which hash a `CryptCreateHash` handle is accumulating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,162 +174,22 @@ impl CipherAlg {
 }
 
 // ---------------------------------------------------------------------------
-// AES
+// Primitives (RustCrypto)
 // ---------------------------------------------------------------------------
 
-/// `(sbox, inv_sbox)` computed from the field arithmetic rather than
-/// transcribed, so a typo cannot silently corrupt every decryption.
-/// The S-box pair, computed once.
-///
-/// Building them costs a full field inversion per entry, and `aes_decrypt_block`
-/// is called once per 16-byte block, so recomputing them per block dominated
-/// every decryption of a real payload.
-fn aes_tables() -> &'static ([u8; 256], [u8; 256]) {
-    static TABLES: std::sync::OnceLock<([u8; 256], [u8; 256])> = std::sync::OnceLock::new();
-    TABLES.get_or_init(compute_aes_tables)
-}
-
-fn compute_aes_tables() -> ([u8; 256], [u8; 256]) {
-    fn mul(mut a: u8, mut b: u8) -> u8 {
-        let mut p = 0u8;
-        for _ in 0..8 {
-            if b & 1 != 0 {
-                p ^= a;
-            }
-            let hi = a & 0x80;
-            a <<= 1;
-            if hi != 0 {
-                a ^= 0x1b;
-            }
-            b >>= 1;
-        }
-        p
-    }
-    let mut sbox = [0u8; 256];
-    for i in 0..256u32 {
-        let x = i as u8;
-        // 0 has no inverse; the affine transform of 0 is what makes sbox[0] = 0x63.
-        let inverse = if i == 0 {
-            0
-        } else {
-            (1..=255u8).find(|y| mul(x, *y) == 1).unwrap_or(0)
-        };
-        sbox[i as usize] = inverse
-            ^ inverse.rotate_left(1)
-            ^ inverse.rotate_left(2)
-            ^ inverse.rotate_left(3)
-            ^ inverse.rotate_left(4)
-            ^ 0x63;
-    }
-    let mut inv = [0u8; 256];
-    for (i, s) in sbox.iter().enumerate() {
-        inv[*s as usize] = i as u8;
-    }
-    (sbox, inv)
-}
-
-/// AES key schedule: `4 * (rounds + 1)` words.
-fn aes_expand_key(key: &[u8]) -> Vec<[u8; 4]> {
-    const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
-    let (sbox, _) = aes_tables();
-    let nk = key.len() / 4;
-    let nr = nk + 6;
-    let mut w: Vec<[u8; 4]> = key.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
-    for i in nk..4 * (nr + 1) {
-        let mut temp = w[i - 1];
-        if i % nk == 0 {
-            temp = [temp[1], temp[2], temp[3], temp[0]];
-            for b in temp.iter_mut() {
-                *b = sbox[*b as usize];
-            }
-            temp[0] ^= RCON[i / nk - 1];
-        } else if nk > 6 && i % nk == 4 {
-            for b in temp.iter_mut() {
-                *b = sbox[*b as usize];
-            }
-        }
-        let prev = w[i - nk];
-        w.push([prev[0] ^ temp[0], prev[1] ^ temp[1], prev[2] ^ temp[2], prev[3] ^ temp[3]]);
-    }
-    w
-}
-
-fn add_round_key(state: &mut [u8; 16], w: &[[u8; 4]], round: usize) {
-    for c in 0..4 {
-        for r in 0..4 {
-            state[c * 4 + r] ^= w[round * 4 + c][r];
-        }
-    }
-}
-
-fn inv_shift_rows(s: &mut [u8; 16]) {
-    let copy = *s;
-    for r in 0..4 {
-        for c in 0..4 {
-            s[c * 4 + r] = copy[((c + 4 - r) % 4) * 4 + r];
-        }
-    }
-}
-
-fn inv_mix_columns(s: &mut [u8; 16]) {
-    fn mul(mut a: u8, mut b: u8) -> u8 {
-        let mut p = 0u8;
-        for _ in 0..8 {
-            if b & 1 != 0 {
-                p ^= a;
-            }
-            let hi = a & 0x80;
-            a <<= 1;
-            if hi != 0 {
-                a ^= 0x1b;
-            }
-            b >>= 1;
-        }
-        p
-    }
-    for c in 0..4 {
-        let col = [s[c * 4], s[c * 4 + 1], s[c * 4 + 2], s[c * 4 + 3]];
-        s[c * 4] = mul(col[0], 14) ^ mul(col[1], 11) ^ mul(col[2], 13) ^ mul(col[3], 9);
-        s[c * 4 + 1] = mul(col[0], 9) ^ mul(col[1], 14) ^ mul(col[2], 11) ^ mul(col[3], 13);
-        s[c * 4 + 2] = mul(col[0], 13) ^ mul(col[1], 9) ^ mul(col[2], 14) ^ mul(col[3], 11);
-        s[c * 4 + 3] = mul(col[0], 11) ^ mul(col[1], 13) ^ mul(col[2], 9) ^ mul(col[3], 14);
-    }
-}
-
-/// Decrypt one 16-byte block with the inverse cipher.
-///
-/// The caller passes the expanded key and the S-box, so a multi-block
-/// decryption does not rebuild them for every block.
-fn aes_decrypt_block_with(w: &[[u8; 4]], inv_sbox: &[u8; 256], block: &[u8; 16]) -> [u8; 16] {
-    let nr = w.len() / 4 - 1;
-    let mut s = *block;
-    add_round_key(&mut s, &w, nr);
-    for round in (1..nr).rev() {
-        inv_shift_rows(&mut s);
-        for b in s.iter_mut() {
-            *b = inv_sbox[*b as usize];
-        }
-        add_round_key(&mut s, &w, round);
-        inv_mix_columns(&mut s);
-    }
-    inv_shift_rows(&mut s);
-    for b in s.iter_mut() {
-        *b = inv_sbox[*b as usize];
-    }
-    add_round_key(&mut s, w, 0);
-    s
-}
-
-
 /// CBC-decrypt `data`; a trailing partial block is left as it is.
+///
+/// CryptoAPI's CBC has no padding, so this cannot use `cbc`'s padded helpers:
+/// a short final block is passed through untouched, which is what the
+/// hand-written loop this replaced did.
 pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
-    let (_, inv_sbox) = aes_tables();
-    let w = aes_expand_key(key);
-    let mut out = Vec::with_capacity(data.len());
-    let mut prev: [u8; 16] = [0; 16];
+    use aes::cipher::{BlockDecrypt, KeyInit};
+
+    let mut prev = [0u8; 16];
     for (i, b) in iv.iter().take(16).enumerate() {
         prev[i] = *b;
     }
+    let mut out = Vec::with_capacity(data.len());
     for block in data.chunks(16) {
         if block.len() < 16 {
             out.extend_from_slice(block);
@@ -330,7 +197,22 @@ pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
         }
         let mut input = [0u8; 16];
         input.copy_from_slice(block);
-        let plain = aes_decrypt_block_with(&w, inv_sbox, &input);
+        let mut plain = input;
+        // Callers derive the key through `CipherAlg`, so the length is one of
+        // these three; anything else leaves the rest undecrypted rather than
+        // panicking inside a `Crypt*` call.
+        match key.len() {
+            16 => aes::Aes128::new_from_slice(key)
+                .expect("16-byte key")
+                .decrypt_block((&mut plain).into()),
+            24 => aes::Aes192::new_from_slice(key)
+                .expect("24-byte key")
+                .decrypt_block((&mut plain).into()),
+            32 => aes::Aes256::new_from_slice(key)
+                .expect("32-byte key")
+                .decrypt_block((&mut plain).into()),
+            _ => break,
+        }
         for i in 0..16 {
             out.push(plain[i] ^ prev[i]);
         }
@@ -339,231 +221,45 @@ pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// MD5
-// ---------------------------------------------------------------------------
-
-/// Per-round left rotations.
-const MD5_S: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
-    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
-    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-];
-
 /// MD5 of `input`.
 pub fn md5(input: &[u8]) -> [u8; 16] {
-    // K[i] = floor(2^32 * abs(sin(i + 1))), computed rather than transcribed.
-    let k = |i: usize| ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32;
-
-    let mut msg = input.to_vec();
-    let bits = (input.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bits.to_le_bytes());
-
-    let (mut a0, mut b0, mut c0, mut d0) = (0x6745_2301u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476);
-    for chunk in msg.chunks_exact(64) {
-        let mut m = [0u32; 16];
-        for (i, word) in m.iter_mut().enumerate() {
-            *word = u32::from_le_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
-        }
-        let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
-        for i in 0..64 {
-            let (f, g) = match i / 16 {
-                0 => ((b & c) | (!b & d), i),
-                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-                2 => (b ^ c ^ d, (3 * i + 5) % 16),
-                _ => (c ^ (b | !d), (7 * i) % 16),
-            };
-            let tmp = d;
-            d = c;
-            c = b;
-            let x = a
-                .wrapping_add(f)
-                .wrapping_add(k(i))
-                .wrapping_add(m[g]);
-            b = b.wrapping_add(x.rotate_left(MD5_S[i]));
-            a = tmp;
-        }
-        a0 = a0.wrapping_add(a);
-        b0 = b0.wrapping_add(b);
-        c0 = c0.wrapping_add(c);
-        d0 = d0.wrapping_add(d);
-    }
-
     let mut out = [0u8; 16];
-    out[0..4].copy_from_slice(&a0.to_le_bytes());
-    out[4..8].copy_from_slice(&b0.to_le_bytes());
-    out[8..12].copy_from_slice(&c0.to_le_bytes());
-    out[12..16].copy_from_slice(&d0.to_le_bytes());
+    out.copy_from_slice(&md5::Md5::digest(input));
     out
 }
-
-// ---------------------------------------------------------------------------
-// SHA-1
-// ---------------------------------------------------------------------------
 
 /// SHA-1 of `input`.
 pub fn sha1(input: &[u8]) -> [u8; 20] {
-    let mut msg = input.to_vec();
-    let bits = (input.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bits.to_be_bytes());
-
-    let (mut h0, mut h1, mut h2, mut h3, mut h4) =
-        (0x6745_2301u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0);
-    for chunk in msg.chunks_exact(64) {
-        let mut w = [0u32; 80];
-        for (i, word) in w.iter_mut().take(16).enumerate() {
-            *word = u32::from_be_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let (mut a, mut b, mut c, mut d, mut e) = (h0, h1, h2, h3, h4);
-        for (i, wi) in w.iter().enumerate() {
-            let (f, k) = match i / 20 {
-                0 => ((b & c) | (!b & d), 0x5a82_7999u32),
-                1 => (b ^ c ^ d, 0x6ed9_eba1),
-                2 => ((b & c) | (b & d) | (c & d), 0x8f1b_bcdc),
-                _ => (b ^ c ^ d, 0xca62_c1d6),
-            };
-            let tmp = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(*wi);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = tmp;
-        }
-        h0 = h0.wrapping_add(a);
-        h1 = h1.wrapping_add(b);
-        h2 = h2.wrapping_add(c);
-        h3 = h3.wrapping_add(d);
-        h4 = h4.wrapping_add(e);
-    }
-
     let mut out = [0u8; 20];
-    for (i, h) in [h0, h1, h2, h3, h4].iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&h.to_be_bytes());
-    }
+    out.copy_from_slice(&sha1::Sha1::digest(input));
     out
 }
-
-// ---------------------------------------------------------------------------
-// SHA-256
-// ---------------------------------------------------------------------------
-
-const SHA256_K: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-];
 
 /// SHA-256 of `input`.
 pub fn sha256(input: &[u8]) -> [u8; 32] {
-    let mut msg = input.to_vec();
-    let bits = (input.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bits.to_be_bytes());
-
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    for chunk in msg.chunks_exact(64) {
-        let mut w = [0u32; 64];
-        for (i, word) in w.iter_mut().take(16).enumerate() {
-            *word = u32::from_be_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let mut v = h;
-        for i in 0..64 {
-            let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
-            let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
-            let t1 = v[7]
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(SHA256_K[i])
-                .wrapping_add(w[i]);
-            let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
-            let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
-            let t2 = s0.wrapping_add(maj);
-            v[7] = v[6];
-            v[6] = v[5];
-            v[5] = v[4];
-            v[4] = v[3].wrapping_add(t1);
-            v[3] = v[2];
-            v[2] = v[1];
-            v[1] = v[0];
-            v[0] = t1.wrapping_add(t2);
-        }
-        for (i, x) in v.iter().enumerate() {
-            h[i] = h[i].wrapping_add(*x);
-        }
-    }
-
     let mut out = [0u8; 32];
-    for (i, x) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&x.to_be_bytes());
-    }
+    out.copy_from_slice(&sha2::Sha256::digest(input));
     out
 }
-
-// ---------------------------------------------------------------------------
-// RC4
-// ---------------------------------------------------------------------------
 
 /// RC4 keystream XOR — `key` is the RC4 key, `data` the bytes to transform.
 ///
 /// RC4 is symmetric, so the same call both encrypts and decrypts. An empty key
 /// leaves the data untouched (and the caller should have rejected it).
 pub fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
+    use rc4::{KeyInit, StreamCipher};
+
     if key.is_empty() {
         return data.to_vec();
     }
-    let mut s: [u8; 256] = [0; 256];
-    for (i, x) in s.iter_mut().enumerate() {
-        *x = i as u8;
-    }
-    let mut j = 0u8;
-    for i in 0..256 {
-        j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
-        s.swap(i, j as usize);
-    }
-    let (mut i, mut j) = (0u8, 0u8);
-    let mut out = Vec::with_capacity(data.len());
-    for byte in data {
-        i = i.wrapping_add(1);
-        j = j.wrapping_add(s[i as usize]);
-        s.swap(i as usize, j as usize);
-        let k = s[s[i as usize].wrapping_add(s[j as usize]) as usize];
-        out.push(byte ^ k);
-    }
+    // The crate rejects keys outside 1..=256 bytes; the caller checks the
+    // derived key, so falling back to a pass-through only happens for input
+    // that was already invalid.
+    let Ok(mut cipher) = rc4::Rc4::new_from_slice(key) else {
+        return data.to_vec();
+    };
+    let mut out = data.to_vec();
+    cipher.apply_keystream(&mut out);
     out
 }
 
