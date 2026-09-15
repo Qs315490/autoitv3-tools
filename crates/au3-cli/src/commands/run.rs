@@ -95,6 +95,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_elevate: bool,
 
+    /// (internal) Run as the elevated copy an `#RequireAdmin` run started
+    ///
+    /// Our own launcher passes this together with `--attach-console`; it says
+    /// "the elevation already happened", so the directive is not acted on again
+    /// and not reported as skipped either. Not meant to be used by hand.
+    #[arg(long, hide = true)]
+    pub elevated_copy: bool,
+
     /// `#include` search path (see `IncludeArgs`).
     #[command(flatten)]
     pub includes: IncludeArgs,
@@ -174,7 +182,12 @@ fn execute(
                  so the script runs without administrator rights"
             );
         }
-    } else if crate::elevate::relaunch_if_required(&prog, args.no_elevate, spawn_denied)? {
+    } else if crate::elevate::relaunch_if_required(
+        &prog,
+        args.elevated_copy,
+        args.no_elevate,
+        spawn_denied,
+    )? {
         return Ok(());
     }
     // Install the platform layer for this OS so OS-specific builtins can be

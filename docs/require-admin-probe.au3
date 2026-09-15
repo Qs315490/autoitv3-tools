@@ -1,24 +1,38 @@
 ; #RequireAdmin 探针（仅 Windows）。
 ;
-; 官方解释器：  AutoIt3.exe docs\require-admin-probe.au3
-; 本工具：      au3 run  docs\require-admin-probe.au3
-; 对照（不提权）：au3 run  docs\require-admin-probe.au3 --no-elevate
+; 三份输出对照着看，判据是**官方的同一份脚本**：
 ;
-; 前两次应当弹一次 UAC，并且 IsAdmin() 与 config\SYSTEM 的读数都是"有权限"；
-; 对照那次不弹窗、IsAdmin()=0、系统配置单元读不开。三行的形状一致就说明
-; "#RequireAdmin 之后以管理员身份跑"与官方一致。
+;   官方解释器：    AutoIt3.exe docs\require-admin-probe.au3    → 弹 UAC
+;   本工具：        au3 run  docs\require-admin-probe.au3        → 弹 UAC
+;   本工具（不提权）：au3 run  docs\require-admin-probe.au3 --no-elevate
+;
+; 前两次的 IsAdmin() 都应当是 1（而且是同一个 API 的答案，不是我们自说自话），
+; 对照那次是 0。@WindowsDir 三行应当完全一样——它是提权后仍然要准确的路径宏。
+;
+; 最后三行看的是 System32\config 这个目录：默认 ACL 里普通用户连列目录/读属性
+; 都没有，管理员有。所以 FileExists/FileGetSize 在前两次应当成功、对照那次应当
+; 失败；FileOpen 这一行**不是**判据——那两个配置单元被内核持有，管理员也打不开，
+; 三行都可能一样。哪一行对不上，把三份输出一起贴出来。
 #RequireAdmin
 
-ConsoleWrite("IsAdmin()=" & IsAdmin() & @CRLF)
-ConsoleWrite("@UserName=" & @UserName & @ComputerName & @CRLF)
+Local $dir = @WindowsDir
+Local $system = $dir & "\System32\config\SYSTEM"
 
-; IsAdmin() 是脚本视角的自述，这里再做一次只有管理员能做到的事作为旁证：
-; 读 System32\config\SYSTEM（默认 ACL 只给 Administrators 与 SYSTEM，
-; 普通用户会拿到拒绝访问）。只读、不改动任何东西。
-Local $fh = FileOpen(@WindowsDir & "\System32\config\SYSTEM", 0)
-Local $state = "denied"
+ConsoleWrite("IsAdmin()=" & IsAdmin() & @CRLF)
+ConsoleWrite("@WindowsDir=" & $dir & @CRLF)
+ConsoleWrite("@UserName=" & @UserName & " @ComputerName=" & @ComputerName & @CRLF)
+
+Local $exists = FileExists($system)
+Local $exists_err = @error
+ConsoleWrite("FileExists(" & $system & ")=" & $exists & " @error=" & $exists_err & @CRLF)
+
+Local $size = FileGetSize($system)
+Local $size_err = @error
+ConsoleWrite("FileGetSize=" & $size & " @error=" & $size_err & @CRLF)
+
+Local $fh = FileOpen($system, 0)
+Local $open_err = @error
 If $fh <> -1 Then
-    $state = "ok"
     FileClose($fh)
 EndIf
-ConsoleWrite("read System32\config\SYSTEM=" & $state & " @error=" & @error & @CRLF)
+ConsoleWrite("FileOpen=" & $fh & " @error=" & $open_err & @CRLF)
