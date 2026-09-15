@@ -399,10 +399,13 @@ impl CommonPlatform {
                 ctx.set_error(0, 0);
                 Value::Int(self.handles.len() as i64)
             }
-            Err(_) => {
-                ctx.set_error(1, 0);
-                Value::Int(-1)
-            }
+            // The help page gives `FileOpen` no `@error` at all — "Failure:
+            // -1 if error occurs" — and the interpreter's own source never
+            // calls `SetError` in it; measured against 3.3.16, a refused open
+            // leaves `@error` at 0 (the reset every builtin gets on entry).
+            // The profile refusing a write *is* this tool's own answer, so
+            // that path keeps a code.
+            Err(_) => Value::Int(-1),
         }
     }
 
@@ -607,7 +610,14 @@ impl CommonPlatform {
             "filegetsize" => {
                 let path = arg_str(args, 0);
                 let unit = arg_str(args, 1).to_ascii_uppercase();
-                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                // "Failure: 0 and sets the @error flag to non-zero"; measured
+                // against 3.3.16, that is `@error` 1 for a file that is not
+                // there (and for one that cannot be read).
+                let Ok(meta) = fs::metadata(&path) else {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                };
+                let size = meta.len();
                 let scaled = match unit.as_str() {
                     "K" | "KB" => size / 1024,
                     "M" | "MB" => size / (1024 * 1024),
@@ -663,12 +673,24 @@ impl CommonPlatform {
                 let path = arg_str(args, 0);
                 match fs::canonicalize(&path) {
                     Ok(p) => Value::Str(p.to_string_lossy().into_owned()),
-                    Err(_) => Value::Str(path),
+                    // "Failure: the parameter and sets the @error flag to 1".
+                    Err(_) => {
+                        ctx.set_error(1, 0);
+                        Value::Str(path)
+                    }
                 }
             }
-            // Short (8.3) names are a Windows concept; the long name is the
-            // closest portable answer.
-            "filegetshortname" => Value::Str(arg_str(args, 0)),
+            // Short (8.3) names are a Windows concept; the Windows layer has
+            // the real `GetShortPathNameW`. The portable answer is the
+            // parameter, which is also the documented failure — with the
+            // `@error` that goes with it.
+            "filegetshortname" => {
+                let path = arg_str(args, 0);
+                if !Path::new(&path).exists() {
+                    ctx.set_error(1, 0);
+                }
+                Value::Str(path)
+            }
             "filedelete" => {
                 if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
@@ -752,8 +774,10 @@ impl CommonPlatform {
             "filegetpos" => {
                 let handle = arg_int(args, 0);
                 if self.entry(handle).is_none() {
+                    // "Failure: 0 and sets the @error flag to non-zero" — not
+                    // `-1`, which is what a bad *handle* looks like elsewhere.
                     ctx.set_error(1, 0);
-                    return Some(Value::Int(-1));
+                    return Some(Value::Int(0));
                 }
                 self.ensure_text(handle);
                 let pos = self.entry(handle).map(|e| e.cursor).unwrap_or(0);
@@ -843,10 +867,16 @@ impl CommonPlatform {
             "filereadtoarray" => {
                 let path = arg_str(args, 0);
                 let Ok(text) = fs::read_to_string(&path) else {
+                    // "1 = Error opening specified file".
                     ctx.set_error(1, 0);
                     return Some(Value::array(vec![Value::Int(0)]));
                 };
                 let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+                if text.is_empty() {
+                    // "2 = Empty file" — the (empty) array still comes back.
+                    ctx.set_error(2, 0);
+                    return Some(Value::array(vec![Value::Int(0)]));
+                }
                 let lines: Vec<Value> = text.lines().map(|l| Value::Str(l.to_string())).collect();
                 let mut out = vec![Value::Int(lines.len() as i64)];
                 out.extend(lines);
@@ -1084,17 +1114,30 @@ impl CommonPlatform {
             }
             "dirgetsize" => {
                 let path = arg_str(args, 0);
+                let dir = Path::new(&path);
+                // "Failure: -1 and sets the @error flag to non-zero if the
+                // path doesn't exist".
+                let missing = !dir.is_dir();
                 // flag 1 asks for the extended array: [size, file count, dir
-                // count], as AutoIt documents.
+                // count], as AutoIt documents. (What the array form answers for
+                // a path that is not there is not documented — it is left at
+                // zeros with the same `@error`.)
                 if arg_int(args, 1) == 1 {
-                    let (size, files, dirs) = Self::dir_stats(Path::new(&path));
+                    let (size, files, dirs) = Self::dir_stats(dir);
+                    if missing {
+                        ctx.set_error(1, 0);
+                    }
                     Value::array(vec![
                         Value::Int(size as i64),
                         Value::Int(files as i64),
                         Value::Int(dirs as i64),
                     ])
                 } else {
-                    Value::Int(Self::dir_size(Path::new(&path)) as i64)
+                    if missing {
+                        ctx.set_error(1, 0);
+                        return Some(Value::Int(-1));
+                    }
+                    Value::Int(Self::dir_size(dir) as i64)
                 }
             }
             "dircopy" | "dirmove" => {
