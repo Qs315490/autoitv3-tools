@@ -18,7 +18,15 @@
 //!
 //! Dialog answers (`InputBox`, `File*Dialog`) come from
 //! [`GuiState::with_answers`]; with none queued they fail like a cancelled
-//! dialog, which is what a real UI-less run would observe.
+//! dialog, which is what a real UI-less run would observe. `MsgBox` takes its
+//! answer from the event queue, defaulting to OK.
+//!
+//! None of them block or show anything, so each dialog the emulation answers is
+//! also reported on stderr — `[winemu] MsgBox(16, "Error", "cannot open input") -> 1`.
+//! Without that line a script that took an error branch and exited looks like it
+//! "just finished", which is the wrong thing for an analysis run to say. A
+//! dialog is usually the only visible reason for such a branch, so it is worth
+//! the noise; repeats of the same dialog are folded.
 
 mod messages;
 
@@ -125,6 +133,10 @@ pub struct GuiState {
     /// The desktop size last seen, so a change can be noticed; `(0, 0)` until
     /// the first GUI call.
     desktop: (i32, i32),
+    /// Dialog notices already reported, so a script that loops on a dialog
+    /// cannot flood stderr — an emulated dialog answers instantly where a real
+    /// one would block on the user.
+    dialogs_seen: std::collections::HashSet<String>,
 }
 
 impl Default for GuiState {
@@ -145,12 +157,27 @@ impl GuiState {
             polls: 0,
             draw_pen: (0, 0),
             desktop: (0, 0),
+            dialogs_seen: std::collections::HashSet::new(),
         }
     }
 
     /// Install a rendering backend.
     pub fn set_backend(&mut self, backend: Box<dyn GuiBackend>) {
         self.backend = backend;
+    }
+
+    /// Report a dialog the emulation answered on the script's behalf.
+    ///
+    /// The emulated dialog never blocks and its text goes nowhere, so a script
+    /// that branched on it looks like it "just finished" — and the message is
+    /// usually the only clue to why. Print it on stderr next to the other
+    /// `[winemu]` notices; repeats of the same dialog are folded, because the
+    /// instant answer means a loop around one would otherwise print without
+    /// bound.
+    fn report_dialog(&mut self, notice: String) {
+        if self.dialogs_seen.insert(notice.clone()) {
+            eprintln!("{notice}");
+        }
     }
 
     /// Seed the event queue `GUIGetMsg` drains.
@@ -1080,30 +1107,48 @@ impl GuiState {
                     .and_then(|i| self.events.remove(i))
                     .map(|e| e.message())
                     .unwrap_or(1);
+                let notice = msgbox_notice(
+                    arg_int(args, 0),
+                    &arg_str(args, 1),
+                    &arg_str(args, 2),
+                    answer,
+                );
+                self.report_dialog(notice);
                 ctx.set_error(0, 0);
                 Value::Int(answer)
             }
             "inputbox" => {
-                let answer = self.answers.pop_front();
-                match answer {
+                let title = arg_str(args, 0);
+                let prompt = arg_str(args, 1);
+                match self.answers.pop_front() {
                     Some(text) => {
+                        let notice =
+                            inputbox_notice(&title, &prompt, &format!("{text:?}"));
+                        self.report_dialog(notice);
                         ctx.set_error(0, 0);
                         Value::Str(text)
                     }
                     None => {
                         // A real dialog with no user: cancelled.
+                        let notice = inputbox_notice(&title, &prompt, "cancelled");
+                        self.report_dialog(notice);
                         ctx.set_error(1, 0);
                         Value::Str(arg_str(args, 2))
                     }
                 }
             }
             "fileopendialog" | "filesavedialog" | "fileselectfolder" => {
+                let title = arg_str(args, 0);
                 match self.answers.pop_front() {
                     Some(path) if !path.is_empty() => {
+                        let notice = file_dialog_notice(name, &title, &format!("{path:?}"));
+                        self.report_dialog(notice);
                         ctx.set_error(0, 0);
                         Value::Str(path)
                     }
                     _ => {
+                        let notice = file_dialog_notice(name, &title, "cancelled");
+                        self.report_dialog(notice);
                         ctx.set_error(1, 0);
                         Value::str("")
                     }
@@ -1547,6 +1592,31 @@ fn arg_str(args: &[Value], i: usize) -> String {
 fn arg_int(args: &[Value], i: usize) -> i64 {
     args.get(i).map(|v| v.to_int()).unwrap_or(0)
 }
+
+/// The `[winemu]` line for a `MsgBox` the emulation answered.
+///
+/// The fields are the ones worth reading back: the flags, the title and the
+/// text (the text is usually the whole reason the script took a branch).
+fn msgbox_notice(flags: i64, title: &str, text: &str, answer: i64) -> String {
+    format!("[winemu] MsgBox({flags}, {title:?}, {text:?}) -> {answer}")
+}
+
+/// The `[winemu]` line for an `InputBox` the emulation answered or cancelled.
+fn inputbox_notice(title: &str, prompt: &str, answer: &str) -> String {
+    format!("[winemu] InputBox({title:?}, {prompt:?}) -> {answer}")
+}
+
+/// The `[winemu]` line for a `FileOpenDialog`/`FileSaveDialog`/
+/// `FileSelectFolder` the emulation answered or cancelled.
+fn file_dialog_notice(name: &str, title: &str, answer: &str) -> String {
+    format!("[winemu] {name}({title:?}) -> {answer}")
+}
+
+// Unit tests live in `tests/unit/` so this file reads as implementation;
+// `#[path]` pulls the file back in as a module, so they can reach private state.
+#[cfg(test)]
+#[path = "../../../tests/unit/winemu_gui.rs"]
+mod tests;
 
 /// AutoIt's `^!+` hotkey notation -> a packed HOTKEY word.
 fn parse_hotkey(s: &str) -> u16 {
