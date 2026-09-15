@@ -201,6 +201,31 @@ pub struct CommonPlatform {
     net: NetworkService,
 }
 
+/// The Windows error code an I/O failure would carry, for `@extended`.
+///
+/// AutoIt leaves `@error` alone in the functions whose help page does not
+/// document one, but the OS error still reaches the script through `@extended`
+/// (measured: `FileOpen` on a path that is not there answers `@extended` 2).
+/// On Windows that is the code the API itself returned; elsewhere the host's
+/// error kind is mapped to the closest Win32 code, so an emulated run reports
+/// what a Windows run would.
+fn win32_error(err: &std::io::Error) -> i64 {
+    #[cfg(windows)]
+    {
+        i64::from(err.raw_os_error().unwrap_or(0))
+    }
+    #[cfg(not(windows))]
+    {
+        // ERROR_FILE_NOT_FOUND, ERROR_ACCESS_DENIED, ERROR_FILE_EXISTS.
+        match err.kind() {
+            std::io::ErrorKind::NotFound => 2,
+            std::io::ErrorKind::PermissionDenied => 5,
+            std::io::ErrorKind::AlreadyExists => 80,
+            _ => 0,
+        }
+    }
+}
+
 impl Default for CommonPlatform {
     fn default() -> Self {
         Self::new()
@@ -402,10 +427,14 @@ impl CommonPlatform {
             // The help page gives `FileOpen` no `@error` at all — "Failure:
             // -1 if error occurs" — and the interpreter's own source never
             // calls `SetError` in it; measured against 3.3.16, a refused open
-            // leaves `@error` at 0 (the reset every builtin gets on entry).
+            // leaves `@error` at 0 (the reset every builtin gets on entry)
+            // while the OS error lands in `@extended` (2 for a missing file).
             // The profile refusing a write *is* this tool's own answer, so
-            // that path keeps a code.
-            Err(_) => Value::Int(-1),
+            // that path keeps `@error`.
+            Err(e) => {
+                ctx.set_error(0, win32_error(&e));
+                Value::Int(-1)
+            }
         }
     }
 
@@ -536,8 +565,11 @@ impl CommonPlatform {
         }
 
         let handle = arg_int(args, 0);
+        // "Failure: 0 if file not opened in writemode, file is read only, or
+        // file cannot otherwise be written to" — and no `@error` in the help
+        // page (measured: 0 with `@error` 0 for a bad handle and for a handle
+        // opened for reading).
         let Some(e) = self.entry_mut(handle) else {
-            ctx.set_error(1, 0);
             return Value::Int(0);
         };
         if e.access == Access::Read {
@@ -601,24 +633,29 @@ impl CommonPlatform {
             // ---------------- files ----------------
             "fileopen" => self.file_open(args, ctx),
             "fileclose" => {
+                // "Success: 1. Failure: 0 if the filehandle is invalid" — with
+                // no `@error` in the help page, and measured 0 on an invalid
+                // handle.
                 let handle = arg_int(args, 0);
                 if handle >= 1 && (handle as usize) <= self.handles.len() {
                     self.handles[handle as usize - 1] = None;
                     ctx.set_error(0, 0);
                     Value::Int(1)
                 } else {
-                    ctx.set_error(1, 0);
                     Value::Int(0)
                 }
             }
             "fileflush" => {
+                // "Success: True if the buffer was flushed (or did not need to
+                // be flushed). Failure: False." — a boolean, and no `@error`
+                // (measured: `FileFlush` on an invalid handle is `False` with
+                // `@error` 0).
                 let handle = arg_int(args, 0);
                 let ok = self
                     .entry_mut(handle)
                     .map(|e| e.file.flush().is_ok())
                     .unwrap_or(false);
-                ctx.set_error(if ok { 0 } else { 1 }, 0);
-                Value::Int(i64::from(ok))
+                Value::Bool(ok)
             }
             "fileread" => self.file_read(args, ctx),
             "filereadline" => self.file_read_line(args, ctx),
@@ -637,6 +674,11 @@ impl CommonPlatform {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 };
+                // "Does not work on directories" — measured: a directory
+                // answers 0 with `@error` 0, not an error.
+                if meta.is_dir() {
+                    return Some(Value::Int(0));
+                }
                 let size = meta.len();
                 let scaled = match unit.as_str() {
                     "K" | "KB" => size / 1024,
@@ -809,12 +851,14 @@ impl CommonPlatform {
                 // in 3.3 ("Sets the current file position"), and the offset may
                 // be negative. Origin: `$FILE_BEGIN` (0, what a two-argument
                 // call means), `$FILE_CURRENT` (1) or `$FILE_END` (2).
+                // "Success: True if the operation succeeded. Failure: False"
+                // — a boolean, and no `@error` of its own (measured: an invalid
+                // handle is `False` with `@error` 0).
                 let handle = arg_int(args, 0);
                 let offset = arg_int(args, 1);
                 let origin = arg_int(args, 2);
                 if self.entry(handle).is_none() {
-                    ctx.set_error(1, 0);
-                    return Some(Value::Int(0));
+                    return Some(Value::Bool(false));
                 }
                 if self.entry(handle).is_some_and(|e| e.binary) {
                     self.ensure_bytes(handle);
@@ -841,8 +885,7 @@ impl CommonPlatform {
                 if target < 0 {
                     // `fseek` refuses a position before the start of the file,
                     // and the help page answers False.
-                    ctx.set_error(1, 0);
-                    return Some(Value::Int(0));
+                    return Some(Value::Bool(false));
                 }
                 // A position past the end is not clamped: `fseek` allows it and
                 // `FileGetPos` reports it back. The readers clamp when they take
@@ -851,17 +894,17 @@ impl CommonPlatform {
                     e.cursor = target as usize;
                 }
                 ctx.set_error(0, 0);
-                Value::Int(1)
+                Value::Bool(true)
             }
             "filesetend" => {
+                // "Success: True if the operation succeeded. Failure: False."
                 if !ctx.effect_allowed(EffectKind::FileWrite) {
                     ctx.set_error(1, 0);
-                    return Some(Value::Int(0));
+                    return Some(Value::Bool(false));
                 }
                 let handle = arg_int(args, 0);
                 if self.entry(handle).is_none() {
-                    ctx.set_error(1, 0);
-                    return Some(Value::Int(0));
+                    return Some(Value::Bool(false));
                 }
                 self.ensure_text(handle);
                 let byte_len = self
@@ -888,9 +931,11 @@ impl CommonPlatform {
                 let bytes = match args.first() {
                     // A handle reads through the already-open file.
                     Some(v) if v.is_number() => {
+                        // `FileGetEncoding` has no `@error` in its help page;
+                        // measured: -1 with `@error` 0 for a path that is not
+                        // there.
                         let handle = v.to_int();
                         let Some(e) = self.entry(handle) else {
-                            ctx.set_error(1, 0);
                             return Some(Value::Int(-1));
                         };
                         let mut buf = Vec::new();
@@ -901,31 +946,28 @@ impl CommonPlatform {
                     }
                     Some(v) => match fs::read(v.to_autoit_string()) {
                         Ok(b) => b,
-                        Err(_) => {
-                            ctx.set_error(1, 0);
-                            return Some(Value::Int(-1));
-                        }
+                        Err(_) => return Some(Value::Int(-1)),
                     },
-                    None => {
-                        ctx.set_error(1, 0);
-                        return Some(Value::Int(-1));
-                    }
+                    None => return Some(Value::Int(-1)),
                 };
                 ctx.set_error(0, 0);
                 Value::Int(detect_encoding(&bytes))
             }
             "filereadtoarray" => {
                 let path = arg_str(args, 0);
+                // Both failures answer the *scalar* 0, not an empty array
+                // (measured: a script that subscripts either result stops with
+                // "Subscript used on non-accessible variable").
                 let Ok(text) = fs::read_to_string(&path) else {
                     // "1 = Error opening specified file".
                     ctx.set_error(1, 0);
-                    return Some(Value::array(vec![Value::Int(0)]));
+                    return Some(Value::Int(0));
                 };
                 let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
                 if text.is_empty() {
-                    // "2 = Empty file" — the (empty) array still comes back.
+                    // "2 = Empty file".
                     ctx.set_error(2, 0);
-                    return Some(Value::array(vec![Value::Int(0)]));
+                    return Some(Value::Int(0));
                 }
                 let lines: Vec<Value> = text.lines().map(|l| Value::Str(l.to_string())).collect();
                 let mut out = vec![Value::Int(lines.len() as i64)];
@@ -938,7 +980,11 @@ impl CommonPlatform {
                 let (dir, mask) = split_search_pattern(&pattern);
                 let matches = search_files(&dir, &mask);
                 if matches.is_empty() {
-                    ctx.set_error(1, 0);
+                    // "Failure: -1 if nothing is found. The value of the @error
+                    // flag is set to 1 only if the Folder is empty" — and
+                    // measured against 3.3.16, `-1` comes back with `@error` 0
+                    // whether the directory is empty, holds no match, or is not
+                    // there at all.
                     return Some(Value::Int(-1));
                 }
                 self.handles.push(Some(Handle::Search(SearchEntry {
