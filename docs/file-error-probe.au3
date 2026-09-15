@@ -11,8 +11,15 @@
 ; "设成 1"。末尾几条是坏句柄/只读句柄——万一官方在那种情况下直接报错终止，前面的
 ; 行也已经打完了。
 
+; 结果攒起来用一个 MsgBox 弹出来：AutoIt3.exe 是 GUI 子系统程序，从控制台启动时
+; 它没有控制台，ConsoleWrite 看不到（只有 SciTE 那样自己建管道的宿主收得到）。
+; ConsoleWrite 仍然保留，方便在 SciTE 里直接抄文本。
+Global $Report = ""
+
 Func P($label, $value, $err, $ext)
-    ConsoleWrite($label & " => [" & $value & "] @error=" & $err & " @extended=" & $ext & @CRLF)
+    Local $line = $label & " => [" & $value & "] @error=" & $err & " @extended=" & $ext
+    Global $Report = $Report & $line & @CRLF
+    ConsoleWrite($line & @CRLF)
 EndFunc
 
 Local $dir = @TempDir & "\au3-file-probe"
@@ -132,3 +139,5 @@ Local $h = FileOpen($text, 0)
 $v = FileWrite($h, "x")
 P("FileWrite(read-only handle)", $v, @error, @extended)
 FileClose($h)
+
+MsgBox(64, "file-error-probe", $Report)

@@ -15,24 +15,36 @@
 ; 三行都可能一样。哪一行对不上，把三份输出一起贴出来。
 #RequireAdmin
 
+; 结果攒起来用一个 MsgBox 弹出来：AutoIt3.exe 是 GUI 子系统程序，从控制台启动时
+; 它**没有**控制台，ConsoleWrite 看不到（只有 SciTE 那样自己建管道的宿主收得到）；
+; 提权副本更是连父进程的管道都继承不到，而对话框与这些都无关。
+Global $Report = ""
+
+Func Say($line)
+    Global $Report = $Report & $line & @CRLF
+    ConsoleWrite($line & @CRLF)
+EndFunc
+
 Local $dir = @WindowsDir
 Local $system = $dir & "\System32\config\SYSTEM"
 
-ConsoleWrite("IsAdmin()=" & IsAdmin() & @CRLF)
-ConsoleWrite("@WindowsDir=" & $dir & @CRLF)
-ConsoleWrite("@UserName=" & @UserName & " @ComputerName=" & @ComputerName & @CRLF)
+Say("IsAdmin()=" & IsAdmin())
+Say("@WindowsDir=" & $dir)
+Say("@UserName=" & @UserName & " @ComputerName=" & @ComputerName)
 
 Local $exists = FileExists($system)
 Local $exists_err = @error
-ConsoleWrite("FileExists(" & $system & ")=" & $exists & " @error=" & $exists_err & @CRLF)
+Say("FileExists(" & $system & ")=" & $exists & " @error=" & $exists_err)
 
 Local $size = FileGetSize($system)
 Local $size_err = @error
-ConsoleWrite("FileGetSize=" & $size & " @error=" & $size_err & @CRLF)
+Say("FileGetSize=" & $size & " @error=" & $size_err)
 
 Local $fh = FileOpen($system, 0)
 Local $open_err = @error
 If $fh <> -1 Then
     FileClose($fh)
 EndIf
-ConsoleWrite("FileOpen=" & $fh & " @error=" & $open_err & @CRLF)
+Say("FileOpen=" & $fh & " @error=" & $open_err)
+
+MsgBox(64, "#RequireAdmin probe", $Report)
