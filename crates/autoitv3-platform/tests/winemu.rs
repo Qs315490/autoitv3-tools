@@ -1675,6 +1675,23 @@ EndFunc
 }
 
 #[test]
+fn isobj_and_objname_agree_with_the_emulated_com() {
+    // `ObjCreate` really does hand out an object for the well-known ProgIDs, so
+    // `IsObj` has to say `1` and `ObjName` has to echo the ProgID — otherwise a
+    // script that guards on `IsObj` takes the "no COM here" path.
+    let body = r#"
+Local $d = ObjCreate("Scripting.Dictionary")
+Local $bad = ObjCreate("NoSuch.ProgID.Here")
+Local $e = @error
+Return IsObj($d) & ":" & IsObj($bad) & ":" & IsObj(0) & ":" & ObjName($d) & ":" & $e
+"#;
+    assert_eq!(
+        run(win10(), body).to_autoit_string(),
+        "1:0:0:Scripting.Dictionary:1"
+    );
+}
+
+#[test]
 fn unknown_progid_still_fails_honestly() {
     let body = r#"
 Local $o = ObjCreate("NoSuch.ProgID.Here")

@@ -225,7 +225,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | Windows 文件 | `FileGetVersion`（解析 PE `RT_VERSION`）、`FileCreateShortcut`/`FileGetShortcut`（读写真实 `.lnk` Shell Link）、`FileCreateNTFSLink`、`FileRecycle`/`FileRecycleEmpty`（落到 `.au3_recycle`，可用 `with_recycle_dir()` 改名）、`FileInstall`（磁盘文件或已加载模块的 `RT_RCDATA` 资源） |
 | 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`EnumWindows`/`EnumChildWindows`/`EnumThreadWindows` 按 `with_scripted_windows()` 的句柄表把回调排入队列，运行时在 DllCall 返回后真实执行脚本函数（不重入解释器）；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
-| COM | **伪 COM**：`ObjCreate` 对内建 ProgID 表返回真实行为对象——`Scripting.Dictionary`（Add/Exists/Item/Count/Keys/Items/Remove/RemoveAll）、`WScript.Shell`（RegRead/RegWrite/RegDelete 桥接仿真注册表、ExpandEnvironmentStrings、Run）、`Scripting.FileSystemObject`（FileExists/DriveExists/路径运算/GetSpecialFolder）；表外 ProgID 与 `ObjCreateInterface`/`ObjEvent`/`ObjGet`/`ObjName` 维持 `@error = 1` |
+| COM | **伪 COM**：`ObjCreate` 对内建 ProgID 表返回真实行为对象——`Scripting.Dictionary`（Add/Exists/Item/Count/Keys/Items/Remove/RemoveAll）、`WScript.Shell`（RegRead/RegWrite/RegDelete 桥接仿真注册表、ExpandEnvironmentStrings、Run）、`Scripting.FileSystemObject`（FileExists/DriveExists/路径运算/GetSpecialFolder）；表外 ProgID 与 `ObjCreateInterface`/`ObjEvent`/`ObjGet` 维持 `@error = 1`；`IsObj` 对前者返回 `1`、`ObjName` 回显 ProgID |
 | GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*`/`$TVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui-model`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞；**答过的对话框会往 stderr 打一行** `[winemu] MsgBox(...) -> 1`（模拟框不显示文本，不报就等于把"脚本走了错误分支"藏起来了），重复的只报一次 |
 
 **选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
@@ -292,7 +292,8 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
 **边界仍然存在，而且是有意的**：仿真层不是 PE 加载器，没有 COM、没有窗口管理器、
 不调用真实 DLL。因此
 - 未列举的 `DllCall` 置 `@error = 1`、返回 `0`，把决定权交回脚本；`DllCallAddress` 同理；
-- COM 内建函数存在但**可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
+- COM 只有一张内建 ProgID 表（`ObjCreate` 的三个 + `IsObj`/`ObjName`），表外的一律
+  **可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
 - GUI 已由 `winemu/gui/` 的**无头语义**回答（不再是 `undefined function`）；默认后端
   **不渲染**。可选 crate `autoitv3-gui-egui`（feature `gui-egui`）提供**离屏渲染 + PNG
   截图**；`window` feature 另有**实时窗口**后端，点击/输入会回灌 `GUIGetMsg`/`GUICtrlRead`；
