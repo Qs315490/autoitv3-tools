@@ -1355,6 +1355,37 @@ EndFunc"#;
 }
 
 #[test]
+fn concatenating_two_binaries_joins_their_bytes() {
+    // The crypto UDFs build an HMAC input as `$iv & $ciphertext`; joining the
+    // `0x…` spellings instead would hash the wrong bytes entirely.
+    let src = r#"Func F()
+    Local $a = Binary("0x0102"), $b = Binary("0x0304")
+    Local $c = $a & $b
+    Return IsBinary($c) & "|" & BinaryLen($c) & "|" & String($c)
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "True|4|0x01020304");
+}
+
+#[test]
+fn concatenating_a_binary_with_text_still_spells_it_out() {
+    // Only two binaries join byte-wise; a string operand keeps the `0x…` text
+    // form, which is what scripts that build log lines expect.
+    let src = r#"Func F()
+    Return Binary("0x4142") & "!"
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "0x4142!");
+}
+
+#[test]
+fn binarymid_without_a_count_reads_to_the_end() {
+    let src = r#"Func F()
+    Local $b = Binary("0x0001020304050607")
+    Return BinaryMid($b, 5) & "|" & BinaryMid($b, 5, 2) & "|" & BinaryLen(BinaryMid($b, 5, 0))
+EndFunc"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "0x04050607|0x0405|0");
+}
+
+#[test]
 fn binaries_compare_by_their_bytes() {
     let src = r#"Func F()
     Local $same = (Binary("0x4142") == Binary("0x4142"))

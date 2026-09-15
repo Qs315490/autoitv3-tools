@@ -583,7 +583,14 @@ pub(crate) fn call(
                 _ => Vec::new(),
             };
             let start = args.get(1).map(|v| v.to_int()).unwrap_or(1).max(1) as usize - 1;
-            let len = args.get(2).map(|v| v.to_int()).unwrap_or(1).max(0) as usize;
+            // Like `StringMid`, a missing count means "to the end"; a count of
+            // 0 really is zero bytes.
+            let count = args.get(2).map(|v| v.to_int()).unwrap_or(-1);
+            let len = if count < 0 {
+                bytes.len().saturating_sub(start)
+            } else {
+                count as usize
+            };
             let end = (start + len).min(bytes.len());
             let slice = if start < bytes.len() { bytes[start..end].to_vec() } else { Vec::new() };
             Value::Binary(Rc::new(slice))

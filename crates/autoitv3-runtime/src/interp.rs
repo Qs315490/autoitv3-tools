@@ -2473,7 +2473,17 @@ fn append_text(slot: &mut Value, text: &str) {
 fn apply_arith(l: &Value, r: &Value, op: &BinaryOp) -> Value {
     use BinaryOp::*;
     match op {
-        Concat => Value::Str(format!("{}{}", l.to_autoit_string(), r.to_autoit_string())),
+        // Two binaries concatenate byte-wise, not as their `0x…` spellings:
+        // the crypto UDFs build their HMAC input as `$iv & $ciphertext`.
+        Concat => match (l, r) {
+            (Value::Binary(a), Value::Binary(b)) => {
+                let mut out = Vec::with_capacity(a.len() + b.len());
+                out.extend_from_slice(a);
+                out.extend_from_slice(b);
+                Value::Binary(Rc::new(out))
+            }
+            _ => Value::Str(format!("{}{}", l.to_autoit_string(), r.to_autoit_string())),
+        },
         BitAnd => {
             // `&` between non-strings is bitwise AND in AutoIt.
             if matches!(l, Value::Str(_)) || matches!(r, Value::Str(_)) {
