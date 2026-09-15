@@ -1,14 +1,15 @@
-; 文件/目录族出错时的 @error / @extended，用来和官方解释器逐行对齐。
+; 文件/目录族出错（以及 FileWrite 成功时的返回值）在官方与本工具下逐行对照。
 ;
 ;   官方：    AutoIt3_x64.exe docs\file-error-probe.au3
-;             （AutoIt3.exe 是 32 位，System32 会被重定向到 SysWOW64；这个探针只用
-;              @TempDir，不碰 System32，但 x64 那份的输出与我们的可比性最好）
+;             AutoIt3.exe 是 32 位，System32 会被重定向到 SysWOW64；这份探针只用
+;             @TempDir，但 x64 那份与我们的可比性最好。
 ;   本工具：  au3 run docs\file-error-probe.au3 --faithful
-;             （探针要建两个临时文件，默认的确定性 profile 会拒绝写入）
+;             （探针要建几个临时文件，默认的确定性 profile 会拒绝写入）
 ;
-; 两边的行数和标签应当完全对应，逐行比 @error/@extended；哪一行不一样就是哪儿需要改。
-; 帮助页没有写 @error 的函数（FileOpen/FileClose/FileWrite/FileDelete/…）在这里正好
-; 能看出来官方到底是"不设置"还是"设成 1"。
+; 两边的标签应当一一对应，逐行比 value/@error/@extended。帮助页没有写 @error 的函数
+; （FileOpen/FileClose/FileWrite/FileDelete/…）在这里正好能看出官方是"根本不设置"还是
+; "设成 1"。末尾几条是坏句柄/只读句柄——万一官方在那种情况下直接报错终止，前面的
+; 行也已经打完了。
 
 Func P($label, $value, $err, $ext)
     ConsoleWrite($label & " => [" & $value & "] @error=" & $err & " @extended=" & $ext & @CRLF)
@@ -19,13 +20,30 @@ DirCreate($dir)
 Local $missing = $dir & "\no-such-file.txt"
 Local $empty = $dir & "\empty.txt"
 Local $text = $dir & "\text.txt"
+Local $named = $dir & "\named.txt"
 FileDelete($empty)
 FileDelete($text)
-FileWrite($empty, "")
-FileWrite($text, "one" & @CRLF & "two" & @CRLF)
+FileDelete($named)
 
 Local $v
 
+; ---- 建两个夹具文件：顺便看 FileWrite 用文件名时的返回值 ----
+$v = FileWrite($empty, "")
+P("FileWrite(empty-file, empty)", $v, @error, @extended)
+
+$v = FileWrite($text, "one" & @CRLF & "two" & @CRLF)
+P("FileWrite(text-file, 10 bytes)", $v, @error, @extended)
+
+$v = FileWriteLine($named, "line")
+P("FileWriteLine(new-file, line)", $v, @error, @extended)
+
+$v = FileWriteLine($named, "already" & @CRLF)
+P("FileWriteLine(ends in CRLF)", $v, @error, @extended)
+
+$v = FileGetSize($named)
+P("FileGetSize(named)", $v, @error, @extended)
+
+; ---- 读查询 ----
 $v = FileExists($missing)
 P("FileExists(missing)", $v, @error, @extended)
 
@@ -62,6 +80,33 @@ P("FileGetEncoding(missing)", $v, @error, @extended)
 $v = FileOpen($missing, 0)
 P("FileOpen(missing)", $v, @error, @extended)
 
+; ---- 目录与查找 ----
+$v = DirGetSize($missing)
+P("DirGetSize(missing)", $v, @error, @extended)
+
+Local $a = DirGetSize($missing, 1)
+P("DirGetSize(missing,1)[0]", $a[0], @error, @extended)
+
+$v = DirGetSize($dir)
+P("DirGetSize(dir)", $v, @error, @extended)
+
+$v = FileFindFirstFile($dir & "\nothing-*.txt")
+P("FileFindFirstFile(no match)", $v, @error, @extended)
+
+$v = FileFindFirstFile($missing & "\*.txt")
+P("FileFindFirstFile(missing dir)", $v, @error, @extended)
+
+$v = FileFindFirstFile($missing)
+P("FileFindFirstFile(missing path)", $v, @error, @extended)
+
+; ---- 数组 ----
+$a = FileReadToArray($empty)
+P("FileReadToArray(empty)[0]", $a[0], @error, @extended)
+
+$a = FileReadToArray($missing)
+P("FileReadToArray(missing)[0]", $a[0], @error, @extended)
+
+; ---- 坏句柄 / 只读句柄（放最后）----
 $v = FileClose(9999)
 P("FileClose(9999)", $v, @error, @extended)
 
@@ -83,26 +128,7 @@ P("FileReadLine(9999)", $v, @error, @extended)
 $v = FileWrite(9999, "x")
 P("FileWrite(9999)", $v, @error, @extended)
 
-Local $a = FileReadToArray($empty)
-P("FileReadToArray(empty)[0]", $a[0], @error, @extended)
-
-$a = FileReadToArray($missing)
-P("FileReadToArray(missing)[0]", $a[0], @error, @extended)
-
-$v = DirGetSize($missing)
-P("DirGetSize(missing)", $v, @error, @extended)
-
-$a = DirGetSize($missing, 1)
-P("DirGetSize(missing,1)[0]", $a[0], @error, @extended)
-
-$v = DirGetSize($dir)
-P("DirGetSize(dir)", $v, @error, @extended)
-
-$v = FileFindFirstFile($dir & "\nothing-*.txt")
-P("FileFindFirstFile(empty match)", $v, @error, @extended)
-
-$v = FileFindFirstFile($missing & "\*.txt")
-P("FileFindFirstFile(missing dir)", $v, @error, @extended)
-
-$v = FileFindFirstFile($missing)
-P("FileFindFirstFile(missing path)", $v, @error, @extended)
+Local $h = FileOpen($text, 0)
+$v = FileWrite($h, "x")
+P("FileWrite(read-only handle)", $v, @error, @extended)
+FileClose($h)

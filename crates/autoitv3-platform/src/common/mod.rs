@@ -508,37 +508,57 @@ impl CommonPlatform {
     }
 
     fn file_write(&mut self, args: &[Value], line_mode: bool, ctx: &mut dyn HostContext) -> Value {
-        let handle = arg_int(args, 0);
         let text = arg_str(args, 1);
+        // `FileWriteLine` adds a DOS linefeed — "If the line does NOT end in
+        // @CR or @LF then a @CRLF will be automatically added" — which covers
+        // the empty line too. `FileWrite` writes its text as it is.
+        let payload = if line_mode && !text.ends_with(['\r', '\n']) {
+            format!("{text}\r\n")
+        } else {
+            text
+        };
+
+        // A *string* in place of a handle names the file: "the file will be
+        // opened and closed during the function call ... filename will be
+        // created if it does not already exist", in append mode. The help
+        // page's own example writes its file that way.
+        if let Some(Value::Str(path)) = args.first() {
+            if !ctx.effect_allowed(EffectKind::FileWrite) {
+                ctx.set_error(1, 0);
+                return Value::Int(0);
+            }
+            let written = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path.as_str())
+                .and_then(|mut file| file.write_all(payload.as_bytes()));
+            return Value::Int(i64::from(written.is_ok()));
+        }
+
+        let handle = arg_int(args, 0);
         let Some(e) = self.entry_mut(handle) else {
             ctx.set_error(1, 0);
             return Value::Int(0);
         };
         if e.access == Access::Read {
-            ctx.set_error(1, 0);
             return Value::Int(0);
         }
         if !ctx.effect_allowed(EffectKind::FileWrite) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
-        // `FileWriteLine` terminates the line with @CRLF, like AutoIt.
-        let payload = if line_mode {
-            format!("{text}\r\n")
-        } else {
-            text
-        };
         match e.file.write_all(payload.as_bytes()).and_then(|()| e.file.flush()) {
             Ok(()) => {
-                let n = payload.len() as i64;
                 self.invalidate_text(handle);
                 ctx.set_error(0, 0);
-                Value::Int(n)
+                // "Success: 1" — the help page, and `FileWriteLine` in the
+                // interpreter's source, which returns the default 1 rather than
+                // the number of bytes it put down.
+                Value::Int(1)
             }
-            Err(_) => {
-                ctx.set_error(1, 0);
-                Value::Int(0)
-            }
+            // "Failure: 0 ..." — with no `@error` documented, and none set in
+            // the interpreter's source either.
+            Err(_) => Value::Int(0),
         }
     }
 
@@ -1397,7 +1417,9 @@ impl Platform for CommonPlatform {
 /// The argument positions that name a file or directory, per function.
 fn path_arg_indices(key: &str) -> &'static [usize] {
     match key {
-        "fileopen" | "fileexists" | "filegetsize" | "filegettime" | "filegetattrib"
+        // `FileWrite`/`FileWriteLine` take a handle *or* a filename; when a
+        // path, it is this argument that has to be mapped.
+        "filewrite" | "filewriteline" | "fileopen" | "fileexists" | "filegetsize" | "filegettime" | "filegetattrib"
         | "filegetlongname" | "filegetshortname" | "filegetencoding" | "filereadtoarray"
         | "filefindfirstfile" | "filesettime" | "filesetattrib" | "filechangedir"
         | "filedelete" | "dircreate" | "dirremove" | "dirgetsize" | "iniread" | "iniwrite"

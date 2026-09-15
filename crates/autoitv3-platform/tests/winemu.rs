@@ -180,11 +180,23 @@ fn per_user_macros_share_one_profile() {
         text(win10(), "Return @AppDataDir"),
         format!(r"{profile}\AppData\Roaming")
     );
-    assert_eq!(
-        text(win10(), "Return @TempDir"),
-        format!(r"{profile}\AppData\Local\Temp")
-    );
     assert!(text(win10(), "Return @StartupDir").ends_with(r"Start Menu\Programs\Startup"));
+}
+
+#[test]
+fn the_temp_dir_macro_names_a_directory_the_host_actually_has() {
+    // `@TempDir` is where a script writes its scratch files, so it is the one
+    // directory macro that answers the *host's* temporary directory rather than
+    // a spot in the emulated Windows layout — under the emulated drive, so it
+    // still maps back to the same place.
+    let seen = text(win10(), "Return @TempDir");
+    let host = std::env::temp_dir();
+    let mapped = autoitv3_platform::PathMap::host_root().to_host(&seen);
+    let flatten = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_string();
+    assert!(
+        mapped.as_deref() == Some(host.as_path()) || flatten(&seen) == flatten(&host.to_string_lossy()),
+        "got {seen:?}, host {host:?}"
+    );
 }
 
 #[test]
