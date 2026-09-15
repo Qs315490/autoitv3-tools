@@ -40,6 +40,8 @@
           registry.rs   RegistryStore 接口 + FileRegistry（默认，落盘 .au3_registry）
                         + MemoryRegistry（可选，不落盘）
           compress.rs / crypto.rs  LZNT1 解压、CryptoAPI 仿真
+          bcrypt.rs     bcrypt.dll（CNG）仿真：算法提供者、哈希/HMAC、对称密钥、
+                        PBKDF2、GenRandom、RSA 私钥导入与解密（用 RustCrypto 实现）
           shell.rs      ShellExecute*/RunAs*
           gui/          GUI 无头语义：messages.rs（$EM_*/$LVM_* 默认）、
                         mod.rs（165 个 GUI 函数的 AutoIt 语义；控件模型与
@@ -152,7 +154,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`、`@AutoItX64` |
 | 目录 | `WindowsPaths` 给出传统 `C:` 布局：`@WindowsDir`、`@SystemDir`、`@ProgramFilesDir`、`@HomeDrive`、`@TempDir`、`@AppDataDir`、`@LocalAppDataDir`、`@UserProfileDir`、`@StartMenuDir`、`@StartupDir`…… |
 | 原生结构 | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`/`IsDllStruct`——定义解析器支持 `struct;…;endstruct`、常见整型/浮点/指针、`char`/`wchar` 数组、无名段、`align N`；句柄指向一块本层持有的字节缓冲 |
-| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`：版本/系统信息（`GetVersionExW/A`、`RtlGetVersion`、`GetSystemInfo`）、资源链（`GetModuleHandle*`/`FindResource*`/`SizeofResource`/`LoadResource`/`LockResource`/`RtlMoveMemory`）、模块与内存（`LoadLibrary*`/`GetProcAddress`/`GetModuleFileName*`、`VirtualAlloc`/`HeapAlloc` 等）、**内存沙箱文件**（`CreateFile*`/`ReadFile`/`WriteFile`/`GetFileSize`/`CloseHandle`，`with_file()` 注入）、CRT 字符串（`lstrlen*`/`lstrcpy*`/`lstrcat*`）、脚本化 `EnumWindows` 家族、CryptoAPI 与 LZNT1 解压。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
+| 原生调用 | `DllCall(dll, rettype, func, type, arg…)`：版本/系统信息（`GetVersionExW/A`、`RtlGetVersion`、`GetSystemInfo`）、资源链（`GetModuleHandle*`/`FindResource*`/`SizeofResource`/`LoadResource`/`LockResource`/`RtlMoveMemory`）、模块与内存（`LoadLibrary*`/`GetProcAddress`/`GetModuleFileName*`、`VirtualAlloc`/`HeapAlloc` 等）、**内存沙箱文件**（`CreateFile*`/`ReadFile`/`WriteFile`/`GetFileSize`/`CloseHandle`，`with_file()` 注入）、CRT 字符串（`lstrlen*`/`lstrcpy*`/`lstrcat*`）、脚本化 `EnumWindows` 家族、CryptoAPI、**bcrypt.dll（CNG）** 与 LZNT1 解压。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
 | 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存；写先在内存累积（dirty 标记），store drop 或显式 `flush()` 时一次落盘；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
 | 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
 | 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFileSystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配）；网络映射 `DriveMapAdd`/`DriveMapDel`/`DriveMapGet` 与 `DriveSetLabel` 维护本层的映射/卷标状态 |
