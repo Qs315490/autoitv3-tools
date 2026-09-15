@@ -689,20 +689,22 @@ fn a_write_after_a_seek_lands_at_the_cursor() {
     Local $at = FileGetPos($h)
     FileClose($h)
     Local $h2 = FileOpen("{p}", 1)
+    Local $append_start = FileGetPos($h2)
     FileSetPos($h2, 0, 0)
     FileWrite($h2, "Z")
     FileClose($h2)
     Local $h3 = FileOpen("{p}", 0)
     Local $all = FileRead($h3)
     FileClose($h3)
-    Return $all & ":" & $moved & ":" & $at"#,
+    Return $all & ":" & $moved & ":" & $at & ":" & $append_start"#,
         p = path.display()
     );
-    // `fputs` writes where `fseek` left the position and the position then sits
-    // past what was written; an append handle ignores the position, exactly as
-    // C's `"a+b"` does.
-    assert_eq!(text(&body), "abXdefZ:True:3");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "abXdefZ");
+    // `fputs` writes where `fseek` left the position, and the position then sits
+    // past what was written. `$FO_APPEND` is *not* C's `"a+b"`: it merely opens
+    // with the position at the end (6 here), so the later `FileSetPos(0, 0)`
+    // makes its write overwrite the first byte — measured on the official.
+    assert_eq!(text(&body), "ZbXdef:True:3:6");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "ZbXdef");
 }
 
 #[test]

@@ -171,14 +171,16 @@ $x = @extended
 Local $at = FileGetPos($sh)
 FileClose($sh)
 Local $ah = FileOpen($sp, 1)
+Local $append_start = FileGetPos($ah)
 FileSetPos($ah, 0, 0)
 FileWrite($ah, "Z")
 FileClose($ah)
 Local $rh = FileOpen($sp, 0)
 Local $content = FileRead($rh)
 FileClose($rh)
-; 期望：文件成了 abXdefZ（X 写在位置 2，Z 是追加模式写的末尾），写完后位置 3。
-P("seek(2)+write(X)+append(Z) pos=" & $at, $content, $e, $x)
+; 期望：位置 2 写 X 后是 abXdef、位置 3；$FO_APPEND 打开的句柄**起点在末尾**
+; （start=6）但把位置挪到 0 之后照样写在 0 —— 于是 Z 覆盖首字节，文件成 ZbXdef。
+P("seek(2)+write(X)+append(Z) pos=" & $at & " start=" & $append_start, $content, $e, $x)
 
 ; ---- 坏句柄 / 只读句柄（放最后）----
 $v = FileClose(9999)
