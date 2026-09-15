@@ -143,6 +143,15 @@ impl WindowsPaths {
         format!(r"{}\Microsoft\Windows\History", self.local_appdata())
     }
 
+    /// The drive Windows is installed on, as `@SystemDrive` spells it (`C:`).
+    pub fn system_drive(&self) -> String {
+        let mut chars = self.windows_dir.chars();
+        match (chars.next(), chars.next()) {
+            (Some(letter), Some(':')) => format!("{}:", letter.to_ascii_uppercase()),
+            _ => self.home_drive.clone(),
+        }
+    }
+
     /// The UNC home share, e.g. `\\COMPUTER\User`.
     pub fn home_share(&self) -> String {
         format!(r"\\{}\{}", self.computer_name, self.user_name)

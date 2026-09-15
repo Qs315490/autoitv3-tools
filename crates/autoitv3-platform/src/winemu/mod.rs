@@ -1163,19 +1163,35 @@ impl WindowsEmulation {
             .find(|d| d.letter.to_ascii_uppercase() == letter)
     }
 
-    fn drive_get_drive(&self, args: &[Value]) -> Value {
+    /// `DriveGetDrive`: the drives of a type, `[0]` = how many there are.
+    ///
+    /// The type may be a list (`"FIXED,REMOVABLE"`), which is how a script asks
+    /// for either; nothing found is `@error = 1` with a zero-length list, not an
+    /// empty array — `$array[0]` is the count.
+    fn drive_get_drive(&self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
         let wanted = arg_str(args, 0).to_ascii_uppercase();
         let wanted = if wanted.is_empty() {
             "ALL".to_string()
         } else {
             wanted
         };
-        let mut out: Vec<Value> = Vec::new();
+        let kinds: Vec<&str> = wanted
+            .split(',')
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+            .collect();
+        let mut found: Vec<Value> = Vec::new();
         for d in &self.drives {
-            if wanted == "ALL" || d.kind.eq_ignore_ascii_case(&wanted) {
-                out.push(Value::Str(d.root()));
+            if kinds
+                .iter()
+                .any(|kind| *kind == "ALL" || d.kind.eq_ignore_ascii_case(kind))
+            {
+                found.push(Value::Str(d.root()));
             }
         }
+        let mut out = vec![Value::Int(found.len() as i64)];
+        out.extend(found);
+        ctx.set_error(if out.len() == 1 { 1 } else { 0 }, 0);
         Value::array(out)
     }
 
@@ -1481,7 +1497,7 @@ impl Platform for WindowsEmulation {
             "clipget" => self.clip_get(ctx),
             "clipput" => self.clip_put(&args, ctx),
             // ---------------- drives ----------------
-            "drivegetdrive" => self.drive_get_drive(&args),
+            "drivegetdrive" => self.drive_get_drive(&args, ctx),
             "drivegettype" => self.drive_field(&args, ctx, |d| Value::Str(d.kind.clone())),
             "drivegetfilesystem" => {
                 self.drive_field(&args, ctx, |d| Value::Str(d.filesystem.clone()))
@@ -2052,6 +2068,9 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         "commonfilesdir" => Value::Str(p.common_files.clone()),
         "appdatacommondir" => Value::Str(p.program_data.clone()),
         "homedrive" => Value::Str(p.home_drive.clone()),
+        // The drive Windows is installed on, which is what `@WindowsDir`
+        // starts with: `C:` for the default emulation.
+        "systemdrive" => Value::Str(p.system_drive()),
         "homeshare" => Value::Str(p.home_share()),
         "homepath" | "userprofiledir" => Value::Str(p.user_profile.clone()),
         "tempdir" => Value::Str(p.temp()),

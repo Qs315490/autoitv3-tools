@@ -68,6 +68,14 @@ struct Frame {
     span: Option<Span>,
     /// How many arguments the caller passed, for `@NumParams`.
     arg_count: usize,
+    /// Whether this frame called `SetError` (`extended_set`: `SetExtended`).
+    ///
+    /// Only what the function itself sets survives its return: a nested call
+    /// leaves its `@error` visible *inside* the function, but a function that
+    /// never called `SetError` reports 0 to its caller. See
+    /// [`Runtime::call_user_def`].
+    error_set: bool,
+    extended_set: bool,
 }
 
 /// The AutoIt interpreter.
@@ -553,10 +561,27 @@ impl Runtime {
         self.extended
     }
 
-    /// Set `@error` / `@extended` (this is what `SetError()` does).
+    /// Set `@error` / `@extended`.
+    ///
+    /// This is what *every* builtin does — a failing `FileOpen` and a
+    /// `SetError` call both land here — so it does not by itself make the codes
+    /// survive the current function's return; [`Runtime::mark_error_set`] is
+    /// what `SetError`/`SetExtended` add on top.
     pub fn set_error_value(&mut self, error: i64, extended: i64) {
         self.error = error;
         self.extended = extended;
+    }
+
+    /// Record that the running function called `SetError` (`extended`: that it
+    /// called `SetExtended`), which is what lets the codes outlive it.
+    pub(crate) fn mark_error_set(&mut self, extended: bool) {
+        if let Some(frame) = self.frames.last_mut() {
+            if extended {
+                frame.extended_set = true;
+            } else {
+                frame.error_set = true;
+            }
+        }
     }
 
     /// An `Opt` setting, as the script last set it.
@@ -898,13 +923,13 @@ impl Runtime {
             function: Some(display.clone()),
             span,
             arg_count: args.len(),
+            error_set: false,
+            extended_set: false,
         });
 
         // "When entering a user-written function @error macro is set to 0"
         // (SetError's help page; `Parser_UserFunctionCall` does the same for
-        // `@extended`). What the body sets *stays*: a function whose last call
-        // set a code returns it, which is why AutoIt UDFs end their success
-        // paths with `Return SetError(0, 0, ...)`.
+        // `@extended`).
         self.error = 0;
         self.extended = 0;
 
@@ -940,6 +965,18 @@ impl Runtime {
         }
 
         let frame = self.frames.pop().expect("frame pushed above");
+        // Leaving a function: the codes survive only when this frame set them
+        // itself. `SetError` makes a function's error its own; a nested call's
+        // error is *visible* while the body runs but is gone once it returns
+        // ("The value of @error is not maintained after popping the stack a
+        // second time", and `SetError(1)` followed by `Sleep(1000)` reports 0 —
+        // the call after `SetError` is what replaces the value).
+        if !frame.error_set {
+            self.error = 0;
+        }
+        if !frame.extended_set {
+            self.extended = 0;
+        }
         // Copy-out `ByRef` parameters back into the caller's variable.
         for (k, target, _) in &by_ref {
             let Some(value) = frame.vars.get(k).cloned() else { continue };
