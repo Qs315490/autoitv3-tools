@@ -31,7 +31,8 @@ pub struct OutputArgs {
 /// Off Windows the platform stack starts with the emulation layer described in
 /// `autoitv3_platform::winemu`; these flags choose what machine it presents.
 /// When a flag is omitted the matching environment variable is consulted
-/// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`, `AU3_RESOURCE_MODULE`),
+/// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`, `AU3_RESOURCE_MODULE`,
+/// `AU3_WIN_DRIVE_MAP`),
 /// and then the default — **Windows 10 x64**.
 #[derive(Args, Debug, Clone, Default)]
 pub struct WinEmuArgs {
@@ -52,6 +53,17 @@ pub struct WinEmuArgs {
     /// undefined-function errors
     #[arg(long = "no-win-emu")]
     pub no_win_emu: bool,
+
+    /// Host directory the emulated `C:` drive stands for (default: the host
+    /// root, so `C:\home\me\a.dat` is `/home/me/a.dat`; empty disables the
+    /// mapping)
+    #[arg(long = "win-drive-map", value_name = "ROOT")]
+    pub win_drive_map: Option<String>,
+
+    /// Leave `C:` unmapped: every path the script builds is taken as a host
+    /// path, exactly as the emulation did before the drive map existed
+    #[arg(long = "no-win-drive-map")]
+    pub no_win_drive_map: bool,
 
     /// Route a function area through the emulation layer even where a native
     /// implementation exists. Repeatable. Areas: `registry` (Reg*),
@@ -214,6 +226,22 @@ impl WinEmuArgs {
         let mut emu = WindowsEmulation::from_env();
         if self.no_win_emu {
             emu = emu.disabled();
+        }
+        if self.no_win_drive_map {
+            emu = emu.without_path_map();
+        }
+        if let Some(root) = &self.win_drive_map {
+            if root.trim().is_empty() {
+                emu = emu.without_path_map();
+            } else {
+                emu = emu.with_drive_root(root.trim());
+            }
+        }
+        if let Some(script) = script {
+            // `@ScriptDir`/`@ScriptName`/`@ScriptFullPath` describe the file
+            // being analysed; the interpreter never tells the platform, so the
+            // CLI hands it over here.
+            emu = emu.with_script_path(script);
         }
         if let Some(raw) = &self.win_version {
             let version = WindowsVersion::from_name(raw).ok_or_else(|| {

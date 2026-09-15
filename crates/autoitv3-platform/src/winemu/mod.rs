@@ -23,7 +23,8 @@
 //! | area | behaviour |
 //! |---|---|
 //! | OS identity | [`WindowsVersion`] drives `@OSVersion`, `@OSType`, `@OSBuild`, `@OSServicePack`, `@OSArch`/`@ProcessorArch`, … |
-//! | paths | `@WindowsDir`, `@SystemDir`, `@ProgramFilesDir`, `@TempDir`, `@AppDataDir`, … with the conventional `C:` layout ([`WindowsPaths`]) |
+//! | paths | `@WindowsDir`, `@SystemDir`, `@ProgramFilesDir`, `@TempDir`, `@AppDataDir`, … with the conventional `C:` layout ([`WindowsPaths`]), and `@ScriptDir`/`@ScriptName`/`@ScriptFullPath` for the script being run |
+//! | drive map | `C:` is the host root by default, so a path the script builds by hand (`@ScriptDir & "\data.dat"`, or a normaliser that looks for a drive letter) works off Windows too ([`crate::pathmap`]; `AU3_WIN_DRIVE_MAP=0` or [`WindowsEmulation::without_path_map`] turns it off) |
 //! | native structs | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`, backed by a byte buffer ([`DllStruct`]) |
 //! | native calls | `DllCall` for the version queries (`GetVersionExW`/`A`, `RtlGetVersion`, `GetVersion`) and `GetSystemInfo` |
 //! | registry | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` through a pluggable [`RegistryStore`]: by default a [`FileRegistry`] on `.au3_registry` (seeded per version, persisted on write), with [`MemoryRegistry`] available via `with_memory_registry()` |
@@ -47,7 +48,7 @@
 //! let emu = WindowsEmulation::new().with_version(WindowsVersion::Win11);
 //!
 //! // 2. Through the environment (`AU3_WIN_VERSION=win11`, `AU3_WIN_ARCH=x64`,
-//! //    `AU3_WIN_REGISTRY=/tmp/my.au3reg`):
+//! //    `AU3_WIN_REGISTRY=/tmp/my.au3reg`, `AU3_WIN_DRIVE_MAP=/srv/root`):
 //! let emu = WindowsEmulation::from_env();
 //!
 //! // 3. On the CLI (`au3 evaluate --win-version win11 ...`), which builds the
@@ -121,6 +122,10 @@ pub const RESOURCE_MODULE_ENV: &str = "AU3_RESOURCE_MODULE";
 /// Set this to report every `DllCall` target the emulation does not implement
 /// (once each, on stderr). Handy for finding the next boundary to fill in.
 pub const TRACE_ENV: &str = "AU3_WINEMU_TRACE";
+/// Environment variable configuring the drive map: unset means `C:\` is the
+/// host root, `0`/`false`/`off` turns the mapping off, and any other value is
+/// the host directory `C:` should stand for. See [`PathMap`].
+pub const DRIVE_MAP_ENV: &str = "AU3_WIN_DRIVE_MAP";
 /// The version used when nothing selects one.
 pub const DEFAULT_VERSION: WindowsVersion = WindowsVersion::Win10;
 
@@ -395,6 +400,13 @@ pub struct WindowsEmulation {
     drives: Vec<DriveSpec>,
     /// Allocated `DllStruct`s, addressed by 1-based handle.
     structs: Vec<Option<DllStruct>>,
+    /// How `C:` maps onto the host filesystem, or `None` to leave every path
+    /// alone (see [`crate::pathmap`] and [`WindowsEmulation::without_path_map`]).
+    path_map: Option<crate::pathmap::PathMap>,
+    /// The script being run, when the caller knows it: `@ScriptDir`,
+    /// `@ScriptName` and `@ScriptFullPath` are answered from it. The
+    /// interpreter does not carry this, so the CLI passes it in.
+    script_path: Option<PathBuf>,
     /// The PE file whose resources the module/resource calls answer from.
     module: Option<PeImage>,
     /// Where `module` was loaded from, for reporting.
@@ -458,7 +470,8 @@ impl Default for WindowsEmulation {
 }
 
 impl WindowsEmulation {
-    /// A Windows 10 / x64 emulation with a seeded registry and a `C:` drive.
+    /// A Windows 10 / x64 emulation with a seeded registry and a `C:` drive
+    /// mapped onto the host root (see [`crate::pathmap`]).
     ///
     /// The registry is a [`FileRegistry`] on `.au3_registry` in the working
     /// directory: nothing is created until the script writes a value, and a
@@ -484,6 +497,8 @@ impl WindowsEmulation {
             clipboard_cache: std::cell::RefCell::new(None),
             drives: vec![DriveSpec::default()],
             structs: Vec::new(),
+            path_map: Some(crate::pathmap::PathMap::host_root()),
+            script_path: None,
             module: None,
             module_path: None,
             resource_dirs: Vec::new(),
@@ -534,6 +549,17 @@ impl WindowsEmulation {
         if let Ok(raw) = std::env::var(RESOURCE_MODULE_ENV) {
             if !raw.trim().is_empty() {
                 emu = emu.with_module_file(raw.trim());
+            }
+        }
+        if let Ok(raw) = std::env::var(DRIVE_MAP_ENV) {
+            let raw = raw.trim();
+            if matches!(
+                raw.to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | "none" | "disabled"
+            ) {
+                emu = emu.without_path_map();
+            } else if !raw.is_empty() {
+                emu = emu.with_drive_root(raw);
             }
         }
         if let Ok(raw) = std::env::var(TRACE_ENV) {
@@ -697,8 +723,14 @@ impl WindowsEmulation {
     /// Let the common layer answer the directory macros, so `@TempDir` and
     /// friends stay usable host paths. The Windows-only ones (`@WindowsDir`,
     /// `@SystemDir`, ...) are still emulated.
+    ///
+    /// This also drops the drive map: a host path is only usable as-is, and
+    /// rendering it as `C:\tmp` would defeat the point. Install the map again
+    /// afterwards ([`with_drive_map`](Self::with_drive_map)) if a script really
+    /// does build `C:\` paths by hand.
     pub fn with_host_paths(mut self) -> Self {
         self.emulate_paths = false;
+        self.path_map = None;
         self
     }
 
@@ -731,6 +763,73 @@ impl WindowsEmulation {
     }
 
     /// The file the module was loaded from, if one was named or found.
+    /// Map the emulated `C:` drive onto the host root (the default).
+    ///
+    /// With the map in place a Windows path the script builds by hand —
+    /// `C:\Users\me\a.dat` — names the host file `/Users/me/a.dat`, and the
+    /// macros that report a path (`@ScriptDir`, `@TempDir`, ...) come back in
+    /// `C:\` form so the script's own path arithmetic keeps working. See
+    /// [`crate::pathmap`] for the full rationale.
+    pub fn with_drive_map(mut self, map: crate::pathmap::PathMap) -> Self {
+        self.path_map = Some(map);
+        self
+    }
+
+    /// Point the `C:` drive at `root` instead of the host root.
+    pub fn with_drive_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.path_map = Some(crate::pathmap::PathMap::new("C:", root));
+        self
+    }
+
+    /// Turn the drive map off: every path stays a host path.
+    ///
+    /// Matching AutoIt's own semantics is then up to the script.
+    pub fn without_path_map(mut self) -> Self {
+        self.path_map = None;
+        self
+    }
+
+    /// The active drive map, if any.
+    pub fn path_map(&self) -> Option<&crate::pathmap::PathMap> {
+        self.path_map.as_ref()
+    }
+
+    /// Tell the emulation which script is running, so `@ScriptDir`,
+    /// `@ScriptName` and `@ScriptFullPath` describe it instead of the working
+    /// directory.
+    pub fn with_script_path(mut self, path: impl Into<PathBuf>) -> Self {
+        // Resolved here because the whole point of `@ScriptDir` is that the
+        // script can build a path out of it: `./run.au3` would otherwise
+        // report `C:\.` and every relative join would land in the drive root.
+        let path = path.into();
+        let path = if path.is_absolute() {
+            path
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(path),
+                Err(_) => path,
+            }
+        };
+        self.script_path = Some(lexical_path(&path));
+        self
+    }
+
+    /// The script the emulation was told about.
+    pub fn script_path(&self) -> Option<&std::path::Path> {
+        self.script_path.as_deref()
+    }
+
+    /// The directory the running script lives in, as the host sees it: the
+    /// script's own directory when known, the working directory otherwise.
+    fn script_dir(&self) -> Option<PathBuf> {
+        if let Some(dir) = self.script_path.as_deref().and_then(|p| p.parent()) {
+            if !dir.as_os_str().is_empty() {
+                return Some(dir.to_path_buf());
+            }
+        }
+        std::env::current_dir().ok()
+    }
+
     pub fn module_path(&self) -> Option<&std::path::Path> {
         self.module_path.as_deref()
     }
@@ -1204,6 +1303,14 @@ impl Platform for WindowsEmulation {
             return Ok(None);
         }
         let key = name.to_ascii_lowercase();
+        // The path-taking builtins this layer owns (the PE/resource ones and the
+        // file-moving ones) see the script's own `C:\` spelling; map it to the
+        // host before they touch the filesystem. Common's file functions do the
+        // same in their own layer.
+        let args = match &self.path_map {
+            Some(map) => rewrite_path_args(&key, args, map),
+            None => args,
+        };
         // The GUI half is a self-contained state machine; let it answer first.
         if let Some(value) = self.gui.call(&key, &args, ctx) {
             return Ok(Some(value));
@@ -1773,6 +1880,86 @@ impl Platform for WindowsEmulation {
 }
 
 /// The environment-dependent macros the emulation answers.
+/// The argument positions the emulated builtins take a file path in.
+///
+/// `FileCreateShortcut` is the odd one: its *first* argument is the target
+/// recorded **inside** the `.lnk`, and a shortcut is a Windows artifact, so the
+/// `C:\` spelling is the one to store. Only the `.lnk` path itself is mapped.
+fn path_arg_indices(key: &str) -> &'static [usize] {
+    match key {
+        "filegetversion" | "filegetshortcut" | "filerecycle" => &[0],
+        "filecreateshortcut" => &[1],
+        "fileinstall" | "filecreatntfslink" => &[0, 1],
+        _ => &[],
+    }
+}
+
+/// Rewrite the path arguments of `key` for the host filesystem.
+fn rewrite_path_args(key: &str, mut args: Vec<Value>, map: &crate::pathmap::PathMap) -> Vec<Value> {
+    for &index in path_arg_indices(key) {
+        if let Some(Value::Str(s)) = args.get(index) {
+            let rewritten = map.rewrite(s);
+            if rewritten != *s {
+                args[index] = Value::Str(rewritten);
+            }
+        }
+    }
+    args
+}
+
+/// Drop `.` components: a script that compares `@ScriptFullPath` against a
+/// literal (or hashes it) should not see the `./` the caller happened to type.
+fn lexical_path(path: &std::path::Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `@ScriptDir`: the directory the script runs from, in the shape the script
+/// expects (Windows form while a drive map is active, host form otherwise).
+///
+/// Deliberately `None` when there is nothing better than the working
+/// directory *and* no drive map: the common layer then answers with its own
+/// working-directory value, which is the documented portable fallback.
+fn script_dir_macro(emu: &WindowsEmulation) -> Option<Value> {
+    if let Some(dir) = emu
+        .script_path
+        .as_deref()
+        .and_then(|p| p.parent())
+        .filter(|d| !d.as_os_str().is_empty())
+    {
+        return Some(host_path_macro(emu, dir));
+    }
+    if emu.path_map.is_none() || !emu.emulate_paths {
+        return None;
+    }
+    let dir = emu.script_dir()?;
+    Some(host_path_macro(emu, &dir))
+}
+
+/// Render a host directory the way the script should see it, keeping the
+/// trailing separator `@ScriptDir`/`@WorkingDir` are expected to carry.
+fn host_path_macro(emu: &WindowsEmulation, path: &std::path::Path) -> Value {
+    let mapped = emu
+        .path_map
+        .as_ref()
+        .filter(|map| map.covers(path))
+        .map(|map| map.to_windows(path));
+    let (mut s, sep) = match mapped {
+        Some(s) => (s, '\\'),
+        None => (path.to_string_lossy().into_owned(), std::path::MAIN_SEPARATOR),
+    };
+    if !s.ends_with(sep) {
+        s.push(sep);
+    }
+    Value::Str(s)
+}
+
 fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
     let p = &emu.paths;
     let version = emu.version;
@@ -1871,6 +2058,30 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         "sendtodir" => Value::Str(p.send_to()),
         "templatesdir" => Value::Str(p.templates()),
         "internetcachedir" => Value::Str(p.internet_cache()),
+        // ----- the running script -----
+        // Answered here rather than by the common layer so the drive map is
+        // applied: a script that normalises its own path (`@ScriptDir` &
+        // "\data.dat", then a hand-written drive-letter check) needs to see a
+        // `C:\` path, not a host one.
+        "scriptdir" => script_dir_macro(emu)?,
+        "workingdir" => {
+            if emu.path_map.is_none() || !emu.emulate_paths {
+                return None;
+            }
+            let cwd = std::env::current_dir().ok()?;
+            host_path_macro(emu, &cwd)
+        }
+        "scriptname" => {
+            let name = emu.script_path.as_deref()?.file_name()?;
+            Value::Str(name.to_string_lossy().into_owned())
+        }
+        "scriptfullpath" => {
+            let path = emu.script_path.clone()?;
+            match &emu.path_map {
+                Some(map) => Value::Str(map.to_windows(&path)),
+                None => Value::Str(path.to_string_lossy().into_owned()),
+            }
+        }
         _ => return None,
     };
     Some(value)
@@ -1928,8 +2139,6 @@ fn create_junction(_target: &str, _link: &str) -> bool {
 fn drive_root(home_drive: &str) -> String {
     format!("{}\\", home_drive.trim_end_matches('\\'))
 }
-
-/// The length left after stripping valid PKCS#7 padding (`None` when the tail
 
 /// A `FindResourceW` selector from one argument: a string name, an integer id,
 /// or `None` for a null argument.
