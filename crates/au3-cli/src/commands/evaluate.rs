@@ -23,9 +23,10 @@ use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_input, CliResult, CompiledArgs, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs,
-    StepArgs, SubstituteArgs, WinEmuArgs,
+    CliResult, CompiledArgs, EffectArgs, IncludeArgs, OutputArgs, ProfileArgs, ProgressArgs,
+    StepArgs, SubstituteArgs, WinEmuArgs, load_input_included,
 };
+
 use crate::output::write_output;
 use crate::progress::reporter;
 use std::path::Path;
@@ -61,6 +62,10 @@ pub struct EvaluateArgs {
     /// Progress-heartbeat control (see `ProgressArgs`).
     #[command(flatten)]
     pub progress: ProgressArgs,
+
+    /// `#include` search path (see `IncludeArgs`).
+    #[command(flatten)]
+    pub includes: IncludeArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -100,7 +105,7 @@ pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
 
 /// Entry point for the `evaluate` subcommand.
 pub fn run(args: &EvaluateArgs) -> CliResult<()> {
-    let input = load_input(&args.input)?;
+    let input = load_input_included(&args.input, &args.includes)?;
     let mut prog = input.program;
 
     let profile = args.effects.apply(args.profile.profile())?;

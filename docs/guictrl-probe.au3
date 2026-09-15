@@ -8,7 +8,7 @@
 ; 只问文档没写清、或者两种读法都说得通的地方：ListView 的两种加行方式、
 ; 读回来的是索引还是控件号、页签是第几页被自动选中、-1 是不是"最后创建的控件"。
 
-; 常量写成字面量：官方解释器两者都认，而本地仿真层还没有 #include 支持。
+; 常量写成字面量：两份解释器都认，且不必依赖 AutoIt 安装目录里的 GUIConstantsEx.au3。
 Global Const $GUI_CHECKED = 0x01
 Global Const $GUI_INDETERMINATE = 0x02
 Global Const $GUI_UNCHECKED = 0x04

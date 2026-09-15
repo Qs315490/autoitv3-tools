@@ -11,7 +11,7 @@
       src/
         main.rs     入口：Cli::parse() → dispatch → 把 CliError 转成退出码
         cli.rs      顶层 Cli / Command 定义（子命令、别名、缩写开关）
-        args.rs     共用参数类型（-o 输出）、CliError、输入加载
+        args.rs     共用参数类型（-o 输出、-I 搜索路径）、CliError、输入加载
         output.rs   输出目标：文件或 stdout（`-` 表示 stdout）
         commands/
           mod.rs        子命令模块与 dispatch 表
@@ -27,6 +27,7 @@
         run.rs       FILE [FUNC] 的参数顺序、`@Compiled` 覆盖（7 项）
         steps.rs     --max-steps / --no-progress 的端到端校验
         input.rs     FILE 走源码路径 / 编译产物路径 / 两者都不是
+        includes.rs  #include 的端到端行为（引号/尖括号搜索顺序、缺失、--no-includes）
         unit/args.rs 输入加载器的构建识别（`#[path]` 回挂进 src/args.rs）
         unit/debug_completion.rs Tab 补全的候选集与分词（`#[path]` 回挂进 commands/debug.rs）
 ```
@@ -113,6 +114,30 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 au3 debug some-gui.au3                # Windows 默认用真窗口，别处不画
 au3 debug some-gui.au3 --gui window   # 会话跑在 eframe 窗口下（需 --features gui-window 构建）
 ```
+
+### `#include`
+
+`run` / `debug` / `evaluate` / `deobfuscate` 会按官方语义把 `#include` 展开：被包含
+文件的内容插在指令的位置，因此它定义的常量与函数对脚本可见（`parse` / `pretty` 只
+读写这一个文件，指令原样保留）。搜索顺序就是帮助页的两张表：
+
+* `#include "file"` —— 先脚本所在目录，再用户库（**倒序**），最后标准库；
+* `#include <file>` —— 先标准库，再用户库（正序），最后脚本所在目录。
+
+「标准库」是 AutoIt 安装的 `Include` 目录（帮助页说的是"当前解释器所在目录 +
+`\Include`"，而本工具自己就是解释器、旁边没有这个目录，所以改为搜索
+`Program Files (x86)\AutoIt3\Include` 等常见位置）。「用户库」是本工具的
+`-I/--include-path` 与 `AU3_INCLUDE_PATH`（`;` 分隔，等价于注册表
+`HKCU\Software\AutoIt v3\AutoIt\Include`）：
+
+```bash
+au3 run script.au3 -I 'D:\Programs\autoitv3\Include'
+AU3_INCLUDE_PATH='D:\Programs\autoitv3\Include' au3 run script.au3
+```
+
+嵌套包含、`#include-once`、UTF-8（带/不带 BOM）与 UTF-16 BOM 的包含文件都支持；
+找不到的文件只报警告（列出搜过的目录）并继续，解析不了的包含文件才是错误，
+编译过的 `.a3x` 只报警告。`--no-includes` 完全不展开，脚本按"指令不存在"运行。
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
 `deobfuscate --evaluate`、`run` 与 `debug`；省略时读环境变量，再回落到默认值：

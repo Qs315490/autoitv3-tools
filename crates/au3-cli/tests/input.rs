@@ -62,10 +62,26 @@ fn a_build_header_without_a_script_reports_the_build_path() {
 
 #[test]
 fn a_binary_that_is_neither_source_nor_build_says_so() {
-    let path = scratch("binary", "blob.bin", &[0xff, 0xfe, 0x00, 0x01]);
+    // A stray continuation byte and a NUL: not UTF-8, and no BOM to say it is
+    // UTF-16 either.
+    let path = scratch("binary", "blob.bin", &[0x9f, 0xff, 0x00, 0x01]);
     let (ok, out) = au3(&["parse", path.to_str().unwrap()]);
     assert!(!ok, "got:\n{out}");
-    assert!(out.contains("not UTF-8 source"), "got:\n{out}");
+    assert!(out.contains("not UTF-8 or UTF-16 source"), "got:\n{out}");
+}
+
+#[test]
+fn a_utf16_script_is_read() {
+    // AutoIt accepts a script saved as UTF-16 with a BOM, and so must the
+    // loader: `parse` has to see the function, not two NULs per character.
+    let mut bytes: Vec<u8> = vec![0xff, 0xfe];
+    for unit in "Func Main()\r\n    Return 1\r\nEndFunc\r\n".encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    let path = scratch("utf16", "script.au3", &bytes);
+    let (ok, out) = au3(&["parse", path.to_str().unwrap()]);
+    assert!(ok, "got:\n{out}");
+    assert!(out.contains("1 functions"), "got:\n{out}");
 }
 
 /// The whole path on a real build, when one is pointed at.

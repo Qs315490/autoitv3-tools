@@ -15,6 +15,7 @@ AutoIt v3 词法/语法分析工具集：产出**带源码位置（Span）的 AS
 | ----- | ---- | ---- |
 | `autoitv3-ast` | AutoIt AST 分析核心（词法/语法/Span/打印） | [README](crates/autoitv3-ast/README.md) |
 | `autoitv3-format` | 规范化打印（`au3 pretty` 的实现库） | [README](crates/autoitv3-format/README.md) |
+| `autoitv3-preproc` | `#include` 展开（搜索顺序、`#include-once`、编码） | [README](crates/autoitv3-preproc/README.md) |
 | `autoitv3-runtime` | 值模型 + 解释器 + 宿主/平台/调试器接缝 | [README](crates/autoitv3-runtime/README.md) |
 | `autoitv3-platform` | 平台层：Windows 原生 + 通用层 + winemu 仿真 | [README](crates/autoitv3-platform/README.md) |
 | `autoitv3-deobf` | 反混淆 pass（折叠/函数表/简化/重命名/求值） | [README](crates/autoitv3-deobf/README.md) |
