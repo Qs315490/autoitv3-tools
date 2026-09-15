@@ -7,8 +7,17 @@
 //! verb and let that copy run the script. The original stops before the first
 //! statement, exactly as AutoIt does.
 //!
-//! Two deliberate differences, both because this is a command line tool rather
-//! than a double-clicked interpreter:
+//! When **this process already has the rights the script asks for** there is
+//! nothing to do and nothing to say: no second copy, no consent prompt, no
+//! note. That is the case when the command was typed at an already elevated
+//! prompt, when UAC is off and the token is the same one, and when the process
+//! *is* the copy our own launcher started — the check is the interpreter's own
+//! [`IsAdmin`](autoitv3_platform::elevate::is_admin), not a guess from flags.
+//! An administrator outranks every reason to skip, so `--no-elevate` and
+//! `--deny spawn` cannot turn a satisfied directive into a complaint.
+//!
+//! Where it does apply, two deliberate differences from a double-clicked
+//! interpreter, both because this is a command line tool:
 //!
 //! * the original **waits** for the elevated copy and reports the code it
 //!   exited with, so a batch file that runs `au3 run` sees the work finish;
@@ -18,8 +27,8 @@
 //!   is a different question from which token the script runs with, and a
 //!   script that asks for rights gets them (the OS asks the user first).
 //!
-//! The elevated copy is given the same command line plus `--no-elevate`, so it
-//! cannot try to elevate itself again. Off Windows there is no elevation
+//! The elevated copy is given the same command line plus `--elevated-copy`, so
+//! it cannot try to elevate itself again. Off Windows there is no elevation
 //! mechanism at all: the directive is read, reported, and the script runs here
 //! the way it always did.
 
@@ -43,6 +52,37 @@ fn note(text: &str) {
     eprintln!("note: {text}");
 }
 
+/// What `#RequireAdmin` calls for, decided before anything is done about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    /// Run the script here and say nothing: there is no directive, this *is*
+    /// the elevated copy, or the process already has the rights it asks for.
+    Nothing,
+    /// Start an elevated copy and stop this process before it runs a statement.
+    Relaunch,
+    /// Run here, saying once why the directive is not being honoured.
+    Skip(&'static str),
+}
+
+/// The decision, as a pure function of the facts — the counterpart of the
+/// side effects in [`relaunch_if_required`], and what its tests pin down.
+///
+/// An administrator wins over every reason to skip: the directive is about
+/// having the rights, so when the process has them there is nothing to report
+/// and no prompt to raise, whatever else the command line says.
+fn action(required: bool, admin: bool, no_elevate: bool, spawn_denied: bool) -> Action {
+    if !required || admin {
+        return Action::Nothing;
+    }
+    if no_elevate {
+        return Action::Skip("#RequireAdmin: --no-elevate, running without administrator rights");
+    }
+    if spawn_denied {
+        return Action::Skip("#RequireAdmin: --deny spawn, running without administrator rights");
+    }
+    Action::Relaunch
+}
+
 /// Honour `#RequireAdmin`, if it applies here.
 ///
 /// Returns `true` when an elevated copy ran the script and this process must
@@ -61,26 +101,19 @@ pub fn relaunch_if_required(
     if !is_required(program) {
         return Ok(false);
     }
-    if elevated_copy {
-        // This *is* the copy: the elevation the script asked for already
-        // happened, and the process that started it has said so. Repeating the
-        // `--no-elevate` note here would read as if the rights were refused.
-        return Ok(false);
-    }
-    if no_elevate {
-        note("#RequireAdmin: --no-elevate, running without administrator rights");
-        return Ok(false);
-    }
-    if spawn_denied {
-        note(
-            "#RequireAdmin: --deny spawn, running without administrator rights",
-        );
-        return Ok(false);
-    }
-    if elevate::is_admin() {
-        // Started from an elevated shell, or UAC is off and the token is the
-        // same one: the directive is already satisfied.
-        return Ok(false);
+    // The copy our own launcher started is elevated by construction, so the OS
+    // does not have to be asked. Everything else asks *this* process's token:
+    // started from an elevated shell, or UAC is off and the token is the same
+    // one, the directive is already satisfied — no consent prompt, and nothing
+    // to say about skipping it either.
+    let admin = elevated_copy || elevate::is_admin();
+    match action(true, admin, no_elevate, spawn_denied) {
+        Action::Nothing => return Ok(false),
+        Action::Skip(reason) => {
+            note(reason);
+            return Ok(false);
+        }
+        Action::Relaunch => {}
     }
 
     let exe = std::env::current_exe()
@@ -141,6 +174,50 @@ fn elevated_args_from(mut args: Vec<OsString>, pid: u32) -> Vec<OsString> {
 mod tests {
     use super::*;
     use autoitv3_ast::parse;
+
+    #[test]
+    fn an_administrator_is_never_asked_again() {
+        // The user's rule: already an administrator means no request. It also
+        // means no note — there is nothing to skip, the rights are there.
+        for (no_elevate, spawn_denied) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(
+                action(true, true, no_elevate, spawn_denied),
+                Action::Nothing,
+                "no_elevate={no_elevate} spawn_denied={spawn_denied}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_script_without_the_directive_is_left_alone() {
+        assert_eq!(action(false, false, false, false), Action::Nothing);
+        // ... even when the command line would otherwise have skipped it.
+        assert_eq!(action(false, false, true, false), Action::Nothing);
+    }
+
+    #[test]
+    fn the_two_switches_skip_with_their_own_reason() {
+        assert_eq!(
+            action(true, false, true, false),
+            Action::Skip("#RequireAdmin: --no-elevate, running without administrator rights")
+        );
+        assert_eq!(
+            action(true, false, false, true),
+            Action::Skip("#RequireAdmin: --deny spawn, running without administrator rights")
+        );
+        // Both given: the flag that governs elevation itself is the one named.
+        assert_eq!(
+            action(true, false, true, true),
+            Action::Skip("#RequireAdmin: --no-elevate, running without administrator rights")
+        );
+    }
+
+    #[test]
+    fn an_unelevated_run_of_a_script_that_asks_does_bring_the_prompt() {
+        assert_eq!(action(true, false, false, false), Action::Relaunch);
+    }
 
     #[test]
     fn the_copy_gets_both_flags_where_the_parser_wants_them() {
