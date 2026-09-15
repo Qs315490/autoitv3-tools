@@ -1,6 +1,6 @@
 //! Unit tests for the autoitv3-format pretty-printer crate.
 
-use autoitv3_ast::ast::{ItemKind, StmtKind};
+use autoitv3_ast::ast::{ExprKind, ItemKind, Lit, LitKind, StmtKind};
 use autoitv3_ast::parse;
 use autoitv3_format::PrettyPrinter;
 
@@ -156,4 +156,71 @@ fn continue_case_is_printed_as_its_own_statement() {
     let ItemKind::Stmt(st) = &reparsed.items[0].kind else { panic!() };
     let StmtKind::Switch(sw) = &st.kind else { panic!("{:?}", st.kind) };
     assert!(matches!(sw.cases[0].body[0].kind, StmtKind::ContinueCase));
+}
+
+// ---------------------------------------------------------------------------
+// String literals — AutoIt accepts either delimiter
+// ---------------------------------------------------------------------------
+
+/// The string a one-statement `$s = <literal>` program assigns.
+fn assigned_string(src: &str) -> String {
+    let prog = parse(src).expect("parses");
+    let ItemKind::Stmt(st) = &prog.items[0].kind else { panic!("expected a statement") };
+    let StmtKind::Expr(e) = &st.kind else { panic!("expected an expression statement") };
+    let ExprKind::Binary(_, _, rhs) = &e.kind else { panic!("expected an assignment") };
+    let ExprKind::Lit(Lit { kind: LitKind::Str(s), .. }) = &rhs.kind else {
+        panic!("expected a string literal, got {:?}", rhs.kind)
+    };
+    s.clone()
+}
+
+/// Print `$s = <src literal>` and read the string back out of the output.
+fn round_tripped_string(src_literal: &str) -> (String, String) {
+    let src = format!("$s = {src_literal}\n");
+    let prog = parse(&src).expect("parses");
+    let mut pp = PrettyPrinter::new();
+    let out = pp.print_program(&prog);
+    let value = assigned_string(&out);
+    // The point of the exercise: same value as the input.
+    assert_eq!(value, assigned_string(&src), "printed {out}");
+    (out, value)
+}
+
+#[test]
+fn a_string_of_double_quotes_is_printed_single_quoted() {
+    // The noisy `"{""dpi"":96}"` form and `'{"dpi":96}'` mean the same string;
+    // deobfuscation inlines mostly JSON, so pick the readable one.
+    let (out, value) = round_tripped_string("\"{ \"\"dpi\"\": 96 }\"");
+    assert!(out.contains(r#"'{ "dpi": 96 }'"#), "{out}");
+    assert_eq!(value, r#"{ "dpi": 96 }"#);
+}
+
+#[test]
+fn a_string_of_single_quotes_is_printed_double_quoted() {
+    let (out, value) = round_tripped_string("'it''s'");
+    assert!(out.contains(r#""it's""#), "{out}");
+    assert_eq!(value, "it's");
+}
+
+#[test]
+fn a_string_with_both_quotes_falls_back_to_doubling() {
+    // Neither delimiter is free, so the double-quoted form wins and only `"`
+    // is doubled.
+    let (out, value) = round_tripped_string(r#""a ""b"" 'c'""#);
+    assert!(out.contains(r#""a ""b"" 'c'""#), "{out}");
+    assert_eq!(value, r#"a "b" 'c'"#);
+}
+
+#[test]
+fn a_plain_string_keeps_its_double_quotes() {
+    let (out, value) = round_tripped_string(r#""just text""#);
+    assert!(out.contains(r#""just text""#), "{out}");
+    assert_eq!(value, "just text");
+}
+
+#[test]
+fn only_the_quote_character_is_doubled() {
+    // A backslash is not an escape in AutoIt, so it must survive untouched.
+    let (_, value) = round_tripped_string(r#""C:\dir\""#);
+    assert_eq!(value, r#"C:\dir\"#);
 }
