@@ -702,17 +702,25 @@ impl GuiState {
                 let kind = self.model.control(id).map(|control| control.kind);
                 let window = self.model.control(id).map(|control| control.window);
                 if let Some(control) = self.model.control_mut(id) {
-                    if state & 0x10 != 0 {
+                    // The official interpreter keeps these in pairs: hiding a
+                    // control clears its `$GUI_SHOW` (a fresh control answers
+                    // `0x50`, and after `$GUI_HIDE` it answers `0x60`), and
+                    // disabling it clears `$GUI_ENABLE` (`0x90`).
+                    if state & GUI_SHOW != 0 {
+                        control.state |= GUI_SHOW;
                         control.state &= !GUI_HIDE;
                     }
                     if state & GUI_HIDE != 0 {
                         control.state |= GUI_HIDE;
+                        control.state &= !GUI_SHOW;
                     }
-                    if state & 0x40 != 0 {
+                    if state & GUI_ENABLE != 0 {
+                        control.state |= GUI_ENABLE;
                         control.state &= !GUI_DISABLE;
                     }
                     if state & GUI_DISABLE != 0 {
                         control.state |= GUI_DISABLE;
+                        control.state &= !GUI_ENABLE;
                     }
                     // `$GUI_CHECKED` (1), `$GUI_INDETERMINATE` (2) and
                     // `$GUI_UNCHECKED` (4) describe one three-way state, so
@@ -2026,18 +2034,28 @@ impl GuiState {
         let Some(row) = control.row else {
             return control.text.clone();
         };
-        let text = self
+        let owner = self
             .model
             .part_owner(id)
-            .and_then(|owner| self.model.control(owner))
+            .and_then(|owner| self.model.control(owner));
+        let text = owner
             .and_then(|owner| owner.data.get(row))
             .cloned()
             .unwrap_or_else(|| control.text.clone());
-        if control.kind == ControlKind::ListViewItem {
-            format!("{text}|")
-        } else {
-            text
+        if control.kind != ControlKind::ListViewItem {
+            return text;
         }
+        // The read is the row as wide as the ListView: the official interpreter
+        // answers `"solo|||"` for a one-cell row in a three-column list, which is
+        // the row padded to the columns with a separator after each.
+        let columns = owner
+            .map(|owner| owner.text.split('|').count())
+            .unwrap_or(0);
+        let mut cells: Vec<String> = text.split('|').map(|cell| cell.to_string()).collect();
+        while cells.len() < columns {
+            cells.push(String::new());
+        }
+        format!("{}|", cells.join("|"))
     }
 
     /// `GUICtrlSetData`.
@@ -2077,31 +2095,11 @@ impl GuiState {
                     }
                 }
             }
-            // `GUICtrlSetData` on a `ListView` itself changes the row it is
-            // "on" — the selected one, else the last — and does nothing at all
-            // to an empty list. Rows are *added* with
-            // `GUICtrlCreateListViewItem`, which is what the probe against the
-            // official interpreter showed (`lv.setdata_count=0`).
-            ControlKind::ListView => {
-                let row = self
-                    .model
-                    .control(id)
-                    .and_then(|control| control.selection)
-                    .or_else(|| self.model.control(id).map(|c| c.data.len().saturating_sub(1)));
-                if let Some(row) = row.filter(|_| {
-                    self.model
-                        .control(id)
-                        .map(|control| !control.data.is_empty())
-                        .unwrap_or(false)
-                }) {
-                    let updated = self.updated_row(id, row, &data);
-                    if let Some(owner_control) = self.model.control_mut(id) {
-                        if row < owner_control.data.len() {
-                            owner_control.data[row] = updated;
-                        }
-                    }
-                }
-            }
+            // `GUICtrlSetData` on a `ListView` itself does *nothing*: the probe
+            // against the official interpreter showed neither a row added
+            // (`lv.setdata_count=0`) nor a selected row changed. Rows and their
+            // cells go through `GUICtrlCreateListViewItem` and the items.
+            ControlKind::ListView => {}
             // An item writes the cells it names: an empty cell leaves that
             // column alone (the probe's `||9` kept the first two), and an
             // entirely empty `data` erases the first, as the help page says.
@@ -2144,10 +2142,14 @@ impl GuiState {
     /// The row `data` leaves behind when it is written into row `row` of the
     /// list `owner`.
     ///
-    /// Only the cells `data` actually names are written — the official
-    /// interpreter keeps the columns an update leaves empty — and an empty
-    /// `data` erases the first cell, which is the one case the help page calls
-    /// out.
+    /// The separator positions are the column numbers, and an empty field
+    /// leaves its column alone *unless it is the last field* — which is what the
+    /// official interpreter does with the calls the probes made:
+    ///
+    /// * `""` (one field, the last) erases the first cell,
+    /// * `"|"` (two fields, the last one empty) erases the second cell,
+    /// * `"||9"` keeps the first two and writes the third,
+    /// * `"only|two"` writes the first two.
     fn updated_row(&self, owner: i64, row: usize, data: &str) -> String {
         let existing = self
             .model
@@ -2156,25 +2158,20 @@ impl GuiState {
             .cloned()
             .unwrap_or_default();
         let mut cells: Vec<String> = existing.split('|').map(|cell| cell.to_string()).collect();
-        if data.is_empty() {
-            if let Some(first) = cells.first_mut() {
-                first.clear();
-            }
-            return cells.join("|");
-        }
-        for (index, cell) in data.split('|').enumerate() {
-            if cell.is_empty() {
+        let fields: Vec<&str> = data.split('|').collect();
+        let last = fields.len().saturating_sub(1);
+        for (index, field) in fields.iter().enumerate() {
+            if field.is_empty() && index != last {
                 continue;
             }
-            // A cell written past the end of the row keeps its column: the
-            // separator positions are the column numbers, so the row is padded.
+            // A cell written past the end of the row keeps its column.
             while cells.len() < index {
                 cells.push(String::new());
             }
             if index >= cells.len() {
-                cells.push(cell.to_string());
+                cells.push((*field).to_string());
             } else {
-                cells[index] = cell.to_string();
+                cells[index] = (*field).to_string();
             }
         }
         cells.join("|")
@@ -2475,11 +2472,13 @@ impl GuiState {
         ctx.set_error(0, 0);
         match command.as_str() {
             "getitemcount" => Value::Int(rows.len() as i64),
+            // The official interpreter answers the ListView's *column* count
+            // here, not the widest row minus its first cell.
             "getsubitemcount" => Value::Int(
-                rows.iter()
-                    .map(|row| row.split('|').count().saturating_sub(1))
-                    .max()
-                    .unwrap_or(0) as i64,
+                self.model
+                    .control(id)
+                    .map(|control| control.text.split('|').count() as i64)
+                    .unwrap_or(0),
             ),
             "getselectedcount" => Value::Int(i64::from(selection.is_some())),
             "getselected" => {
