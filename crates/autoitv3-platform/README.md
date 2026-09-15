@@ -229,7 +229,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`EnumWindows`/`EnumChildWindows`/`EnumThreadWindows` 按 `with_scripted_windows()` 的句柄表把回调排入队列，运行时在 DllCall 返回后真实执行脚本函数（不重入解释器）；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
 | COM | **伪 COM**：`ObjCreate` 对内建 ProgID 表返回真实行为对象——`Scripting.Dictionary`（Add/Exists/Item/Count/Keys/Items/Remove/RemoveAll）、`WScript.Shell`（RegRead/RegWrite/RegDelete 桥接仿真注册表、ExpandEnvironmentStrings、Run）、`Scripting.FileSystemObject`（FileExists/DriveExists/路径运算/GetSpecialFolder）；表外 ProgID 与 `ObjCreateInterface`/`ObjEvent`/`ObjGet` 维持 `@error = 1`；`IsObj` 对前者返回 `1`、`ObjName` 回显 ProgID |
-| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*`/`$TVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui-model`），默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞；**答过的对话框会往 stderr 打一行** `[winemu] MsgBox(...) -> 1`（模拟框不显示文本，不报就等于把"脚本走了错误分支"藏起来了），重复的只报一次。默认后端不画任何东西，所以"GUI 函数有返回值但窗口没出现"是**默认行为**；要看真窗口用 `autoitv3-gui-egui` 的 `LiveBackend`——`au3 run --gui window`（构建 CLI 时加 `--features gui-window`）把窗口后端交给仿真层，窗口归主线程、脚本跑在工作线程上（见 `crates/au3-cli/README.md`） |
+| GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/对话框/托盘/输入/像素 共 165 项，全部在 `winemu/gui/` 的**内存控件树**上实现：控件=对象、句柄=整数、`GUIGetMsg` 无事件返回 `0`、`GUICtrlSendMsg` 对 `$EM_*`/`$LVM_*`/`$TVM_*` 给默认值（未知消息置 `@error`）。渲染与事件是 `GuiBackend` 接口（模型与接缝在 `autoitv3-gui-model`）：**Windows 上默认装的是真 Win32 后端**（`windows/gui.rs`——窗口和控件都是系统控件，`GUIGetMsg` 抽 `PeekMessageW`，用户点/打字回灌成 `GuiUpdate`），其他平台默认 `HeadlessBackend` 不画任何东西；`autoitv3-gui-egui` 提供**离屏**（`EguiBackend`，可出 PNG）与**真窗口**（`LiveBackend`）两种渲染，29 种控件全部落地（见下节）；`with_gui_events`/`with_gui_auto_close`/`with_gui_answers` 提供**脚本化事件**，让消息循环可确定终止、对话框不阻塞；**答过的对话框会往 stderr 打一行** `[winemu] MsgBox(...) -> 1`（模拟框不显示文本，不报就等于把"脚本走了错误分支"藏起来了），重复的只报一次。Windows 上默认渲染，"GUI 函数有返回值、窗口却没出现"只在 `--gui headless`（或 `evaluate`/`deobfuscate` 这类分析命令）下才成立；要在没有原生路径的主机上看窗口就用 `autoitv3-gui-egui` 的 `LiveBackend`——`au3 run --gui window`（构建 CLI 时加 `--features gui-window`）把窗口后端交给仿真层，窗口归主线程、脚本跑在工作线程上（见 `crates/au3-cli/README.md`） |
 
 **选定仿真系统版本**——`WindowsVersion` 有 `WinXp`/`WinVista`/`Win7`/`Win8`/`Win81`/
 `Win10`/`Win11`，**默认 Win10**：
@@ -332,13 +332,14 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
 - 未列举的 `DllCall` 置 `@error = 1`、返回 `0`，把决定权交回脚本；`DllCallAddress` 同理；
 - COM 只有一张内建 ProgID 表（`ObjCreate` 的三个 + `IsObj`/`ObjName`），表外的一律
   **可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
-- GUI 已由 `winemu/gui/` 的**无头语义**回答（不再是 `undefined function`），默认后端
-  **不渲染**——所以"GUI 函数有返回值、屏幕上却没有窗口"是默认行为，不是缺函数。
-  要看真窗口：CLI 用 `au3 run --gui window` / `au3 debug --gui window`（构建时加
-  `--features gui-window`），
-  或直接用 `autoitv3-gui-egui` 的 `LiveBackend`（feature `window`：窗口归主线程、
-  脚本跑在工作线程，点击/输入回灌 `GUIGetMsg`/`GUICtrlRead`）；只在离屏画布上出
-  PNG 截图则用 feature `gui-egui`。两种后端共用同一套控件绘制；
+- GUI 的 165 个函数由 `winemu/gui/` 回答（不再是 `undefined function`），渲染交给
+  `GuiBackend`：**Windows 上默认就是真 Win32**，窗口和控件是系统控件、事件来自真实
+  消息队列，所以"窗口没出现"在 Windows 上不再是默认行为；其他平台默认
+  `HeadlessBackend`，要看窗口用 `au3 run --gui window` / `au3 debug --gui window`
+  （构建时加 `--features gui-window`）或直接用 `autoitv3-gui-egui` 的 `LiveBackend`
+  （feature `window`：窗口归主线程、脚本跑在工作线程，点击/输入回灌
+  `GUIGetMsg`/`GUICtrlRead`）；只在离屏画布上出 PNG 截图则用 feature `gui-egui`。
+  后两种共用同一套控件绘制，三者看见的是同一份模型；
 - 写文件、回收站、驱动器映射、启动进程同样遵循 `ExecutionProfile`：确定性分析配置下被拒绝
   （`@error = 1`），也就不会生成 `.au3_registry` / `.au3_clipboard` / `.au3_recycle`；
 - 用 `--no-win-emu` / `AU3_WIN_EMU=0` / `WindowsEmulation::new().disabled()` 可整体关闭，

@@ -522,7 +522,10 @@ impl WindowsEmulation {
             recycle_dir: PathBuf::from(DEFAULT_RECYCLE_DIR),
             is_admin: true,
             shutdowns: 0,
-            gui: gui::GuiState::new(),
+            // The host's own GUI backend: real Win32 windows and controls on
+            // Windows, the headless model everywhere else (see
+            // `crate::default_gui_backend`).
+            gui: gui::GuiState::with_backend(crate::default_gui_backend()),
         }
     }
 
@@ -680,7 +683,11 @@ impl WindowsEmulation {
         self
     }
 
-    /// Install a GUI rendering backend (default: headless, renders nothing).
+    /// Install a GUI rendering backend.
+    ///
+    /// Without this, a fresh emulation keeps the host's own: on Windows the real
+    /// Win32 one (`crate::default_gui_backend`), elsewhere [`HeadlessBackend`],
+    /// which renders nothing.
     pub fn with_gui_backend(mut self, backend: Box<dyn GuiBackend>) -> Self {
         self.gui.set_backend(backend);
         self
@@ -715,7 +722,7 @@ impl WindowsEmulation {
     }
 
     /// Capture the current GUI frame, when the installed backend can render one
-    /// (the headless default cannot).
+    /// (neither the headless default nor the Win32 one does).
     pub fn gui_snapshot(&mut self) -> Option<GuiImage> {
         self.gui.snapshot()
     }

@@ -2,9 +2,13 @@
 //!
 //! The AutoIt semantics live here — handle numbering, `@error`, `$GUI_EVENT_*`,
 //! `$GUI_*` state bits — over the in-memory [`model::GuiModel`]. Rendering and
-//! event delivery are a pluggable [`GuiBackend`]: the default
-//! [`HeadlessBackend`] renders nothing, so a script can build its whole UI and
-//! run its message loop with no toolkit and no display.
+//! event delivery are a pluggable [`GuiBackend`]: [`HeadlessBackend`] renders
+//! nothing, so a script can build its whole UI and run its message loop with no
+//! toolkit and no display, and that is what a fresh emulation gets on every host
+//! without a native window system. On Windows the platform stack installs the
+//! real Win32 backend instead (see `autoitv3_platform::windows::gui`), which
+//! drives the same model through actual controls; `au3 run --gui headless`
+//! forces this one back.
 //!
 //! # Scripted events
 //!
@@ -159,6 +163,16 @@ impl GuiState {
             desktop: (0, 0),
             dialogs_seen: std::collections::HashSet::new(),
         }
+    }
+
+    /// A GUI state that starts with `backend` installed.
+    ///
+    /// The platform stack uses this to give a fresh emulation the host's own
+    /// backend — on Windows the real Win32 one, elsewhere the headless default.
+    pub fn with_backend(backend: Box<dyn GuiBackend>) -> Self {
+        let mut state = Self::new();
+        state.backend = backend;
+        state
     }
 
     /// Install a rendering backend.

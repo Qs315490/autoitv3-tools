@@ -61,6 +61,7 @@ pub(crate) mod com;
 pub(crate) mod dll;
 mod drive;
 mod files;
+pub(crate) mod gui;
 pub(crate) mod misc;
 pub(crate) mod process;
 pub(crate) mod registry;

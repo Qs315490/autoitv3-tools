@@ -142,15 +142,20 @@ ConsoleWrite("[" & @Compiled & "]" & @CRLF)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn gui_calls_are_answered_in_the_default_headless_mode() {
-    // `--gui headless` is the default: the 165 GUI functions answer with real
-    // results and nothing is drawn (so this works without a display).
+fn gui_calls_are_answered_with_and_without_a_backend() {
+    // Without `--gui` the platform picks: nothing is drawn on this host, and a
+    // Windows one opens a real window for the moment the process lives. Either
+    // way the 165 GUI functions answer, which is what this pins — with
+    // `--gui headless` nothing is drawn anywhere.
     let body = "Func F()\n    Return GUICreate(\"T\", 100, 50) > 0\nEndFunc\n";
     let path = script("gui-headless", body);
     let out = au3(&["run", path.to_str().unwrap(), "F"]);
     assert!(out.contains("F() = true"), "got:\n{out}");
 
     let out = au3(&["run", path.to_str().unwrap(), "--gui", "headless", "F"]);
+    assert!(out.contains("F() = true"), "got:\n{out}");
+
+    let out = au3(&["run", path.to_str().unwrap(), "--gui", "auto", "F"]);
     assert!(out.contains("F() = true"), "got:\n{out}");
 }
 

@@ -10,8 +10,9 @@ use std::rc::Rc;
 
 use autoitv3_platform::{CommonPlatform, CompositePlatform};
 use autoitv3_platform::winemu::{
-    Control, FileRegistry, GuiBackend, GuiEvent, GuiUpdate, MemoryRegistry, RegistryData,
-    RegistryStore, Window, WindowsArch, WindowsEmulation, WindowsPaths, WindowsVersion,
+    Control, FileRegistry, GuiBackend, GuiEvent, GuiUpdate, HeadlessBackend, MemoryRegistry,
+    RegistryData, RegistryStore, Window, WindowsArch, WindowsEmulation, WindowsPaths,
+    WindowsVersion,
 };
 use autoitv3_runtime::profile::ExecutionProfile;
 use autoitv3_runtime::{Runtime, Value};
@@ -59,9 +60,15 @@ fn run_mapped(emu: WindowsEmulation, body: &str) -> Value {
     rt.call_function("F", vec![]).expect("no runtime error")
 }
 
-/// The default machine: Windows 10 x64.
+/// The default machine: Windows 10 x64, with no rendering.
+///
+/// The backend is spelled out because the platform's own default is a real
+/// Win32 window on Windows: these tests are about the emulation's semantics, and
+/// one that opened a window would flash on a desktop and need a display session
+/// to run at all. The seam itself is covered by the tests that install a
+/// recording backend below, and by `gui_egui.rs`, which install their own.
 fn win10() -> WindowsEmulation {
-    WindowsEmulation::new()
+    WindowsEmulation::new().with_gui_backend(Box::new(HeadlessBackend::new()))
 }
 
 /// A Windows 10 machine whose registry is a file unique to one test, so a

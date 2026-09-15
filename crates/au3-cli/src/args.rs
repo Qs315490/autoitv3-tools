@@ -37,17 +37,29 @@ pub struct OutputArgs {
 /// How the emulated GUI is presented while the script runs.
 ///
 /// The GUI *semantics* (165 functions) are answered by the emulation layer on
-/// every host; the backend only decides whether anything is drawn. `Headless`
-/// is the default and works without a display server; `Window` hands the
-/// emulation the eframe-backed `LiveBackend`, which needs a build with the
-/// `gui-window` feature.
+/// every host — every backend sees the same windows, controls, events and
+/// return values. The mode only decides what draws them.
+///
+/// `auto` is the default because the right answer is the platform's: on Windows
+/// the emulation runs the real Win32 controls, so the window a script creates is
+/// an ordinary native window, hit-tested and redrawn by the OS. Elsewhere no
+/// window system is assumed and nothing is drawn. `headless` forces that
+/// no-drawing behaviour on every host, which is what an analysis run or a CI job
+/// wants — nothing to open, nothing to leak, identical output. `window` replaces
+/// whatever the platform chose with the eframe-backed
+/// `autoitv3_gui_egui::LiveBackend`, for seeing a script's GUI on a host that
+/// has no native path to it.
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GuiMode {
-    /// The in-memory model: GUI calls return their real results and nothing is
-    /// drawn (the default, and the only mode that works without a display).
+    /// Whatever the platform does by itself: native Win32 controls on Windows,
+    /// the in-memory model elsewhere (the default).
     #[default]
+    Auto,
+    /// Always the in-memory model: GUI calls return their real results and
+    /// nothing is drawn, on every host.
     Headless,
-    /// A real window driven by `autoitv3_gui_egui::LiveBackend`.
+    /// A real window driven by `autoitv3_gui_egui::LiveBackend` (needs a build
+    /// with the `gui-window` feature).
     Window,
 }
 
@@ -235,24 +247,16 @@ impl WinEmuArgs {
     /// look there and then in the working directory. Passing
     /// `--resource-module` (or `AU3_RESOURCE_MODULE`) skips the search, and so
     /// does `input_module` — the build the script was just unpacked from.
-    pub fn platform(
-        &self,
-        script: Option<&Path>,
-        input_module: Option<&Path>,
-    ) -> CliResult<Box<dyn Platform>> {
-        self.platform_with_gui(script, input_module, None)
-    }
-
-    /// As [`platform`](Self::platform), with a GUI backend installed on the
-    /// emulation layer.
-    ///
-    /// The headless default answers the 165 GUI functions without drawing
-    /// anything; `au3 run --gui window` passes a [`GuiBackend`] that owns a real
-    /// window, which is why it has to be handed in here rather than chosen by
-    /// the emulation itself.
+    /// `gui` is the GUI backend to install on the emulation layer. `None` keeps
+    /// the emulation's own — the host's native one on Windows, the headless
+    /// default elsewhere — which is what `--gui auto` (the default) wants;
+    /// `Some` replaces it, which is how the other two modes are implemented.
+    /// They pass a backend here rather than letting the emulation choose one
+    /// because the choice is the CLI's: `--gui headless` must not draw even on a
+    /// Windows host, and `--gui window` draws through eframe wherever it runs.
     ///
     /// [`GuiBackend`]: autoitv3_platform::winemu::GuiBackend
-    pub fn platform_with_gui(
+    pub fn platform(
         &self,
         script: Option<&Path>,
         input_module: Option<&Path>,

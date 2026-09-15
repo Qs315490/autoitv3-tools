@@ -131,17 +131,15 @@ pub struct DebugArgs {
     pub win: WinEmuArgs,
 }
 
-/// The live-window backend, when this build was made with `gui-window`.
+/// Builds the GUI backend a fresh runtime gets.
 ///
-/// Without the feature it is an unreachable placeholder, so
-/// `Option<WindowBackend>` still exists (always `None`) and no `#[cfg]` has to
-/// thread through the session. Deliberately not `Copy`: the real backend is
-/// shared by cloning, and the placeholder should behave the same way.
-#[cfg(feature = "gui-window")]
-type WindowBackend = autoitv3_gui_egui::LiveBackend;
-#[cfg(not(feature = "gui-window"))]
-#[derive(Clone)]
-struct WindowBackend;
+/// The session builds a runtime more than once — every `run` asks for a new one
+/// — but a backend is handed to the platform stack by value, so the session
+/// keeps a factory instead of a backend. `--gui window`'s factory hands out
+/// clones of one `LiveBackend`, which all describe the same window; the other
+/// modes build a fresh backend each time, which is just as good because they own
+/// no window.
+type GuiFactory = Box<dyn Fn() -> Box<dyn autoitv3_platform::winemu::GuiBackend>>;
 
 /// Entry point for the `debug` subcommand.
 ///
@@ -150,7 +148,15 @@ struct WindowBackend;
 /// session — shell included — onto `LiveBackend`'s worker instead.
 pub fn run(args: &DebugArgs) -> CliResult<()> {
     match args.gui {
-        GuiMode::Headless => session(args, None),
+        // No factory: the platform stack keeps its own backend, which is the
+        // native Win32 one on Windows.
+        GuiMode::Auto => session(args, None),
+        GuiMode::Headless => session(
+            args,
+            Some(Box::new(|| {
+                Box::new(autoitv3_platform::winemu::HeadlessBackend::new())
+            })),
+        ),
         GuiMode::Window => run_windowed(args),
     }
 }
@@ -170,7 +176,8 @@ fn run_windowed(args: &DebugArgs) -> CliResult<()> {
     let owned = args.clone();
     autoitv3_gui_egui::LiveBackend::new(title)
         .run(move |backend| {
-            if let Err(e) = session(&owned, Some(backend)) {
+            let factory: GuiFactory = Box::new(move || Box::new(backend.clone()));
+            if let Err(e) = session(&owned, Some(factory)) {
                 eprintln!("error: {}", e.message);
             }
         })
@@ -188,9 +195,9 @@ fn run_windowed(_args: &DebugArgs) -> CliResult<()> {
 
 /// The debug session: command files, shell and run loop.
 ///
-/// `gui` is the window backend when the build has one; without the feature it
-/// is `None` by construction (see [`WindowBackend`]).
-fn session(args: &DebugArgs, gui: Option<WindowBackend>) -> CliResult<()> {
+/// `gui` is the backend factory when a mode overrode the platform's own
+/// (see [`GuiFactory`]); `None` leaves the choice to the platform.
+fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
     let input = load_input(&args.input)?;
     let source = input.source;
     let prog = input.program;
@@ -211,7 +218,7 @@ fn session(args: &DebugArgs, gui: Option<WindowBackend>) -> CliResult<()> {
         args,
         file_commands,
     )));
-    let mut rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), gui.clone());
+    let mut rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), &gui);
 
     // The outer loop. A `Resume` here means "start the script body"; the same
     // answer at a breakpoint means "give control back to the interpreter",
@@ -228,7 +235,7 @@ fn session(args: &DebugArgs, gui: Option<WindowBackend>) -> CliResult<()> {
         // Start a run. `run` typed at a stop asks for a fresh one: the request
         // unwinds the current run first, which is what `take_restart` reports.
         loop {
-            rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), gui.clone());
+            rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), &gui);
             shell.borrow_mut().restore_breakpoints(&mut rt);
             shell.borrow_mut().begin_run();
             let result = rt.run_script();
@@ -248,21 +255,15 @@ fn build_runtime(
     args: &DebugArgs,
     shell: Rc<RefCell<Shell>>,
     resource_module: Option<&Path>,
-    gui: Option<WindowBackend>,
+    gui: &Option<GuiFactory>,
 ) -> Runtime {
     let mut rt = Runtime::with_program(prog);
-    #[cfg(feature = "gui-window")]
-    let platform = args.win.platform_with_gui(
+    // A factory, not a backend: each runtime gets its own handle to the window.
+    let platform = args.win.platform(
         Some(Path::new(&args.input)),
         resource_module,
-        gui.map(|backend| Box::new(backend) as Box<dyn autoitv3_platform::winemu::GuiBackend>),
+        gui.as_ref().map(|make| make()),
     );
-    #[cfg(not(feature = "gui-window"))]
-    let platform = {
-        let _ = gui;
-        args.win
-            .platform(Some(Path::new(&args.input)), resource_module)
-    };
     match platform {
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
