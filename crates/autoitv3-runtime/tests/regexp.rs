@@ -340,3 +340,66 @@ fn char_offsets_are_one_based_and_utf8_safe() {
     assert_eq!(regexp::char_offset_to_byte(s, 99), None);
     assert_eq!(regexp::byte_to_char_offset(s, 3), 3);
 }
+// ---------------------------------------------------------------------------
+// PCRE constructs the engine spells differently
+// ---------------------------------------------------------------------------
+
+#[test]
+fn assertion_conditionals_are_expanded() {
+    // `fancy-regex` implements the group conditional `(?(1)yes|no)` but not the
+    // assertion form, which AutoIt patterns use to branch on a lookaround.
+    assert_eq!(text(r#"Return StringRegExp("b", "^(?(?=a)a|b)$")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("a", "^(?(?=a)a|b)$")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("c", "^(?(?=a)a|b)$")"#), "0");
+    // Without an else branch the pattern only matches when the condition holds.
+    assert_eq!(text(r#"Return StringRegExp("a", "^(?(?=a)a)$")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("b", "^(?(?=a)a)$")"#), "0");
+    // Negated and lookbehind conditions, and a quantified conditional. A
+    // negative condition is a plain assertion too: when it holds, only the
+    // "yes" branch is tried, so `^(?(?!a)a|b)$` never matches either subject.
+    assert_eq!(text(r#"Return StringRegExp("a", "^(?(?!x)a|b)$")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("b", "^(?(?!a)a|b)$")"#), "0");
+    assert_eq!(text(r#"Return StringRegExp("xa", "(?(?<=x)a|b)")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("aab", "^(?:(?(?=a)a|b))+$")"#), "1");
+    // A conditional inside a capture group keeps the group numbering.
+    assert_eq!(text(r#"Return StringRegExp("b", "^(x)?(?(?=b)b|c)$")"#), "1");
+}
+
+#[test]
+fn character_class_escapes_keep_the_pcre_meaning() {
+    // `fancy-regex` follows Oniguruma for `\h`/`\H`, where they mean "hex
+    // digit"; PCRE — and AutoIt — mean horizontal white space. Getting this
+    // wrong is silent: the pattern still compiles, it just consumes one
+    // character too many.
+    assert_eq!(text(r#"Return StringRegExp(" ", "\h")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp(@TAB, "\h")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("C", "\h")"#), "0");
+    assert_eq!(text(r#"Return StringRegExp(ChrW(160), "\h")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp("x", "\H")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp(" ", "\H")"#), "0");
+    // `\h` inside a class means the same thing.
+    assert_eq!(text(r#"Return StringRegExp(" ", "[\h\d]")"#), "1");
+    // `\v` is any vertical white space in PCRE, not just the C escape.
+    assert_eq!(text(r#"Return StringRegExp(@LF, "\v")"#), "1");
+    assert_eq!(text(r#"Return StringRegExp(Chr(11), "\v")"#), "1");
+    // An escaped backslash before an `h` is left alone: `\\h` is a literal
+    // backslash followed by a literal `h`.
+    assert_eq!(text(r#"Return StringRegExp("\h", "\\h")"#), "1");
+}
+
+#[test]
+fn the_drive_letter_splitter_keeps_its_groups() {
+    // The drive-letter splitter AutoIt builds use to split a path into drive / dir /
+    // file name / extension. `\h` must not eat the drive letter: `C` is a hex
+    // digit, and the engine would otherwise consume it before the group opens.
+    let pattern = r"^\h*((?:\\\\\?\\)*(\\[^\?\/\\]+|[A-Za-z]:)?(.*[\/\\]\h*)?((?:[^\.\/\\]|(?(?=\.[^\/\\]*\.)\.))*)?([^\/\\]*))$";
+    let body = format!(
+        "    Local $a = StringRegExp({}, {}, 1)\n    Return UBound($a) & \":\" & $a[1] & \":\" & $a[2] & \":\" & $a[3] & \":\" & $a[4]",
+        autoit_literal(r"C:\Users\user\Desktop\build\app.exe"),
+        autoit_literal(pattern),
+    );
+    assert_eq!(
+        text(&body),
+        r"5:C::\Users\user\Desktop\build\:app:.exe"
+    );
+}
