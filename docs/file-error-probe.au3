@@ -132,6 +132,33 @@ P("FileReadToArray(empty)", $a, @error, @extended)
 $a = FileReadToArray($missing)
 P("FileReadToArray(missing)", $a, @error, @extended)
 
+; ---- FileSetPos 的三种 origin（帮助页是三参数）----
+; @error 必须在 FileSetPos 之后立刻取走：中间任何一次函数调用（包括下面那个
+; FileGetPos）都会把它重置。
+Local $hp = FileOpen($text, 0)
+Local $e = 0
+Local $x = 0
+
+$v = FileSetPos($hp, 0, 2)
+$e = @error
+$x = @extended
+Local $at_end = FileGetPos($hp)
+P("FileSetPos(end,0)", $v & "/" & $at_end, $e, $x)
+
+$v = FileSetPos($hp, -2, 1)
+$e = @error
+$x = @extended
+Local $at_back = FileGetPos($hp)
+P("FileSetPos(cur,-2)", $v & "/" & $at_back, $e, $x)
+
+$v = FileSetPos($hp, 2, 0)
+$e = @error
+$x = @extended
+Local $at_start = FileGetPos($hp)
+P("FileSetPos(begin,2)", $v & "/" & $at_start, $e, $x)
+
+FileClose($hp)
+
 ; ---- 坏句柄 / 只读句柄（放最后）----
 $v = FileClose(9999)
 P("FileClose(9999)", $v, @error, @extended)
@@ -142,7 +169,7 @@ P("FileFlush(9999)", $v, @error, @extended)
 $v = FileGetPos(9999)
 P("FileGetPos(9999)", $v, @error, @extended)
 
-$v = FileSetPos(9999, 0)
+$v = FileSetPos(9999, 0, 0)
 P("FileSetPos(9999)", $v, @error, @extended)
 
 $v = FileRead(9999)
