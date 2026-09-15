@@ -625,12 +625,20 @@ pub(crate) fn call(
             let x = args.get(1).map(|v| v.to_int()).unwrap_or(0);
             let r = args.get(2).cloned().unwrap_or(Value::Null);
             rt.set_error_value(e, x);
+            // Explicit: unlike a builtin that happens to fail, this is the
+            // function asking for the code to be reported to its caller. The
+            // extended one counts only when the argument was really there.
+            rt.mark_error_set(false);
+            if args.get(1).is_some() {
+                rt.mark_error_set(true);
+            }
             r
         }
         "setextended" => {
             let x = args.first().map(|v| v.to_int()).unwrap_or(0);
             let r = args.get(1).cloned().unwrap_or(Value::Null);
             rt.set_error_value(rt.error(), x);
+            rt.mark_error_set(true);
             r
         }
         "execute" => {

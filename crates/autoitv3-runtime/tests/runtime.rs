@@ -1168,7 +1168,11 @@ fn host_supplies_native_functions() {
 
 #[test]
 fn host_can_read_and_write_globals() {
-    let src = "Global $g = 1\nFunc F()\n    Return Bump()\nEndFunc\n";
+    // `F` reports what the host's failure left *inside* it: a nested call's
+    // codes are visible while the body runs. They do not outlive the function
+    // (see `an_error_leaves_only_the_function_that_set_it`), so the caller ends
+    // up with 0.
+    let src = "Global $g = 1\nFunc F()\n    Local $bumped = Bump()\n    Return $bumped & \"/\" & @error & \"/\" & @extended\nEndFunc\n";
     let mut r = rt(src);
     let mut host = NativeHost::new();
     host.register("Bump", |ctx: &mut dyn HostContext, _args: Vec<Value>| {
@@ -1181,9 +1185,12 @@ fn host_can_read_and_write_globals() {
     // Run the script body so `Global $g = 1` takes effect.
     r.run_script().unwrap();
     let v = r.call_function("F", vec![]).unwrap();
-    assert!(matches!(v, Value::Int(2)), "got {v:?}");
+    match v {
+        Value::Str(s) => assert_eq!(s, "2/5/6", "got {s}"),
+        other => panic!("got {other:?}"),
+    }
     assert_eq!(r.get_global("g").map(|v| v.to_int()), Some(2));
-    assert_eq!(r.error(), 5);
+    assert_eq!(r.error(), 0);
 }
 
 #[test]
@@ -2031,6 +2038,53 @@ EndFunc
 "#;
     match call(src, "F", vec![]) {
         Value::Str(s) => assert_eq!(s, "2:0/0", "got {s}"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn an_error_leaves_only_the_function_that_set_it() {
+    // The 3.3 behaviour, measured against the official interpreter: a nested
+    // call's @error is visible inside the function, but a function that never
+    // called SetError reports 0 to its caller — and a call *after* SetError
+    // replaces the value too.
+    let src = r#"
+Func ErrorMaker()
+    SetError(-99, 0, 0)
+    Return 22
+EndFunc
+Func NaiveProxy()
+    Return ErrorMaker()
+EndFunc
+Func Breakdown()
+    Local $result = ErrorMaker()
+    Local $seen = @error
+    Return $seen & "/" & $result
+EndFunc
+Func WiseProxy()
+    Local $result = ErrorMaker()
+    SetError(@error, @extended, 0)
+    Return $result
+EndFunc
+Func SettingLate()
+    SetError(13, 7, 0)
+    Sleep(1)
+EndFunc
+Func F()
+    ErrorMaker()
+    Local $direct = @error
+    NaiveProxy()
+    Local $naive = @error
+    Local $inside = Breakdown()
+    WiseProxy()
+    Local $wise = @error
+    SettingLate()
+    Local $late = @error
+    Return $direct & ":" & $naive & ":" & $inside & ":" & $wise & ":" & $late
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "-99:0:-99/22:-99:0"),
         other => panic!("got {other:?}"),
     }
 }

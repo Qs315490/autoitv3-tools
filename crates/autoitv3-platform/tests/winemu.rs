@@ -641,12 +641,14 @@ fn clipboard_round_trips_through_a_file() {
 
 #[test]
 fn drive_queries_answer_for_the_emulated_c_drive() {
+    // `$d[0]` is the number of drives, as AutoIt's `DriveGetDrive` documents;
+    // the letters start at `$d[1]`.
     let body = r#"Local $d = DriveGetDrive("FIXED")
-    Return $d[0] & "|" & DriveGetType("C:\") & "|" & DriveGetFileSystem("C:\") & "|" & _
+    Return $d[0] & "|" & $d[1] & "|" & DriveGetType("C:\") & "|" & DriveGetFileSystem("C:\") & "|" & _
         (DriveSpaceTotal("C:\") > 0) & "|" & (DriveSpaceFree("C:\") > 0) & "|" & DriveStatus("C:\")"#;
     assert_eq!(
         text(win10(), body),
-        r"C:\|FIXED|NTFS|True|True|READY"
+        r"1|C:\|FIXED|NTFS|True|True|READY"
     );
 }
 
@@ -656,7 +658,34 @@ fn an_unknown_drive_reports_error() {
         text(win10(), r#"Return DriveGetType("Z:\") & ":" & @error"#),
         ":1"
     );
-    assert_eq!(text(win10(), r#"Return UBound(DriveGetDrive("NETWORK"))"#), "0");
+    // No drives of the type: `@error` 1 and a list whose count is 0 — an array
+    // of one element, not an empty one.
+    assert_eq!(
+        text(
+            win10(),
+            r#"Local $d = DriveGetDrive("NETWORK")
+    Local $err = @error
+    Return UBound($d) & ":" & $d[0] & ":" & $err"#
+        ),
+        "1:0:1"
+    );
+}
+
+#[test]
+fn a_drive_type_list_takes_either_kind() {
+    // `"FIXED,REMOVABLE"` asks for either kind, which is how a script looks for
+    // "somewhere I can read a Windows directory from".
+    let body = r#"Local $either = DriveGetDrive("FIXED,REMOVABLE")
+    Local $either_err = @error
+    Local $none = DriveGetDrive("CDROM,NETWORK")
+    Local $none_err = @error
+    Return $either[0] & "|" & $either[1] & "|" & $either_err & "|" & $none[0] & "|" & $none_err"#;
+    assert_eq!(text(win10(), body), r"1|C:\|0|0|1");
+}
+
+#[test]
+fn the_system_drive_macro_names_the_windows_drive() {
+    assert_eq!(text(win10(), "Return @SystemDrive"), "C:");
 }
 
 // ---------------------------------------------------------------------------
