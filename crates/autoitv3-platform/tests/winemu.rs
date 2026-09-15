@@ -645,14 +645,14 @@ fn clipboard_round_trips_through_a_file() {
 #[test]
 fn drive_queries_answer_for_the_emulated_c_drive() {
     // `$d[0]` is the number of drives and the letters start at `$d[1]`; a
-    // drive is spelled `C:` — letter and colon, no separator (the official
-    // implementation strips the one it probed with).
+    // drive is spelled `c:` — lower-case letter and colon, no separator (the
+    // official implementation strips the one it probed with).
     let body = r#"Local $d = DriveGetDrive("FIXED")
     Return $d[0] & "|" & $d[1] & "|" & DriveGetType("C:\") & "|" & DriveGetFileSystem("C:\") & "|" & _
         (DriveSpaceTotal("C:\") > 0) & "|" & (DriveSpaceFree("C:\") > 0) & "|" & DriveStatus("C:\")"#;
     assert_eq!(
         text(win10(), body),
-        r"1|C:|FIXED|NTFS|True|True|READY"
+        r"1|c:|FIXED|NTFS|True|True|READY"
     );
 }
 
@@ -685,7 +685,7 @@ fn a_drive_type_list_takes_either_kind() {
     Local $none = DriveGetDrive("CDROM,NETWORK")
     Local $none_err = @error
     Return $either[0] & "|" & $either[1] & "|" & $either_err & "|" & $none & "|" & $none_err"#;
-    assert_eq!(text(win10(), body), r"1|C:|0||1");
+    assert_eq!(text(win10(), body), r"1|c:|0||1");
 }
 
 #[test]

@@ -364,11 +364,15 @@ impl DriveSpec {
         format!("{}:\\", self.letter.to_ascii_uppercase())
     }
 
-    /// The drive as `DriveGetDrive` reports it: letter and colon, no separator
-    /// (`C:`). A script joins it with `\` itself, and the official interpreter
-    /// strips the separator before storing it in the result.
+    /// The drive as `DriveGetDrive` reports it: letter and colon, lower case,
+    /// no separator (`c:`).
+    ///
+    /// The official interpreter probes `c:\`, strips the separator and keeps
+    /// the lower-case letter it started from (measured: `ALL` gives `c:`, `d:`,
+    /// …). A script joins the name with its own `\`, and the ones that want
+    /// upper case call `StringUpper` themselves.
     pub fn name(&self) -> String {
-        format!("{}:", self.letter.to_ascii_uppercase())
+        format!("{}:", self.letter.to_ascii_lowercase())
     }
 }
 

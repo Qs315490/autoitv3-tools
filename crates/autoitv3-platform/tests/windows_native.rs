@@ -427,7 +427,8 @@ fn drivegetdrive_lists_at_least_the_system_drive() {
             r#"
 Func F()
     Local $drives = DriveGetDrive("ALL")
-    Return (($drives[0] >= 1) And (StringLen($drives[1]) = 3)) + 0
+    ; A drive is a lower-case letter, a colon and nothing else: `c:`.
+    Return (($drives[0] >= 1) And (StringLen($drives[1]) = 2) And (StringRight($drives[1], 1) = ":")) + 0
 EndFunc
 "#
         ),
