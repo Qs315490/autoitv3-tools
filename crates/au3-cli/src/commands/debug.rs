@@ -31,6 +31,14 @@
 //! outer loop and the prompt at a breakpoint draw from the same queue, so
 //! `-c run -c next -c 'print $x' -c quit` means what it looks like — `run`
 //! stops, and the remaining commands are consumed by the prompt.
+//!
+//! ## Watching a GUI script
+//!
+//! The emulated GUI answers its 165 functions headlessly by default, so a
+//! script that builds a window runs but nothing is drawn. `--gui window` (build
+//! with `--features gui-window`) puts the session under a real window instead:
+//! winit takes the main thread, so the shell, the interpreter and the prompt
+//! all move to `LiveBackend`'s worker, and stdin keeps working there.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -52,13 +60,14 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
+    GuiMode,
     load_input, CliError, CliResult, CompiledArgs, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
 };
 use crate::output::format_value;
 use std::path::Path;
 
 /// Arguments for `au3 debug`.
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct DebugArgs {
     /// Input AutoIt v3 script, or a compiled build (.exe/.a3x) to read it from
     #[arg(value_name = "FILE")]
@@ -112,12 +121,76 @@ pub struct DebugArgs {
     #[command(flatten)]
     pub compiled: CompiledArgs,
 
+    /// GUI backend: `headless` answers the GUI functions without drawing
+    /// anything; `window` runs the session under a real window (needs a build
+    /// with the `gui-window` feature)
+    #[arg(long = "gui", value_name = "MODE", default_value = "headless")]
+    pub gui: GuiMode,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 }
 
+/// The live-window backend, when this build was made with `gui-window`.
+///
+/// Without the feature it is an unreachable placeholder, so
+/// `Option<WindowBackend>` still exists (always `None`) and no `#[cfg]` has to
+/// thread through the session. Deliberately not `Copy`: the real backend is
+/// shared by cloning, and the placeholder should behave the same way.
+#[cfg(feature = "gui-window")]
+type WindowBackend = autoitv3_gui_egui::LiveBackend;
+#[cfg(not(feature = "gui-window"))]
+#[derive(Clone)]
+struct WindowBackend;
+
 /// Entry point for the `debug` subcommand.
+///
+/// The session runs on this thread by default. `--gui window` has to hand the
+/// main thread to the window loop (winit insists on it), so it moves the whole
+/// session — shell included — onto `LiveBackend`'s worker instead.
 pub fn run(args: &DebugArgs) -> CliResult<()> {
+    match args.gui {
+        GuiMode::Headless => session(args, None),
+        GuiMode::Window => run_windowed(args),
+    }
+}
+
+/// `--gui window`: run the whole debug session under a real window.
+///
+/// The window owns the main thread, so everything below — shell, interpreter
+/// and all — happens on the worker thread `LiveBackend::run` starts. The shell
+/// still reads stdin there, which is what makes the prompt usable while the
+/// window is on screen.
+#[cfg(feature = "gui-window")]
+fn run_windowed(args: &DebugArgs) -> CliResult<()> {
+    let title = Path::new(&args.input)
+        .file_name()
+        .map(|name| format!("au3 debug — {}", name.to_string_lossy()))
+        .unwrap_or_else(|| "au3 debug".to_string());
+    let owned = args.clone();
+    autoitv3_gui_egui::LiveBackend::new(title)
+        .run(move |backend| {
+            if let Err(e) = session(&owned, Some(backend)) {
+                eprintln!("error: {}", e.message);
+            }
+        })
+        .map_err(|e| CliError::failure(format!("opening the GUI window failed: {e}")))
+}
+
+/// `--gui window` without the feature: say how to get one.
+#[cfg(not(feature = "gui-window"))]
+fn run_windowed(_args: &DebugArgs) -> CliResult<()> {
+    Err(CliError::failure(
+        "--gui window needs a build with the `gui-window` feature \
+         (cargo build --release -p au3-cli --features gui-window)",
+    ))
+}
+
+/// The debug session: command files, shell and run loop.
+///
+/// `gui` is the window backend when the build has one; without the feature it
+/// is `None` by construction (see [`WindowBackend`]).
+fn session(args: &DebugArgs, gui: Option<WindowBackend>) -> CliResult<()> {
     let input = load_input(&args.input)?;
     let source = input.source;
     let prog = input.program;
@@ -138,7 +211,7 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
         args,
         file_commands,
     )));
-    let mut rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref());
+    let mut rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), gui.clone());
 
     // The outer loop. A `Resume` here means "start the script body"; the same
     // answer at a breakpoint means "give control back to the interpreter",
@@ -155,7 +228,7 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
         // Start a run. `run` typed at a stop asks for a fresh one: the request
         // unwinds the current run first, which is what `take_restart` reports.
         loop {
-            rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref());
+            rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), gui.clone());
             shell.borrow_mut().restore_breakpoints(&mut rt);
             shell.borrow_mut().begin_run();
             let result = rt.run_script();
@@ -175,9 +248,22 @@ fn build_runtime(
     args: &DebugArgs,
     shell: Rc<RefCell<Shell>>,
     resource_module: Option<&Path>,
+    gui: Option<WindowBackend>,
 ) -> Runtime {
     let mut rt = Runtime::with_program(prog);
-    match args.win.platform(Some(Path::new(&args.input)), resource_module) {
+    #[cfg(feature = "gui-window")]
+    let platform = args.win.platform_with_gui(
+        Some(Path::new(&args.input)),
+        resource_module,
+        gui.map(|backend| Box::new(backend) as Box<dyn autoitv3_platform::winemu::GuiBackend>),
+    );
+    #[cfg(not(feature = "gui-window"))]
+    let platform = {
+        let _ = gui;
+        args.win
+            .platform(Some(Path::new(&args.input)), resource_module)
+    };
+    match platform {
         Ok(platform) => rt.set_platform(platform),
         Err(e) => eprintln!("warning: {}", e.message),
     }

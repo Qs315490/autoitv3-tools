@@ -104,6 +104,7 @@ echo 'break 68
 run
 backtrace
 quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符）
+au3 debug some-gui.au3 --gui window   # 会话跑在真窗口下（需 --features gui-window 构建）
 ```
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、

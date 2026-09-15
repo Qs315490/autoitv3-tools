@@ -18,8 +18,8 @@ use autoitv3_runtime::{Flow, Runtime, Value};
 use clap::Args;
 
 use crate::args::{
-    load_input, parse_arg_value, CliError, CliResult, CompiledArgs, EffectArgs, ProfileArgs,
-    StepArgs, WinEmuArgs,
+    load_input, parse_arg_value, CliError, CliResult, CompiledArgs, EffectArgs, GuiMode,
+    ProfileArgs, StepArgs, WinEmuArgs,
 };
 use crate::output::format_value;
 use std::path::Path;
@@ -80,17 +80,6 @@ pub struct RunArgs {
 
     #[command(flatten)]
     pub win: WinEmuArgs,
-}
-
-/// How the emulated GUI is presented while the script runs.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GuiMode {
-    /// The in-memory model: GUI calls return their real results and nothing is
-    /// drawn (the default, and the only mode that works without a display).
-    #[default]
-    Headless,
-    /// A real window driven by `autoitv3_gui_egui::LiveBackend`.
-    Window,
 }
 
 /// Entry point for the `run` subcommand.
