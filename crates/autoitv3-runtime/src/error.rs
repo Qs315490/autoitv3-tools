@@ -45,6 +45,8 @@ pub enum RuntimeError {
     UndefinedFunction { name: String, span: Option<Span> },
     /// An array/string index outside its bounds.
     IndexOutOfBounds { index: i64, len: usize, span: Option<Span> },
+    /// A declaration asked for more array elements than AutoIt allows.
+    ArrayTooLarge { elements: i64, limit: i64, span: Option<Span> },
     /// Too many interpreter steps (runaway loop guard).
     StepLimitExceeded { limit: u64 },
     /// Too many nested calls (runaway recursion guard).
@@ -71,6 +73,10 @@ impl RuntimeError {
             RuntimeError::IndexOutOfBounds { index, len, .. } => {
                 format!("index {index} out of bounds (len {len})")
             }
+            RuntimeError::ArrayTooLarge { elements, limit, .. } => format!(
+                "array of {elements} elements is past the {limit} AutoIt allows \
+                 (VAR_SUBSCRIPT_ELEMENTS)"
+            ),
             RuntimeError::StepLimitExceeded { limit } => {
                 format!("step limit exceeded ({limit})")
             }
@@ -89,7 +95,8 @@ impl RuntimeError {
             | RuntimeError::Type { span, .. }
             | RuntimeError::UndefinedVariable { span, .. }
             | RuntimeError::UndefinedFunction { span, .. }
-            | RuntimeError::IndexOutOfBounds { span, .. } => *span,
+            | RuntimeError::IndexOutOfBounds { span, .. }
+            | RuntimeError::ArrayTooLarge { span, .. } => *span,
             _ => None,
         }
     }

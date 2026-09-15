@@ -426,6 +426,23 @@ EndFunc
 }
 
 #[test]
+fn an_array_past_autoits_element_limit_is_refused() {
+    // `VAR_SUBSCRIPT_ELEMENTS` is 16,777,216 in the help's Limits/Defaults
+    // table. An obfuscated `$n + 4294967295` asks for four billion elements and
+    // used to reach the allocator — the process died there with nothing said
+    // about where. The declaration is now an error that names the count.
+    let src = "Func F()\n    Local $a[20000000]\nEndFunc\n";
+    let err = rt(src).call_function("F", vec![]).unwrap_err();
+    let message = err.message();
+    assert!(message.contains("20000000"), "{message}");
+    assert!(message.contains("16777216"), "{message}");
+    assert!(
+        matches!(err.span().map(|s| s.start.line), Some(2)),
+        "the declaration's line: {err:?}"
+    );
+}
+
+#[test]
 fn redim_preserves_existing_elements() {
     let src = r#"
 Func F()
