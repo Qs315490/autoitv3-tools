@@ -17,6 +17,7 @@
 //! script analysed on another host should still run the way it always did.
 
 use std::ffi::OsString;
+#[cfg(not(windows))]
 use std::path::Path;
 
 /// Whether this process already holds a full administrator token.
