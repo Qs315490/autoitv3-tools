@@ -49,12 +49,13 @@
 //!   icon and small-icon views and the click-to-sort are not there; the check
 //!   boxes of `$LVS_EX_CHECKBOXES` are, because the common control draws them
 //!   itself and this backend only mirrors their state;
-//! * `$GUI_BKCOLOR_LV_ALTERNATE` (alternating row colours) and
-//!   `$GUI_WS_EX_PARENTDRAG` (dragging a window by a label or a picture) are
-//!   not implemented;
+//! * `$GUI_WS_EX_PARENTDRAG` (dragging a window by a label or a picture) is not
+//!   implemented; `$GUI_BKCOLOR_LV_ALTERNATE` is, through the `ListView`'s own
+//!   custom draw, which is also how `$GUI_BKCOLOR_TRANSPARENT` reaches a label;
 //! * a control's `GUICtrlSetTip` bubble needs the tooltip to be given a handle
 //!   before it is shown, which the control's own `tooltips_class32` does; a
-//!   *balloon* tip (`$TIP_BALLOON`) is drawn as a plain one;
+//!   *balloon* tip (`$TIP_BALLOON`) gets a balloon tooltip of its own together
+//!   with the title and icon `$TTM_SETTITLEW` shows;
 //! * `WinGetPos` answers with the size the model keeps, which is the client
 //!   area; the frame is added for the real window, so this end matches what the
 //!   official interpreter reports.
@@ -68,7 +69,7 @@ use std::ffi::c_void;
 
 use autoitv3_gui_model::{
     Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Progress,
-    Splash, Window, WindowState,
+    Splash, Window, WindowState, TIP_CENTER,
 };
 
 use super::dialogs;
@@ -88,8 +89,10 @@ use windows_sys::Win32::Graphics::GdiPlus::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
     InitCommonControlsEx, TOOLTIPS_CLASSW, TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW,
-    TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTTOOLINFOW, INITCOMMONCONTROLSEX,
-    LVCOLUMNW, LVITEMW, TCITEMW, TVINSERTSTRUCTW, TVITEMW,
+    TTM_DELTOOLW, TTM_SETMAXTIPWIDTH, TTM_SETTITLEW, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTTOOLINFOW,
+    INITCOMMONCONTROLSEX, LVCOLUMNW, LVITEMW, TCITEMW, TVINSERTSTRUCTW, TVITEMW, NM_CUSTOMDRAW,
+    NMLVCUSTOMDRAW, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW,
+    TTF_CENTERTIP, TTS_BALLOON,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
@@ -133,6 +136,7 @@ const SW_MINIMIZE: i32 = 6;
 
 // Window messages (`winuser.h`).
 const WM_COMMAND: u32 = 0x0111;
+const WM_NOTIFY: u32 = 0x004E;
 const WM_CLOSE: u32 = 0x0010;
 const WM_SETFONT: u32 = 0x0030;
 const WM_SYSCOMMAND: u32 = 0x0112;
@@ -346,6 +350,10 @@ struct Shared {
     drawings: HashMap<usize, Drawing>,
     /// Control `HWND` → the cursor identifier a script set.
     cursors: HashMap<usize, i64>,
+    /// Alternating `ListView` control id → one colour per row, resolved from
+    /// `$GUI_BKCOLOR_LV_ALTERNATE`: the window procedure cannot reach the model,
+    /// and a `NM_CUSTOMDRAW` has to answer with a row's colour on the spot.
+    alternate: HashMap<i64, Vec<i64>>,
     /// Brushes made for those colours, so a `WM_CTLCOLOR*` answer can hand one
     /// back. They live as long as the process: there are only as many as there
     /// are distinct colours, and Windows owns the brush a control is painted
@@ -416,6 +424,36 @@ unsafe extern "system" fn wnd_proc(
                             state.dirty.insert(control);
                         }
                     }
+                }
+            }
+            WM_NOTIFY => {
+                // The only notification worth reading here is a `ListView`'s
+                // custom draw, which is how `$GUI_BKCOLOR_LV_ALTERNATE` reaches a
+                // real list: the control asks what colour each row is and paints
+                // it itself.
+                let header = lparam as *const windows_sys::Win32::UI::Controls::NMHDR;
+                if header.is_null() || unsafe { (*header).code } != NM_CUSTOMDRAW {
+                    return None;
+                }
+                let id = unsafe { (*header).idFrom } as i32;
+                let Some(&(control, ControlKind::ListView)) = state.control_ids.get(&id) else {
+                    return None;
+                };
+                let draw = lparam as *mut NMLVCUSTOMDRAW;
+                match unsafe { (*draw).nmcd.dwDrawStage } {
+                    CDDS_PREPAINT => return Some(CDRF_NOTIFYITEMDRAW as LRESULT),
+                    CDDS_ITEMPREPAINT => {
+                        let row = unsafe { (*draw).nmcd.dwItemSpec };
+                        if let Some(color) = state
+                            .alternate
+                            .get(&control)
+                            .and_then(|rows| rows.get(row))
+                        {
+                            unsafe { (*draw).clrTextBk = colorref(*color) };
+                            return Some(CDRF_DODEFAULT as LRESULT);
+                        }
+                    }
+                    _ => {}
                 }
             }
             // The parent is asked for the brush a child is painted with, which
@@ -550,8 +588,11 @@ struct ControlState {
     image_handle: Option<LoadedImage>,
     /// Whether a subclass procedure paints this control.
     subclassed: bool,
-    /// The tip last handed to the window's tooltip control.
+    /// The tip last handed to the window's tooltip control, and the rest of what
+    /// `GUICtrlSetTip` asked for.
     tip: String,
+    tip_title: String,
+    tip_options: i64,
 }
 
 impl ControlState {
@@ -579,6 +620,8 @@ impl ControlState {
             image_handle: None,
             subclassed: false,
             tip: String::new(),
+            tip_title: String::new(),
+            tip_options: 0,
         }
     }
 }
@@ -610,8 +653,10 @@ pub struct Win32Backend {
     focused: Option<i64>,
     /// The splash, progress and tooltip windows this backend has open.
     feedback: dialogs::Feedback,
-    /// The tooltip control of each window, once a control asked for one.
+    /// The plain tooltip control of each window, once a control asked for one.
     tooltips: HashMap<i64, HWND>,
+    /// The balloon one, for the controls whose script asked for `$TIP_BALLOON`.
+    balloon_tooltips: HashMap<i64, HWND>,
     /// The icon each window was given, and the path it came from.
     icons: HashMap<i64, *mut c_void>,
     icon_path: HashMap<i64, String>,
@@ -639,6 +684,7 @@ impl Win32Backend {
             focused: None,
             feedback: dialogs::Feedback::default(),
             tooltips: HashMap::new(),
+            balloon_tooltips: HashMap::new(),
             icons: HashMap::new(),
             icon_path: HashMap::new(),
             next_win_id: 1000,
@@ -1096,6 +1142,9 @@ impl Win32Backend {
         self.apply_value(&mut state, &control);
         state.items = control.data.clone();
         self.controls.insert(list, state);
+        // A row's own colour only reaches a custom-draw list through the table
+        // the window procedure reads, so it is rebuilt whenever the rows are.
+        self.refresh_alternate(list);
     }
 
     /// Push the model's items into the real control.
@@ -1394,15 +1443,66 @@ impl Win32Backend {
 
     /// Remember the colours a control was given, which its parent's window
     /// procedure hands back on `WM_CTLCOLOR*`.
+    ///
+    /// `$GUI_BKCOLOR_TRANSPARENT` is stored as "no background", which leaves the
+    /// control with the brush of the window it sits on, and a `ListView`'s
+    /// `$GUI_BKCOLOR_LV_ALTERNATE` is not a colour at all: it switches the list
+    /// to custom draw, whose colours the procedure reads from the shared table.
     fn apply_colors(&mut self, state: &mut ControlState, control: &Control) {
         if state.hwnd.is_null() {
             return;
         }
         let hwnd = state.hwnd;
+        let background = control.background();
         let _ = with_shared(|shared| {
-            shared.colors.insert(hwnd_key(hwnd), (control.color, control.bk_color));
+            shared.colors.insert(hwnd_key(hwnd), (control.color, background));
         });
         unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+        let owner = match control.kind {
+            ControlKind::ListView => Some(control.id),
+            ControlKind::ListViewItem => self.list_owner_in(control.id),
+            _ => None,
+        };
+        if let Some(owner) = owner {
+            self.refresh_alternate(owner);
+        }
+    }
+
+    /// Resolve `$GUI_BKCOLOR_LV_ALTERNATE`'s row colours into the shared table.
+    ///
+    /// The help page counts lines from one: the odd rows take the `ListView`'s
+    /// own colour and the even ones the colour of the row's item control,
+    /// falling back to the `ListView`'s colour when that item has none.
+    fn refresh_alternate(&self, owner: i64) {
+        let rows = match self.controls.get(&owner) {
+            Some(state) if state.control.alternating_rows() => {
+                let fallback = state.control.background().unwrap_or_default();
+                (0..state.control.data.len())
+                    .map(|row| {
+                        if row % 2 == 0 {
+                            return fallback;
+                        }
+                        self.controls
+                            .values()
+                            .find(|item| {
+                                item.kind == ControlKind::ListViewItem
+                                    && item.control.row == Some(row)
+                                    && self.list_owner_in(item.control.id) == Some(owner)
+                            })
+                            .and_then(|item| item.control.background())
+                            .unwrap_or(fallback)
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let _ = with_shared(|shared| {
+            if rows.is_empty() {
+                shared.alternate.remove(&owner);
+            } else {
+                shared.alternate.insert(owner, rows);
+            }
+        });
     }
 
     /// Remember the cursor a script put over a control.
@@ -1528,31 +1628,51 @@ impl Win32Backend {
 
     /// Hand a control's tip to the window's tooltip control.
     ///
-    /// The tooltip is one window per GUI, created the first time a control asks
-    /// for a tip; `$TTF_SUBCLASS` is what makes it watch that control's mouse
-    /// messages, so nothing else has to.
+    /// There is one tooltip window per GUI and per kind — a plain one and, when
+    /// a script asks for `$TIP_BALLOON`, a balloon one — created the first time
+    /// a control asks for a tip; `$TTF_SUBCLASS` is what makes it watch that
+    /// control's mouse messages, so nothing else has to. The title and the icon
+    /// go to the tooltip itself through `$TTM_SETTITLEW`, and `$TIP_CENTER`
+    /// becomes the `$TTF_CENTERTIP` the tool is added with.
     fn apply_tip(&mut self, state: &mut ControlState, control: &Control) {
-        if state.hwnd.is_null() || state.tip == control.tip {
+        if state.hwnd.is_null()
+            || (state.tip == control.tip
+                && state.tip_title == control.tip_title
+                && state.tip_options == control.tip_options)
+        {
             return;
         }
         let Some(parent) = self.windows.get(&control.window).copied() else {
             return;
         };
-        if let std::collections::hash_map::Entry::Vacant(slot) =
-            self.tooltips.entry(control.window)
-        {
-            let Some(tooltip) = create_tooltip(parent) else {
-                return;
-            };
-            slot.insert(tooltip);
-        }
-        let Some(tooltip) = self.tooltips.get(&control.window).copied() else {
+        let balloon = control.tip_is_balloon();
+        let Some(tooltip) = self.tooltip_for(control.window, parent, balloon) else {
             return;
         };
+        // A tip that moved between the two tooltip windows has to leave the one
+        // it was in, or hovering the control would raise both.
+        if state.tip_options != control.tip_options && !state.tip.is_empty() {
+            if let Some(previous) =
+                self.tooltips_for(control.window, !balloon).copied()
+            {
+                let mut info: TTTOOLINFOW = unsafe { std::mem::zeroed() };
+                info.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
+                info.hwnd = parent;
+                info.uId = state.hwnd as usize;
+                unsafe { SendMessageW(previous, TTM_DELTOOLW, 0, &mut info as *mut _ as isize) };
+                state.tip.clear();
+            }
+        }
         let mut text = to_wide(&control.tip);
         let mut info: TTTOOLINFOW = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<TTTOOLINFOW>() as u32;
-        info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        info.uFlags = TTF_IDISHWND
+            | TTF_SUBCLASS
+            | if control.tip_options & TIP_CENTER != 0 {
+                TTF_CENTERTIP
+            } else {
+                0
+            };
         info.hwnd = parent;
         info.uId = state.hwnd as usize;
         info.lpszText = text.as_mut_ptr();
@@ -1563,7 +1683,45 @@ impl Win32Backend {
             TTM_UPDATETIPTEXTW
         };
         unsafe { SendMessageW(tooltip, message, 0, &mut info as *mut _ as isize) };
+        // `$TTM_SETTITLEW`'s `wParam` is the icon and its `lParam` the title: the
+        // one AutoIt exposes is exactly the `$TTI_*` the common control wants.
+        // Without a title there is nothing for an icon to sit next to.
+        let mut title = to_wide(&control.tip_title);
+        unsafe {
+            SendMessageW(
+                tooltip,
+                TTM_SETTITLEW,
+                control.tip_icon.max(0) as usize,
+                title.as_mut_ptr() as isize,
+            )
+        };
         state.tip = control.tip.clone();
+        state.tip_title = control.tip_title.clone();
+        state.tip_options = control.tip_options;
+    }
+
+    /// The tooltip window of one GUI for one kind of tip, created on first use.
+    fn tooltip_for(&mut self, window: i64, parent: HWND, balloon: bool) -> Option<HWND> {
+        if let Some(tooltip) = self.tooltips_for(window, balloon) {
+            return Some(*tooltip);
+        }
+        let tooltip = create_tooltip(parent, balloon)?;
+        let map = if balloon {
+            &mut self.balloon_tooltips
+        } else {
+            &mut self.tooltips
+        };
+        map.insert(window, tooltip);
+        Some(tooltip)
+    }
+
+    /// The tooltip window of one GUI for one kind of tip, if it exists.
+    fn tooltips_for(&self, window: i64, balloon: bool) -> Option<&HWND> {
+        if balloon {
+            self.balloon_tooltips.get(&window)
+        } else {
+            self.tooltips.get(&window)
+        }
     }
 
     /// Give a window the icon `GUISetIcon` asked for.
@@ -1799,8 +1957,10 @@ impl GuiBackend for Win32Backend {
         }
         self.applied.remove(&handle);
         self.frames.remove(&handle);
-        if let Some(tooltip) = self.tooltips.remove(&handle) {
-            unsafe { DestroyWindow(tooltip) };
+        for map in [&mut self.tooltips, &mut self.balloon_tooltips] {
+            if let Some(tooltip) = map.remove(&handle) {
+                unsafe { DestroyWindow(tooltip) };
+            }
         }
         if let Some(icon) = self.icons.remove(&handle) {
             unsafe { DestroyIcon(icon) };
@@ -2038,7 +2198,7 @@ impl Drop for Win32Backend {
         for (_, menu) in self.menus.drain() {
             unsafe { DestroyMenu(menu as _) };
         }
-        for (_, tooltip) in self.tooltips.drain() {
+        for (_, tooltip) in self.tooltips.drain().chain(self.balloon_tooltips.drain()) {
             unsafe { DestroyWindow(tooltip) };
         }
         for (_, icon) in self.icons.drain() {
@@ -2565,14 +2725,16 @@ unsafe fn draw_shape(
 ///
 /// It is the common control's own `tooltips_class32`, given `$TTS_ALWAYSTIP` so
 /// a tip shows even when the window is not active, and made topmost so the
-/// window it describes cannot cover it.
-fn create_tooltip(parent: HWND) -> Option<HWND> {
+/// window it describes cannot cover it. `balloon` adds `$TTS_BALLOON`, which is
+/// a property of the whole tooltip window rather than of one tool, so a GUI
+/// whose script asked for both kinds has one of each.
+fn create_tooltip(parent: HWND, balloon: bool) -> Option<HWND> {
     let tooltip = unsafe {
         CreateWindowExW(
             0x0000_0008, // WS_EX_TOPMOST
             TOOLTIPS_CLASSW,
             std::ptr::null(),
-            WS_POPUP | TTS_ALWAYSTIP,
+            WS_POPUP | TTS_ALWAYSTIP | if balloon { TTS_BALLOON } else { 0 },
             0,
             0,
             0,

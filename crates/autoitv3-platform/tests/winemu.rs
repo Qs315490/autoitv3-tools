@@ -2385,3 +2385,64 @@ Return Hex($r[0], 8)
 "#;
     assert_eq!(run(win10(), body).to_autoit_string(), "CBF43926");
 }
+
+/// A backend that keeps the last state it was shown for every control, so a
+/// test can read what the model handed a renderer.
+#[derive(Clone, Default)]
+struct ModelRecorder {
+    seen: std::rc::Rc<std::cell::RefCell<Vec<(i64, String)>>>,
+}
+
+impl GuiBackend for ModelRecorder {
+    fn on_control(&mut self, control: &Control) {
+        self.seen.borrow_mut().push((
+            control.id,
+            format!(
+                "kind={:?} bk={:?} bg={:?} alt={} tip={:?}/{:?}/{}",
+                control.kind,
+                control.bk_color,
+                control.background(),
+                control.alternating_rows(),
+                control.tip,
+                control.tip_title,
+                control.tip_options,
+            ),
+        ));
+    }
+}
+
+#[test]
+fn alternate_listview_colors_and_tip_options_reach_the_model() {
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(ModelRecorder { seen: seen.clone() }));
+    let body = r#"
+GUICreate("t", 300, 200)
+Local $lv = GUICtrlCreateListView("a|b", 0, 0, 200, 100)
+Local $item = GUICtrlCreateListViewItem("1|2", $lv)
+GUICtrlSetBkColor($lv, 0x80000000)
+GUICtrlSetBkColor($lv, 0x00FF00)
+GUICtrlSetBkColor($item, 0x0000FF)
+Local $label = GUICtrlCreateLabel("x", 0, 120)
+GUICtrlSetTip($label, "text", "title", 2, 3)
+Return 1
+"#;
+    assert_eq!(text(emu, body), "1");
+    let seen = seen.borrow();
+    // The flag survives the colour that follows it, and the colour a renderer
+    // gets is the one without the flag.
+    assert!(
+        seen.iter().any(|(_, state)| state
+            == "kind=ListView bk=Some(2147548928) bg=Some(65280) alt=true tip=\"\"/\"\"/0"),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|(_, state)| state
+            == "kind=ListViewItem bk=Some(255) bg=Some(255) alt=false tip=\"\"/\"\"/0"),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|(_, state)| state
+            == "kind=Label bk=None bg=None alt=false tip=\"text\"/\"title\"/3"),
+        "{seen:?}"
+    );
+}
