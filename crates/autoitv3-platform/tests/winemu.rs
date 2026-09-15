@@ -658,16 +658,17 @@ fn an_unknown_drive_reports_error() {
         text(win10(), r#"Return DriveGetType("Z:\") & ":" & @error"#),
         ":1"
     );
-    // No drives of the type: `@error` 1 and a list whose count is 0 — an array
-    // of one element, not an empty one.
+    // No drives of the type: `@error` 1 and an empty *string*, which is what
+    // the official interpreter answers for a type nothing matches (measured
+    // through the "BOGUS" path in `docs/drive-probe.au3`).
     assert_eq!(
         text(
             win10(),
             r#"Local $d = DriveGetDrive("NETWORK")
     Local $err = @error
-    Return UBound($d) & ":" & $d[0] & ":" & $err"#
+    Return VarGetType($d) & ":" & $d & ":" & $err"#
         ),
-        "1:0:1"
+        "String::1"
     );
 }
 
@@ -679,8 +680,8 @@ fn a_drive_type_list_takes_either_kind() {
     Local $either_err = @error
     Local $none = DriveGetDrive("CDROM,NETWORK")
     Local $none_err = @error
-    Return $either[0] & "|" & $either[1] & "|" & $either_err & "|" & $none[0] & "|" & $none_err"#;
-    assert_eq!(text(win10(), body), r"1|C:\|0|0|1");
+    Return $either[0] & "|" & $either[1] & "|" & $either_err & "|" & $none & "|" & $none_err"#;
+    assert_eq!(text(win10(), body), r"1|C:\|0||1");
 }
 
 #[test]

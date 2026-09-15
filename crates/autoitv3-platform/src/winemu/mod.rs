@@ -1166,8 +1166,10 @@ impl WindowsEmulation {
     /// `DriveGetDrive`: the drives of a type, `[0]` = how many there are.
     ///
     /// The type may be a list (`"FIXED,REMOVABLE"`), which is how a script asks
-    /// for either; nothing found is `@error = 1` with a zero-length list, not an
-    /// empty array — `$array[0]` is the count.
+    /// for either; the result is AutoIt's shape (`[0]` = count, letters from
+    /// `[1]`), and a failure — an unknown type or no drives of it — is
+    /// `@error = 1` with an empty string, which is what the official interpreter
+    /// answers.
     fn drive_get_drive(&self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
         let wanted = arg_str(args, 0).to_ascii_uppercase();
         let wanted = if wanted.is_empty() {
@@ -1189,9 +1191,13 @@ impl WindowsEmulation {
                 found.push(Value::Str(d.root()));
             }
         }
+        if found.is_empty() {
+            ctx.set_error(1, 0);
+            return Value::Str(String::new());
+        }
+        ctx.set_error(0, 0);
         let mut out = vec![Value::Int(found.len() as i64)];
         out.extend(found);
-        ctx.set_error(if out.len() == 1 { 1 } else { 0 }, 0);
         Value::array(out)
     }
 

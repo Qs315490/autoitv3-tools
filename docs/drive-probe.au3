@@ -1,28 +1,29 @@
-; 官方解释器探针：DriveGetDrive 在"没有这种盘"时到底返回什么。
+; 官方解释器探针：DriveGetDrive 失败时到底返回什么形状。
 ;
 ; 用法（装了 AutoIt3 的 Windows 上，不依赖任何 #include）：
 ;     AutoIt3.exe docs\drive-probe.au3
-; 或直接双击。把消息框里三行贴回来。
+; 或直接双击。把消息框里几行贴回来。
 ;
-; 问的是失败时的形状：自动帮助页只说"失败时 @error=1"，没说返回值。
-; 我们需要知道它是"长度 1、[0]=0 的数组"还是"标量 0"，因为脚本会写 $d[0]。
-; "BOGUS" 是文档里"参数不是合法类型"的那条失败路径，任何机器上都走得到。
+; 帮助页只说"失败时 @error=1"（参数不是合法类型，或本机没有该类型的盘），
+; 没写返回值。已经量到 `"BOGUS"`（非法类型）返回的是**空字符串**；
+; 这里再量"合法类型但没有这种盘"，看是不是同样返回空字符串。
 
 Func Show($tag, $a)
 Local $type = VarGetType($a)
-Local $ub = -1
-Local $first = String($a)
 If IsArray($a) Then
-$ub = UBound($a, 1)
-$first = $a[0]
+Return $tag & ": type=" & $type & " ub=" & UBound($a, 1) & " [0]=" & $a[0] & @CRLF
 EndIf
-Return $tag & ": type=" & $type & " ub=" & $ub & " [0]=" & $first & @CRLF
+Return $tag & ": type=" & $type & " value=" & $a & @CRLF
 EndFunc
 
 Local $bogus = DriveGetDrive("BOGUS")
 Local $bogus_err = @error
+Local $ram = DriveGetDrive("RAMDISK")
+Local $ram_err = @error
+Local $cd = DriveGetDrive("CDROM")
+Local $cd_err = @error
 Local $all = DriveGetDrive("ALL")
 Local $all_err = @error
-Local $text = Show("BOGUS", $bogus) & Show("ALL", $all)
-$text = $text & "err: bogus=" & $bogus_err & " all=" & $all_err & @CRLF
+Local $text = Show("BOGUS", $bogus) & Show("RAMDISK", $ram) & Show("CDROM", $cd) & Show("ALL", $all)
+$text = $text & "err: bogus=" & $bogus_err & " ram=" & $ram_err & " cd=" & $cd_err & " all=" & $all_err & @CRLF
 MsgBox(0, "probe", $text)

@@ -67,8 +67,9 @@ fn drive_root(args: &[Value]) -> Option<String> {
 /// The type may be a **list** — `"FIXED,REMOVABLE"` asks for either kind, which
 /// is how a script looks for "somewhere a Windows directory could be" — and the
 /// result is AutoIt's shape: `[0]` is how many drives were found and the letters
-/// start at `[1]`. Nothing found is `@error = 1` with a list of length zero, not
-/// a bare `0`: `$drives[0]` still has to work.
+/// start at `[1]`. A failure — an unknown type, or no drives of it — is
+/// `@error = 1` and an empty *string*, which is what the official interpreter
+/// answers (measured with `DriveGetDrive("BOGUS")`).
 pub(crate) fn drive_get_drive(args: &[Value], ctx: &mut dyn HostContext) -> Value {
     let wanted = args
         .first()
@@ -97,10 +98,13 @@ pub(crate) fn drive_get_drive(args: &[Value], ctx: &mut dyn HostContext) -> Valu
         })
         .map(Value::Str)
         .collect();
-    let found = drives.len();
-    let mut out = vec![Value::Int(found as i64)];
+    if drives.is_empty() {
+        ctx.set_error(1, 0);
+        return Value::Str(String::new());
+    }
+    ctx.set_error(0, 0);
+    let mut out = vec![Value::Int(drives.len() as i64)];
     out.extend(drives);
-    ctx.set_error(if found == 0 { 1 } else { 0 }, 0);
     Value::array(out)
 }
 
