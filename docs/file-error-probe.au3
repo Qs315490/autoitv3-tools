@@ -159,6 +159,27 @@ P("FileSetPos(begin,2)", $v & "/" & $at_start, $e, $x)
 
 FileClose($hp)
 
+; ---- 定位之后再写：非追加模式写在当前位置，追加模式忽略位置写末尾 ----
+Local $sp = $dir & "\seek.txt"
+FileDelete($sp)
+Local $sh = FileOpen($sp, 2)
+FileWrite($sh, "abcdef")
+Local $moved = FileSetPos($sh, 2, 0)
+Local $wrote = FileWrite($sh, "X")
+$e = @error
+$x = @extended
+Local $at = FileGetPos($sh)
+FileClose($sh)
+Local $ah = FileOpen($sp, 1)
+FileSetPos($ah, 0, 0)
+FileWrite($ah, "Z")
+FileClose($ah)
+Local $rh = FileOpen($sp, 0)
+Local $content = FileRead($rh)
+FileClose($rh)
+; 期望：文件成了 abXdefZ（X 写在位置 2，Z 是追加模式写的末尾），写完后位置 3。
+P("seek(2)+write(X)+append(Z) pos=" & $at, $content, $e, $x)
+
 ; ---- 坏句柄 / 只读句柄（放最后）----
 $v = FileClose(9999)
 P("FileClose(9999)", $v, @error, @extended)

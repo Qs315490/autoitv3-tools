@@ -569,18 +569,54 @@ impl CommonPlatform {
         // file cannot otherwise be written to" — and no `@error` in the help
         // page (measured: 0 with `@error` 0 for a bad handle and for a handle
         // opened for reading).
-        let Some(e) = self.entry_mut(handle) else {
-            return Value::Int(0);
-        };
-        if e.access == Access::Read {
-            return Value::Int(0);
+        match self.entry(handle) {
+            Some(e) if e.access == Access::Read => return Value::Int(0),
+            None => return Value::Int(0),
+            Some(_) => {}
         }
         if !ctx.effect_allowed(EffectKind::FileWrite) {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
+        // Where the text goes: the *file position* (`fputs` at what `fseek`
+        // left behind), except on a handle opened for appending, where the C
+        // library sends every write to the end whatever the position says. Our
+        // cursor counts characters, so the position has to be turned into the
+        // byte offset the OS wants; that needs the file's current content, which
+        // also has to be loaded before the write invalidates the cache.
+        let binary = self.entry(handle).is_some_and(|e| e.binary);
+        if binary {
+            self.ensure_bytes(handle);
+        } else {
+            self.ensure_text(handle);
+        }
+        let (append, cursor, len, byte_at) = match self.entry(handle) {
+            Some(e) if e.binary => {
+                let bytes = e.bytes.as_deref().unwrap_or(&[]);
+                let at = e.cursor.min(bytes.len());
+                (e.access == Access::Append, at, bytes.len(), at)
+            }
+            Some(e) => {
+                let text = e.text.as_deref().unwrap_or("");
+                let len = text.chars().count();
+                let at = e.cursor.min(len);
+                let byte = text.chars().take(at).map(char::len_utf8).sum();
+                (e.access == Access::Append, at, len, byte)
+            }
+            None => (false, 0, 0, 0),
+        };
+        let written = if binary { payload.len() } else { payload.chars().count() };
+        let Some(e) = self.entry_mut(handle) else {
+            return Value::Int(0);
+        };
+        if !append {
+            let _ = e.file.seek(SeekFrom::Start(byte_at as u64));
+        }
         match e.file.write_all(payload.as_bytes()).and_then(|()| e.file.flush()) {
             Ok(()) => {
+                // The position moves past what was written — to the end of the
+                // file in append mode, where the write itself went.
+                e.cursor = if append { len + written } else { cursor + written };
                 self.invalidate_text(handle);
                 ctx.set_error(0, 0);
                 // "Success: 1" — the help page, and `FileWriteLine` in the
