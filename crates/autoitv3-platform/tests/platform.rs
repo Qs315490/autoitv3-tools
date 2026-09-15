@@ -850,8 +850,12 @@ Return $got
 fn inet_read_rejects_https_without_tls() {
     // `https://` needs TLS, which this layer intentionally does not provide;
     // the failure is immediate and touches no network.
+    // `@error` is read *before* the next builtin: every builtin call resets it
+    // (`FunctionExecute` in the interpreter's own source), so an expression like
+    // `BinaryLen($d) & @error` would report the reset rather than the failure.
     let body = r#"Local $d = InetRead("https://example.com")
-    Return BinaryLen($d) & ":" & @error"#;
+    Local $err = @error
+    Return BinaryLen($d) & ":" & $err"#;
     assert_eq!(text(body), "0:1");
 }
 

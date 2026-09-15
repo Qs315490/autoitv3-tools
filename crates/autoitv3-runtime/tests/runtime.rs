@@ -1988,3 +1988,49 @@ fn every_documented_option_is_known() {
         );
     }
 }
+
+#[test]
+fn entering_a_function_resets_the_error_codes() {
+    // "When entering a user-written function @error macro is set to 0"
+    // (SetError's help page). What the body leaves behind does *not* get
+    // restored, so `Return SetError(...)` is how a function reports anything.
+    let src = r#"
+Func Probe()
+    Return @error & "/" & @extended
+EndFunc
+Func Failing()
+    Return SetError(5, 7, 0)
+EndFunc
+Func Outer()
+    Failing()
+    Return @error & "/" & @extended
+EndFunc
+Func F()
+    SetError(9, 9, 0)
+    Local $inside = Probe()
+    Local $out = Outer()
+    Return $inside & ":" & $out
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "0/0:5/7"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn a_builtin_call_resets_the_error_codes() {
+    // Every builtin resets both codes before it runs (`FunctionExecute`), so a
+    // script has to read `@error` immediately after the call that failed.
+    let src = r#"
+Func F()
+    SetError(9, 9, 0)
+    Local $len = StringLen("ab")
+    Return $len & ":" & @error & "/" & @extended
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        Value::Str(s) => assert_eq!(s, "2:0/0", "got {s}"),
+        other => panic!("got {other:?}"),
+    }
+}

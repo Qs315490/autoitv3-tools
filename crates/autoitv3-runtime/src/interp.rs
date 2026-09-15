@@ -762,6 +762,12 @@ impl Runtime {
         // Builtins/host/platform calls have no script body, so the debugger
         // gets its own hook for them (`untilcall GUICreate` is one user). The
         // hook wants the spelling the script used.
+        // AutoIt resets both error codes before every builtin (`FunctionExecute`
+        // in the interpreter's source, which is why `@error` after a successful
+        // builtin is always 0). A host or a platform function is one of those
+        // builtins, so a stale code cannot leak through one either.
+        self.error = 0;
+        self.extended = 0;
         if let Some(dbg) = self.debugger.as_mut() {
             dbg.on_builtin_call(display);
         }
@@ -893,6 +899,14 @@ impl Runtime {
             span,
             arg_count: args.len(),
         });
+
+        // "When entering a user-written function @error macro is set to 0"
+        // (SetError's help page; `Parser_UserFunctionCall` does the same for
+        // `@extended`). What the body sets *stays*: a function whose last call
+        // set a code returns it, which is why AutoIt UDFs end their success
+        // paths with `Return SetError(0, 0, ...)`.
+        self.error = 0;
+        self.extended = 0;
 
         let mut result = Ok(Value::Null);
         for st in &def.body {
