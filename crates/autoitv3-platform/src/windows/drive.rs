@@ -23,6 +23,18 @@ pub(crate) enum DriveField {
     SpaceFree,
 }
 
+/// A drive the way `DriveGetDrive` reports it: the letter and a colon, no
+/// separator (`C:`). The official implementation builds `C:\`, asks the OS, and
+/// strips the separator before storing it in the result.
+fn drive_name(root: &str) -> String {
+    let trimmed = root.trim_end_matches(['\\', '/']);
+    if trimmed.is_empty() {
+        root.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// All drive roots as `C:\`-style strings.
 fn logical_drives() -> Vec<String> {
     unsafe {
@@ -96,7 +108,7 @@ pub(crate) fn drive_get_drive(args: &[Value], ctx: &mut dyn HostContext) -> Valu
                     || (matches!(*other, "UNKNOWN") && kind == "UNKNOWN")
             })
         })
-        .map(Value::Str)
+        .map(|root| Value::Str(drive_name(&root)))
         .collect();
     if drives.is_empty() {
         ctx.set_error(1, 0);

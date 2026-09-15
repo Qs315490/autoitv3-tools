@@ -16,7 +16,10 @@ Exit
 EndIf
 For $i = 1 To $a[0]
 Local $root = $a[$i]
-Local $win = StringTrimRight($root, 1) & "\Windows"
+; `DriveGetDrive` answers `C:`; a script joins it with its own separator.
+Local $win = $root
+If StringRight($win, 1) <> "\" Then $win = $win & "\"
+$win = $win & "Windows"
 Local $hives = FileExists($win & "\System32\config\SYSTEM") And FileExists($win & "\System32\config\SOFTWARE")
 Local $is_dir = StringInStr(FileGetAttrib($win), "D") ? 1 : 0
 Local $same = ($win = @WindowsDir) ? 1 : 0

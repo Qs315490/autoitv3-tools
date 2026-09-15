@@ -438,23 +438,34 @@ fn environment_macros_come_from_the_platform() {
     assert_eq!(text("Return StringLen(@TempDir) > 0"), "True");
     // The emulation layer answers with the Windows layout; with it disabled the
     // common layer's host paths are used instead (`with_host_paths` / the
-    // `--no-win-emu` switch).
-    assert!(text("Return @TempDir").replace('/', "\\").ends_with(if cfg!(windows) { "Temp\\" } else { "Temp" }));
+    // `--no-win-emu` switch). AutoIt's directory macros carry no trailing
+    // separator unless the directory is a drive root.
+    let temp = text("Return @TempDir");
+    assert!(!temp.is_empty(), "got {temp:?}");
+    assert!(
+        !temp.ends_with('\\') || temp.len() == 3,
+        "a directory macro has no trailing separator: {temp:?}"
+    );
     assert_eq!(text("Return StringLen(@WorkingDir) > 0"), "True");
     assert_eq!(text("Return StringLen(@AutoItEXE) > 0"), "True");
 }
 
 #[test]
 fn host_paths_are_available_when_the_emulation_leaves_them_alone() {
-    let src = "Func F()\n    Return StringRight(@TempDir, 1)\nEndFunc\n";
+    // The host's own temporary directory, spelled the host's way — a trailing
+    // separator aside, which only a drive root keeps.
+    let src = "Func F()\n    Return @TempDir\nEndFunc\n";
     let prog = parse(src);
     let mut rt = Runtime::with_program(&prog);
     rt.set_platform(host_platform_with(
         WindowsEmulation::new().with_host_paths(),
     ));
+    let seen = rt.call_function("F", vec![]).unwrap().to_autoit_string();
+    let host = std::env::temp_dir().to_string_lossy().into_owned();
     assert_eq!(
-        rt.call_function("F", vec![]).unwrap().to_autoit_string(),
-        std::path::MAIN_SEPARATOR.to_string()
+        seen.trim_end_matches(std::path::MAIN_SEPARATOR),
+        host.trim_end_matches(std::path::MAIN_SEPARATOR),
+        "got {seen:?}, host {host:?}"
     );
 }
 

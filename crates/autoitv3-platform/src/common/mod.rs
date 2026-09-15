@@ -1247,29 +1247,26 @@ impl Platform for CommonPlatform {
     /// the closest portable answer — which is what the emulation layer used to
     /// report for every one of them.
     fn macro_value(&self, name: &str) -> Option<Value> {
-        let dir_with_sep = |p: std::path::PathBuf| {
+        let dir_macro = |p: std::path::PathBuf| {
             // A drive map is in force, so the directories the script sees are
             // emulated ones — report them in the same `C:\` spelling the file
             // functions accept. A directory the map does not cover (a custom
             // root, say) stays a host path.
-            let (mut s, sep) = match self.path_map.as_ref().filter(|m| m.covers(&p)) {
+            let (s, sep) = match self.path_map.as_ref().filter(|m| m.covers(&p)) {
                 Some(map) => (map.to_windows(&p), '\\'),
                 None => (p.to_string_lossy().into_owned(), std::path::MAIN_SEPARATOR),
             };
-            if !s.ends_with(sep) {
-                s.push(sep);
-            }
-            Value::Str(s)
+            Value::Str(crate::directory_macro(&s, sep))
         };
         let home = || std::env::var("HOME").ok().filter(|h| !h.is_empty());
         let value = match name {
-            "tempdir" => dir_with_sep(std::env::temp_dir()),
+            "tempdir" => dir_macro(std::env::temp_dir()),
             "workingdir" => match std::env::current_dir() {
-                Ok(d) => dir_with_sep(d),
+                Ok(d) => dir_macro(d),
                 Err(_) => Value::Str(String::new()),
             },
             "scriptdir" => match self.script_dir() {
-                Some(d) => dir_with_sep(d),
+                Some(d) => dir_macro(d),
                 None => Value::Str(String::new()),
             },
             "scriptname" => match self.script_path.as_deref().and_then(|p| p.file_name()) {
