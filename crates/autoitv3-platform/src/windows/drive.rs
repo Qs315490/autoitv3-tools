@@ -38,7 +38,7 @@ fn logical_drives() -> Vec<String> {
         // The buffer is a NUL-separated list with a trailing NUL.
         buf.split(|u| *u == 0)
             .filter(|s| !s.is_empty())
-            .map(|s| String::from_utf16_lossy(s))
+            .map(String::from_utf16_lossy)
             .collect()
     }
 }
@@ -63,32 +63,44 @@ fn drive_root(args: &[Value]) -> Option<String> {
 }
 
 /// `DriveGetDrive("ALL"|"FIXED"|"CDROM"|"REMOVABLE"|"NETWORK"|"RAMDISK")`.
+///
+/// The type may be a **list** — `"FIXED,REMOVABLE"` asks for either kind, which
+/// is how a script looks for "somewhere a Windows directory could be" — and the
+/// result is AutoIt's shape: `[0]` is how many drives were found and the letters
+/// start at `[1]`. Nothing found is `@error = 1` with a list of length zero, not
+/// a bare `0`: `$drives[0]` still has to work.
 pub(crate) fn drive_get_drive(args: &[Value], ctx: &mut dyn HostContext) -> Value {
     let wanted = args
         .first()
         .map(|v| v.to_autoit_string().to_ascii_uppercase())
         .unwrap_or_else(|| "ALL".to_string());
+    let wanted = if wanted.trim().is_empty() {
+        "ALL".to_string()
+    } else {
+        wanted
+    };
+    let kinds: Vec<&str> = wanted
+        .split(',')
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+        .collect();
     let drives: Vec<Value> = logical_drives()
         .into_iter()
-        .filter(|root| match wanted.as_str() {
-            "ALL" => true,
-            other => {
-                let kind = drive_kind_string(root);
-                let type_matches = kind.eq_ignore_ascii_case(other);
-                // AutoIt reports FIXED for "UNKNOWN" drives too.
-                let unknown = matches!(other, "UNKNOWN") && kind == "UNKNOWN";
-                type_matches || unknown
-            }
+        .filter(|root| {
+            let kind = drive_kind_string(root);
+            kinds.iter().any(|other| {
+                *other == "ALL"
+                    || kind.eq_ignore_ascii_case(other)
+                    // AutoIt reports FIXED for "UNKNOWN" drives too.
+                    || (matches!(*other, "UNKNOWN") && kind == "UNKNOWN")
+            })
         })
         .map(Value::Str)
         .collect();
-    if drives.is_empty() {
-        ctx.set_error(1, 0);
-        return Value::Int(0);
-    }
-    ctx.set_error(0, 0);
-    let mut out = vec![Value::Int(drives.len() as i64)];
+    let found = drives.len();
+    let mut out = vec![Value::Int(found as i64)];
     out.extend(drives);
+    ctx.set_error(if found == 0 { 1 } else { 0 }, 0);
     Value::array(out)
 }
 
