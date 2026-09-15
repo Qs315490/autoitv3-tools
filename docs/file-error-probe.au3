@@ -18,7 +18,9 @@ Global $Report = ""
 
 Func P($label, $value, $err, $ext)
     Local $line = $label & " => [" & $value & "] @error=" & $err & " @extended=" & $ext
-    Global $Report = $Report & $line & @CRLF
+    ; 普通赋值就改脚本级那个 Global；`Global $Report = $Report & ...` 会被官方
+    ; 解释器拒绝："Can not initialize a variable with itself"。
+    $Report = $Report & $line & @CRLF
     ConsoleWrite($line & @CRLF)
 EndFunc
 
