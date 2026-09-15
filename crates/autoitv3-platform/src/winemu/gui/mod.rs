@@ -50,7 +50,12 @@ use std::collections::VecDeque;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::value::Value;
 
-use autoitv3_gui_model::{GUI_CHECKED, GUI_DISABLE, GUI_HIDE, GUI_PAGE_HIDDEN};
+use autoitv3_gui_model::{
+    GUI_CHECKED, GUI_DISABLE, GUI_ENABLE, GUI_HIDE, GUI_PAGE_HIDDEN, GUI_SHOW,
+};
+
+/// `$LVS_EX_CHECKBOXES`: a `ListView` whose items carry a check box.
+const LVS_EX_CHECKBOXES: i64 = 0x0000_0004;
 
 /// Messages a script can pass that change nothing the model keeps, so only a
 /// real control can act on them. Everything else is answered (and, where it
@@ -711,14 +716,18 @@ impl GuiState {
                     }
                     // `$GUI_CHECKED` (1), `$GUI_INDETERMINATE` (2) and
                     // `$GUI_UNCHECKED` (4) describe one three-way state, so
-                    // asking for one of them clears the other two.
+                    // asking for one of them clears the other two. The middle
+                    // one needs a `$BS_3STATE`/`$BS_AUTO3STATE` box: the probe
+                    // against the official interpreter showed a plain check box
+                    // answering 1 for it.
                     if state & (GUI_CHECKED | 0x02 | 0x04) != 0 {
                         control.state &= !(GUI_CHECKED | 0x02);
-                        if state & GUI_CHECKED != 0 {
-                            control.state |= GUI_CHECKED;
-                        }
-                        if state & 0x02 != 0 {
+                        let three_state = control.style > 0
+                            && matches!(control.style as u32 & 0x0F, 0x05 | 0x06);
+                        if state & 0x02 != 0 && three_state {
                             control.state |= 0x02;
+                        } else if state & (GUI_CHECKED | 0x02) != 0 {
+                            control.state |= GUI_CHECKED;
                         }
                     }
                     if state & 0x08 != 0 {
@@ -1655,7 +1664,9 @@ impl GuiState {
             height: arg_int(args, base + 3) as i32,
             style: arg_int(args, base + 4),
             exstyle: arg_int(args, base + 5),
-            state: 0,
+            // The official interpreter answers `$GUI_SHOW | $GUI_ENABLE` for a
+            // control nobody has touched yet.
+            state: if kind.is_part() { 0 } else { GUI_SHOW | GUI_ENABLE },
             parent: None,
             row: None,
             data: Vec::new(),
@@ -1960,7 +1971,16 @@ impl GuiState {
                 None => Value::Int(0),
             },
             ControlKind::ListViewItem => {
-                if advanced {
+                // The advanced value is the item's check state, but only where
+                // the `ListView` was given `$LVS_EX_CHECKBOXES`; without it the
+                // official interpreter answers the text again.
+                let checkboxes = self
+                    .model
+                    .part_owner(id)
+                    .and_then(|owner| self.model.control(owner))
+                    .map(|owner| owner.exstyle & LVS_EX_CHECKBOXES != 0)
+                    .unwrap_or(false);
+                if advanced && checkboxes {
                     Value::Int(if control.is_checked() { 1 } else { 4 })
                 } else {
                     Value::Str(self.item_text(id, control))
@@ -1998,16 +2018,26 @@ impl GuiState {
 
     /// The text of an item control: its owner's row, which is where the text
     /// lives once the item was created.
+    ///
+    /// A `ListView` item is read back with a separator after every cell,
+    /// including the last — the official interpreter answers
+    /// `"i1a|i1b|i1c|"` for a three-column row. A tree node is plain text.
     fn item_text(&self, id: i64, control: &Control) -> String {
         let Some(row) = control.row else {
             return control.text.clone();
         };
-        self.model
+        let text = self
+            .model
             .part_owner(id)
             .and_then(|owner| self.model.control(owner))
             .and_then(|owner| owner.data.get(row))
             .cloned()
-            .unwrap_or_else(|| control.text.clone())
+            .unwrap_or_else(|| control.text.clone());
+        if control.kind == ControlKind::ListViewItem {
+            format!("{text}|")
+        } else {
+            text
+        }
     }
 
     /// `GUICtrlSetData`.
@@ -2047,46 +2077,39 @@ impl GuiState {
                     }
                 }
             }
-            // An item's text *is* its row, and `data` is that row's columns:
-            // the separator positions name the columns, a cell that is present
-            // but empty is erased, and the columns after the last separator keep
-            // what they had. A `ListView` control given data this way appends a
-            // row — the documented way to add rows is
-            // `GUICtrlCreateListViewItem`, and a test probe against the official
-            // interpreter is what settles what this form does there.
-            ControlKind::ListView if !data.is_empty() => {
-                if let Some(control) = self.model.control_mut(id) {
-                    control.data.push(data);
-                }
-            }
+            // `GUICtrlSetData` on a `ListView` itself changes the row it is
+            // "on" — the selected one, else the last — and does nothing at all
+            // to an empty list. Rows are *added* with
+            // `GUICtrlCreateListViewItem`, which is what the probe against the
+            // official interpreter showed (`lv.setdata_count=0`).
             ControlKind::ListView => {
-                if let Some(control) = self.model.control_mut(id) {
-                    control.data.clear();
-                    control.selection = None;
+                let row = self
+                    .model
+                    .control(id)
+                    .and_then(|control| control.selection)
+                    .or_else(|| self.model.control(id).map(|c| c.data.len().saturating_sub(1)));
+                if let Some(row) = row.filter(|_| {
+                    self.model
+                        .control(id)
+                        .map(|control| !control.data.is_empty())
+                        .unwrap_or(false)
+                }) {
+                    let updated = self.updated_row(id, row, &data);
+                    if let Some(owner_control) = self.model.control_mut(id) {
+                        if row < owner_control.data.len() {
+                            owner_control.data[row] = updated;
+                        }
+                    }
                 }
             }
+            // An item writes the cells it names: an empty cell leaves that
+            // column alone (the probe's `||9` kept the first two), and an
+            // entirely empty `data` erases the first, as the help page says.
             ControlKind::ListViewItem => {
-                let cells: Vec<&str> = data.split('|').collect();
                 let owner = self.model.part_owner(id);
                 let row = self.model.control(id).and_then(|control| control.row);
                 if let (Some(owner), Some(row)) = (owner, row) {
-                    let updated = match self.model.control(owner).and_then(|o| o.data.get(row)) {
-                        Some(existing) => {
-                            let mut cells_now: Vec<String> =
-                                existing.split('|').map(|s| s.to_string()).collect();
-                            for (index, cell) in cells.iter().enumerate() {
-                                if index >= cells_now.len() {
-                                    cells_now.push((*cell).to_string());
-                                } else if !cell.is_empty() {
-                                    cells_now[index] = (*cell).to_string();
-                                } else {
-                                    cells_now[index] = String::new();
-                                }
-                            }
-                            cells_now.join("|")
-                        }
-                        None => data.clone(),
-                    };
+                    let updated = self.updated_row(owner, row, &data);
                     if let Some(owner_control) = self.model.control_mut(owner) {
                         if row < owner_control.data.len() {
                             owner_control.data[row] = updated.clone();
@@ -2116,6 +2139,45 @@ impl GuiState {
         self.notify_control(id);
         ctx.set_error(0, 0);
         Value::Int(1)
+    }
+
+    /// The row `data` leaves behind when it is written into row `row` of the
+    /// list `owner`.
+    ///
+    /// Only the cells `data` actually names are written — the official
+    /// interpreter keeps the columns an update leaves empty — and an empty
+    /// `data` erases the first cell, which is the one case the help page calls
+    /// out.
+    fn updated_row(&self, owner: i64, row: usize, data: &str) -> String {
+        let existing = self
+            .model
+            .control(owner)
+            .and_then(|control| control.data.get(row))
+            .cloned()
+            .unwrap_or_default();
+        let mut cells: Vec<String> = existing.split('|').map(|cell| cell.to_string()).collect();
+        if data.is_empty() {
+            if let Some(first) = cells.first_mut() {
+                first.clear();
+            }
+            return cells.join("|");
+        }
+        for (index, cell) in data.split('|').enumerate() {
+            if cell.is_empty() {
+                continue;
+            }
+            // A cell written past the end of the row keeps its column: the
+            // separator positions are the column numbers, so the row is padded.
+            while cells.len() < index {
+                cells.push(String::new());
+            }
+            if index >= cells.len() {
+                cells.push(cell.to_string());
+            } else {
+                cells[index] = cell.to_string();
+            }
+        }
+        cells.join("|")
     }
 
     /// Write a part's new text through to its owner's item list.
