@@ -221,6 +221,18 @@ fn dirgetsize_reports_the_extended_triple_with_flag_one() {
 }
 
 #[test]
+fn dirgetsize_failure_is_a_scalar_even_for_the_array_form() {
+    // Measured on the official 3.3.16: the documented failure (-1) is answered
+    // for both forms, so a script that subscripts the flag-1 result has a
+    // non-array in hand.
+    let body = r#"Local $plain = DirGetSize("/definitely/not/here")
+    Local $plain_err = @error
+    Local $array = DirGetSize("/definitely/not/here", 1)
+    Return $plain & ":" & $plain_err & ":" & $array & ":" & @error & ":" & IsArray($array)"#;
+    assert_eq!(text(body), "-1:1:-1:1:False");
+}
+
+#[test]
 fn file_open_failure_returns_minus_one() {
     // The help page gives `FileOpen` no `@error` at all ("Failure: -1 if error
     // occurs"), and AutoIt's own source never calls `SetError` in it; measured

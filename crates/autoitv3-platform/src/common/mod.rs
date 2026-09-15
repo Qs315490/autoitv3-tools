@@ -1136,27 +1136,24 @@ impl CommonPlatform {
                 let path = arg_str(args, 0);
                 let dir = Path::new(&path);
                 // "Failure: -1 and sets the @error flag to non-zero if the
-                // path doesn't exist".
-                let missing = !dir.is_dir();
+                // path doesn't exist" — a *scalar* even when flag 1 asked for
+                // the array form. Measured on 3.3.16: `DirGetSize($missing, 1)`
+                // answers -1, and a script that subscripts its result stops with
+                // "Subscript used on non-accessible variable".
+                if !dir.is_dir() {
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(-1));
+                }
                 // flag 1 asks for the extended array: [size, file count, dir
-                // count], as AutoIt documents. (What the array form answers for
-                // a path that is not there is not documented — it is left at
-                // zeros with the same `@error`.)
+                // count], as AutoIt documents.
                 if arg_int(args, 1) == 1 {
                     let (size, files, dirs) = Self::dir_stats(dir);
-                    if missing {
-                        ctx.set_error(1, 0);
-                    }
                     Value::array(vec![
                         Value::Int(size as i64),
                         Value::Int(files as i64),
                         Value::Int(dirs as i64),
                     ])
                 } else {
-                    if missing {
-                        ctx.set_error(1, 0);
-                        return Some(Value::Int(-1));
-                    }
                     Value::Int(Self::dir_size(dir) as i64)
                 }
             }
