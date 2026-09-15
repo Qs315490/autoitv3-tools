@@ -1,10 +1,17 @@
-//! `au3 run <FILE> [FUNC] [--arg V]... [--init] [--trace]` — interpret.
+//! `au3 run <FILE> [FUNC] [--arg V]... [--init] [--trace] [--gui MODE]` —
+//! interpret.
 //!
 //! Without `FUNC` the whole script body is executed; with it, one function is
 //! called on [`Runtime`](autoitv3_runtime::Runtime). This is how the
 //! obfuscator's table builders can be probed directly, and `--trace` wires in a
 //! [`Debugger`](autoitv3_runtime::debug::Debugger) to show the statement stream
 //! the future debug module consumes.
+//!
+//! `--gui window` (build with `--features gui-window`) hands the emulation a
+//! backend that owns a real window instead of the headless model, so a GUI
+//! script can actually be seen. winit insists on the main thread, so that mode
+//! runs the script on a worker driven by `LiveBackend::run` and blocks here
+//! until the window closes.
 
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::{Flow, Runtime, Value};
@@ -18,7 +25,7 @@ use crate::output::format_value;
 use std::path::Path;
 
 /// Arguments for `au3 run`.
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct RunArgs {
     /// Input AutoIt v3 script, or a compiled build (.exe/.a3x) to read it from
     #[arg(value_name = "FILE")]
@@ -49,6 +56,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub trace: bool,
 
+    /// GUI backend: `headless` answers the GUI functions without drawing
+    /// anything; `window` opens a real window (needs a build with the
+    /// `gui-window` feature)
+    #[arg(long = "gui", value_name = "MODE", default_value = "headless")]
+    pub gui: GuiMode,
+
     /// Execution semantics (see `ProfileArgs`).
     #[command(flatten)]
     pub profile: ProfileArgs,
@@ -69,17 +82,70 @@ pub struct RunArgs {
     pub win: WinEmuArgs,
 }
 
+/// How the emulated GUI is presented while the script runs.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GuiMode {
+    /// The in-memory model: GUI calls return their real results and nothing is
+    /// drawn (the default, and the only mode that works without a display).
+    #[default]
+    Headless,
+    /// A real window driven by `autoitv3_gui_egui::LiveBackend`.
+    Window,
+}
+
 /// Entry point for the `run` subcommand.
 pub fn run(args: &RunArgs) -> CliResult<()> {
+    match args.gui {
+        GuiMode::Headless => execute(args, None),
+        GuiMode::Window => run_windowed(args),
+    }
+}
+
+/// `--gui window`: open a real window and run the script under it.
+///
+/// The window owns the main thread (winit insists on it), so the script runs on
+/// the worker `LiveBackend::run` starts; it returns once the script is done or
+/// the user closes the window.
+#[cfg(feature = "gui-window")]
+fn run_windowed(args: &RunArgs) -> CliResult<()> {
+    let title = Path::new(&args.input)
+        .file_name()
+        .map(|name| format!("au3 run — {}", name.to_string_lossy()))
+        .unwrap_or_else(|| "au3 run".to_string());
+    let owned = args.clone();
+    autoitv3_gui_egui::LiveBackend::new(title)
+        .run(move |backend| {
+            if let Err(e) = execute(&owned, Some(Box::new(backend))) {
+                eprintln!("error: {}", e.message);
+            }
+        })
+        .map_err(|e| CliError::failure(format!("opening the GUI window failed: {e}")))
+}
+
+/// `--gui window` without the feature: say how to get it.
+#[cfg(not(feature = "gui-window"))]
+fn run_windowed(_args: &RunArgs) -> CliResult<()> {
+    Err(CliError::failure(
+        "--gui window needs a build with the `gui-window` feature \
+         (cargo build --release -p au3-cli --features gui-window)",
+    ))
+}
+
+/// Build the runtime and execute the script, optionally with a GUI backend.
+fn execute(
+    args: &RunArgs,
+    gui: Option<Box<dyn autoitv3_platform::winemu::GuiBackend>>,
+) -> CliResult<()> {
     let input = load_input(&args.input)?;
     let prog = input.program;
     // Install the platform layer for this OS so OS-specific builtins can be
     // reached (see `autoitv3-platform`); off Windows the Windows emulation
     // layer answers first, with the version these arguments select.
     let mut rt = Runtime::with_program(&prog);
-    rt.set_platform(args.win.platform(
+    rt.set_platform(args.win.platform_with_gui(
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
+        gui,
     )?);
     // A `.exe`/`.a3x` input is a compiled build, so `@Compiled` answers 1 the
     // way it did for the program the script came out of; `--compiled` /

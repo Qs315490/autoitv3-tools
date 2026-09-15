@@ -136,3 +136,41 @@ ConsoleWrite("[" & @Compiled & "]" & @CRLF)
     let forced = au3(&["run", path.to_str().unwrap(), "--compiled"]);
     assert!(forced.contains("[1]"), "--compiled was ignored: {forced}");
 }
+
+// ---------------------------------------------------------------------------
+// GUI backend selection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gui_calls_are_answered_in_the_default_headless_mode() {
+    // `--gui headless` is the default: the 165 GUI functions answer with real
+    // results and nothing is drawn (so this works without a display).
+    let body = "Func F()\n    Return GUICreate(\"T\", 100, 50) > 0\nEndFunc\n";
+    let path = script("gui-headless", body);
+    let out = au3(&["run", path.to_str().unwrap(), "F"]);
+    assert!(out.contains("F() = true"), "got:\n{out}");
+
+    let out = au3(&["run", path.to_str().unwrap(), "--gui", "headless", "F"]);
+    assert!(out.contains("F() = true"), "got:\n{out}");
+}
+
+#[test]
+fn gui_rejects_an_unknown_mode() {
+    let path = script("gui-bad", SCRIPT);
+    let out = au3(&["run", path.to_str().unwrap(), "--gui", "bogus"]);
+    assert!(
+        out.contains("invalid value") && out.contains("bogus"),
+        "got:\n{out}"
+    );
+}
+
+/// `--gui window` needs the eframe-backed build; without the feature the CLI
+/// has to say how to get one rather than failing obscurely.
+#[cfg(not(feature = "gui-window"))]
+#[test]
+fn gui_window_without_the_feature_says_how_to_build_it() {
+    let path = script("gui-window-off", SCRIPT);
+    let out = au3(&["run", path.to_str().unwrap(), "--gui", "window"]);
+    assert!(out.contains("gui-window"), "got:\n{out}");
+    assert!(out.contains("--features gui-window"), "got:\n{out}");
+}
