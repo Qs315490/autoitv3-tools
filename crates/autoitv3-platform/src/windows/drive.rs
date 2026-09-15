@@ -23,15 +23,19 @@ pub(crate) enum DriveField {
     SpaceFree,
 }
 
-/// A drive the way `DriveGetDrive` reports it: the letter and a colon, no
-/// separator (`C:`). The official implementation builds `C:\`, asks the OS, and
-/// strips the separator before storing it in the result.
+/// A drive the way `DriveGetDrive` reports it: the letter and a colon, lower
+/// case, no separator (`c:`).
+///
+/// The official implementation probes `c:\`, asks the OS, strips the separator
+/// and keeps that lower-case letter — measured on 3.3.16: `ALL` gives `c:`,
+/// `d:`, … A script joins the name with its own `\`, and the ones that want
+/// upper case call `StringUpper` themselves.
 fn drive_name(root: &str) -> String {
-    let trimmed = root.trim_end_matches(['\\', '/']);
-    if trimmed.is_empty() {
-        root.to_string()
-    } else {
-        trimmed.to_string()
+    match root.chars().next() {
+        Some(letter) if letter.is_ascii_alphabetic() => {
+            format!("{}:", letter.to_ascii_lowercase())
+        }
+        _ => root.to_string(),
     }
 }
 
