@@ -15,6 +15,13 @@
 //!   12 bits are `offset - 1` and whose high nibble is `length - 3` (a nibble of
 //!   `0xF` continues into extra bytes);
 //! * a phrase copies from the current chunk's output, so it may overlap.
+//!
+//! **Why this is not the `lznt1` crate**: 0.1.3 reads the 16-bit phrase
+//! the other way round (its decoder takes *length* from the low `split` bits
+//! and its encoder writes `(offset - 1) << 12 | (length - 3)`, contradicting
+//! its own comment), so real LZNT1 streams decode to nothing. The published
+//! vectors in `tests/unit/winemu_compress.rs` catch it immediately. Revisit
+//! only with a vector from a real Windows stream.
 
 /// `COMPRESSION_FORMAT_LZNT1`.
 pub const COMPRESSION_FORMAT_LZNT1: u32 = 2;

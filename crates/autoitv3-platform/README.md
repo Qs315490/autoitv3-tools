@@ -39,7 +39,10 @@
           paths.rs      WindowsPaths：C:\ 目录布局（@WindowsDir、@AppDataDir…）
           registry.rs   RegistryStore 接口 + FileRegistry（默认，落盘 .au3_registry）
                         + MemoryRegistry（可选，不落盘）
-          compress.rs / crypto.rs  LZNT1 解压、CryptoAPI 仿真
+          compress.rs   LZNT1 解压（自写：crates.io 的 `lznt1` 词法布局与 [MS-XCA]
+                        相反，见下）
+          crypto.rs     CryptoAPI 仿真：`CALG_*` 映射 + `CryptDeriveKey` 规则；
+                        算法本身用 RustCrypto（md-5/sha1/sha2/aes/rc4）
           bcrypt.rs     bcrypt.dll（CNG）仿真：算法提供者、哈希/HMAC、对称密钥、
                         PBKDF2、GenRandom、RSA 私钥导入与解密（用 RustCrypto 实现）
           shell.rs      ShellExecute*/RunAs*
@@ -51,17 +54,61 @@
                       资源）、verinfo.rs（RT_VERSION）、shortcut.rs（.lnk）、
                       mod.rs（WindowsArch 指针宽度）
       tests/
-        platform.rs   分层、选择、注入、通用函数与宏（54 项）
+        platform.rs   分层、选择、注入、通用函数与宏（56 项）
         windows_native.rs  原生 Win32 层 38 项（真实内核/注册表/COM 冒烟）+
                       扩展仿真 DllCall/回调/伪 COM（经 emu 栈，全宿主可跑）
         profile.rs    执行配置（忠实 / 确定性）（14 项）
         winemu.rs     Windows 仿真层：DllStruct / 注册表 / 快捷方式 / GUI …
         unit/         winfmt/winemu 各模块的单元测试（`#[path]` 回挂）
+          winemu_bcrypt.rs    bcrypt.dll（CNG）仿真（12 项，公开向量）
           winemu_compress.rs  LZNT1 解压
-          winemu_crypto.rs    CryptoAPI 仿真
+          winemu_crypto.rs    CryptoAPI 仿真（8 项，公开向量）
           winemu_pe.rs        PE 资源读取
           winemu_verinfo.rs   RT_VERSION
 ```
+
+## winemu 的拆分：DLL 与 COM 要不要单开
+
+`winemu/mod.rs` 已经长到 3300 行，问"dll 和 com 该不该单开"时先量一下各段（行号为
+撰写时，随改动漂移）：
+
+| 段 | 位置 | 行数 |
+| --- | --- | ---: |
+| `DllCall` 分派（含 CryptoAPI/CNG 分支、A/W 回退、trace） | `dll_call` + `dll_call_inner` | ~600 |
+| DllStruct/地址模型 + 缓冲辅助 | `struct_*`、`memory_*`、`read_buffer`/`dll_bytes`/`write_buffer`、`c_string_*` | ~250 |
+| CryptoAPI 辅助 + `RtlDecompressBuffer` | `crypt_*`、`rtl_decompress_buffer` | ~160 |
+| 版本/系统信息结构填充 | `fill_version_struct`、`fill_system_info` | ~80 |
+| 注册表/剪贴板/驱动器/`FileInstall`（只从 DllCall 进） | `reg_*`、`clip_*`、`drive_*`、`file_install` | ~235 |
+| **DLL 合计** | | **~1300** |
+| 伪 COM：对象模型 + 4 个入口 | `PseudoObject`、`pseudo_com_*`、`obj_get`/`obj_call` | ~350 |
+| `Platform::call`（winemu 自己的 AutoIt 内建） | 尾部 | ~835 |
+| 状态 + builder + 访问器 | 头部 | ~445 |
+
+**结论**
+
+* **COM：单文件就够**（`winemu/com.rs`，~350 行）。它是一个自包含对象模型，对外只有
+  `pseudo_com_create`/`pseudo_com_get`/`pseudo_com_call` 加 `obj_get`/`obj_call`，
+  与既有的 `winemu/shell.rs`(85)、`winemu/registry.rs`(863) 同一量级；**不需要文件夹**。
+  这样也和原生侧 `windows/com.rs` 对齐。
+* **DLL：值得单开文件夹**（`winemu/dll/`，~1300 行）。它不是"一个东西"，而是四件彼此
+  独立的事，而且都还在长（bcrypt 刚加进来、注册表/驱动器还在填）：
+  * `dll/mod.rs` —— `DllOutcome`、`dll_call`、函数名分派、A/W 回退与 trace
+  * `dll/memory.rs` —— DllStruct/地址模型与缓冲辅助（`read_buffer`/`dll_bytes`/
+    `write_buffer`、`c_string_*`）
+  * `dll/crypto.rs` —— CryptoAPI 分支 + `RtlDecompressBuffer`（bcrypt 本体已在
+    `winemu/bcrypt.rs`）
+  * `dll/system.rs` —— 版本/系统信息结构
+  原生侧早就是这么分的（`windows/dll.rs` 877 行、`windows/com.rs` 414 行），winemu
+  跟上即可。
+* 更大的那块其实不是 DLL 也不是 COM，而是 **`Platform::call` 尾部那 835 行的
+  winemu 版 AutoIt 内建**（`MemGetStats`/`IsAdmin`/`DriveMap*`/`ShellExecute*`/
+  `FileInstall`…）。要拆的话按领域分（`winemu/sysinfo.rs`、`drive.rs`、`shell.rs`），
+  与 DLL/COM 是两件事。
+
+三点提醒：拆分是**纯搬运**，行为不变，但会动一批 `use` 与可见性（现在这些方法都写在
+`impl WindowsEmulation` 里，拆出去就要把字段设成 `pub(crate)` 或换成模块内自由函数）；
+`DllCall` 那个 ~600 行的 `match` 本身不因为搬文件而变小，真要可读性得按命名空间切成
+若干小函数；以上都是"下次动这块时顺手做"，没有非做不可的理由。
 
 ## 平台层
 
