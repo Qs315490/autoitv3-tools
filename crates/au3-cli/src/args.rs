@@ -217,6 +217,35 @@ pub struct ProgressArgs {
     pub no_progress: bool,
 }
 
+/// `#include` search path, shared by the commands that run or analyse a script.
+///
+/// AutoIt inserts the contents of an included file at the point of the
+/// directive, which is where a script's constants and helper functions come
+/// from, so the commands that execute or rewrite a script expand them. The
+/// search order is the help page's: `#include "file"` looks in the script's own
+/// directory first, `#include <file>` in the standard library first, and both
+/// then walk the directories named here (and in `AU3_INCLUDE_PATH`). Those stand
+/// in for the registry value `HKEY_CURRENT_USER\Software\AutoIt
+/// v3\AutoIt\Include`, which is where a normal AutoIt install keeps extra
+/// library paths.
+///
+/// The standard library itself is the `Include` directory of an AutoIt install:
+/// this tool has none next to its own binary, so `C:\Program Files
+/// (x86)\AutoIt3\Include` and friends are searched instead. An install anywhere
+/// else needs `-I` or `AU3_INCLUDE_PATH`; a run that cannot find an include says
+/// which directories it tried.
+#[derive(Args, Debug, Clone, Default)]
+pub struct IncludeArgs {
+    /// Add DIR to the `#include` search path (repeatable)
+    #[arg(short = 'I', long = "include-path", value_name = "DIR")]
+    pub include_paths: Vec<String>,
+
+    /// Do not expand `#include` at all: run the script as if the directives
+    /// were not there
+    #[arg(long = "no-includes")]
+    pub no_includes: bool,
+}
+
 /// Expand an `--emulate` area alias into the function names routed to the
 /// emulation layer.
 fn expand_emulate_area(raw: &str) -> CliResult<Vec<String>> {
@@ -394,15 +423,18 @@ pub struct Input {
 /// chunk — and its embedded script is read back with `autoitv3-unpack`. The
 /// build then serves as the resource module, so the script's own
 /// `FindResourceW` calls resolve without `--resource-module`.
+///
+/// `#include` is *not* expanded here: the commands that only read or rewrite a
+/// file want the file, directives and all. See [`load_input_included`].
 pub fn load_input(path: &str) -> CliResult<Input> {
     let bytes =
         std::fs::read(path).map_err(|e| CliError::io(format!("cannot read {path}: {e}")))?;
     if is_compiled_build(&bytes) {
         return load_compiled(path);
     }
-    let source = String::from_utf8(bytes).map_err(|_| {
+    let source = autoitv3_preproc::decode(&bytes).ok_or_else(|| {
         CliError::io(format!(
-            "cannot read {path}: not UTF-8 source, and not a compiled build \
+            "cannot read {path}: not UTF-8 or UTF-16 source, and not a compiled build \
              (no MZ / AU3!EA header)"
         ))
     })?;
@@ -413,6 +445,38 @@ pub fn load_input(path: &str) -> CliResult<Input> {
         program,
         resource_module: None,
     })
+}
+
+/// As [`load_input`], with every `#include` expanded into the program.
+///
+/// Only the *program* grows: [`Input::source`] stays the script as written, so
+/// the debugger's listings and every line number of the script itself keep
+/// meaning what they meant. What an included file said is a warning on the way
+/// (a file that could not be found) or an error (a file that could not be
+/// parsed), reported on stderr with the `#` prefix the other run notes use.
+pub fn load_input_included(path: &str, includes: &IncludeArgs) -> CliResult<Input> {
+    let mut input = load_input(path)?;
+    if includes.no_includes {
+        return Ok(input);
+    }
+    let mut search = autoitv3_preproc::Includes::from_env();
+    for dir in &includes.include_paths {
+        search.push_user_dir(PathBuf::from(dir));
+    }
+    let expansion = autoitv3_preproc::expand(input.program, Path::new(path), &search)
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    for warning in &expansion.warnings {
+        eprintln!("# {warning}");
+    }
+    if expansion.files.len() > 1 {
+        eprintln!(
+            "# #include: read {} files ({} included)",
+            expansion.files.len(),
+            expansion.files.len() - 1
+        );
+    }
+    input.program = expansion.program;
+    Ok(input)
 }
 
 /// Read and parse the program at `path`, discarding the rest of the input.

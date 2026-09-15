@@ -23,9 +23,10 @@ use autoitv3_runtime::{Flow, Runtime, Value};
 use clap::Args;
 
 use crate::args::{
-    load_input, parse_arg_value, CliError, CliResult, CompiledArgs, EffectArgs, GuiMode,
-    ProfileArgs, StepArgs, WinEmuArgs,
+    CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, ProfileArgs, StepArgs,
+    WinEmuArgs, load_input_included, parse_arg_value,
 };
+
 use crate::output::format_value;
 use std::path::Path;
 
@@ -84,6 +85,10 @@ pub struct RunArgs {
     #[command(flatten)]
     pub compiled: CompiledArgs,
 
+    /// `#include` search path (see `IncludeArgs`).
+    #[command(flatten)]
+    pub includes: IncludeArgs,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 }
@@ -132,7 +137,7 @@ fn execute(
     args: &RunArgs,
     gui: Option<Box<dyn autoitv3_platform::winemu::GuiBackend>>,
 ) -> CliResult<()> {
-    let input = load_input(&args.input)?;
+    let input = load_input_included(&args.input, &args.includes)?;
     let prog = input.program;
     // Install the platform layer for this OS so OS-specific builtins can be
     // reached (see `autoitv3-platform`); off Windows the Windows emulation

@@ -19,9 +19,10 @@ use autoitv3_format::PrettyPrinter;
 use clap::Args;
 
 use crate::args::{
-    load_input, CliResult, CompiledArgs, EffectArgs, OutputArgs, ProfileArgs, ProgressArgs,
-    StepArgs, SubstituteArgs, WinEmuArgs,
+    CliResult, CompiledArgs, EffectArgs, IncludeArgs, OutputArgs, ProfileArgs, ProgressArgs,
+    StepArgs, SubstituteArgs, WinEmuArgs, load_input_included,
 };
+
 use crate::output::write_output;
 use crate::progress::reporter;
 use std::path::Path;
@@ -86,6 +87,10 @@ pub struct DeobfuscateArgs {
     #[command(flatten)]
     pub compiled: CompiledArgs,
 
+    /// `#include` search path (see `IncludeArgs`).
+    #[command(flatten)]
+    pub includes: IncludeArgs,
+
     #[command(flatten)]
     pub win: WinEmuArgs,
 
@@ -95,7 +100,7 @@ pub struct DeobfuscateArgs {
 
 /// Entry point for the `deobfuscate` subcommand.
 pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
-    let input = load_input(&args.input)?;
+    let input = load_input_included(&args.input, &args.includes)?;
     let mut prog = input.program;
 
     // Runtime evaluation first: it recovers values the syntactic passes cannot

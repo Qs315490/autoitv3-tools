@@ -60,9 +60,10 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
-    GuiMode,
-    load_input, CliError, CliResult, CompiledArgs, EffectArgs, ProfileArgs, StepArgs, WinEmuArgs,
+    CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, ProfileArgs, StepArgs,
+    WinEmuArgs, load_input_included,
 };
+
 use crate::output::format_value;
 use std::path::Path;
 
@@ -126,6 +127,10 @@ pub struct DebugArgs {
     /// with the `gui-window` feature)
     #[arg(long = "gui", value_name = "MODE", default_value = "headless")]
     pub gui: GuiMode,
+
+    /// `#include` search path (see `IncludeArgs`).
+    #[command(flatten)]
+    pub includes: IncludeArgs,
 
     #[command(flatten)]
     pub win: WinEmuArgs,
@@ -198,7 +203,7 @@ fn run_windowed(_args: &DebugArgs) -> CliResult<()> {
 /// `gui` is the backend factory when a mode overrode the platform's own
 /// (see [`GuiFactory`]); `None` leaves the choice to the platform.
 fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
-    let input = load_input(&args.input)?;
+    let input = load_input_included(&args.input, &args.includes)?;
     let source = input.source;
     let prog = input.program;
     let resource_module = input.resource_module;
