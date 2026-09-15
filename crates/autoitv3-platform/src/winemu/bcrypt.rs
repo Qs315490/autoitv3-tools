@@ -506,37 +506,48 @@ fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Read a `BCRYPT_RSAKEY_BLOB` and build the key from its components.
+///
+/// The blob is a six-word header — magic, bit length, and the byte lengths of
+/// the public exponent, modulus, prime1 and prime2 — followed by those
+/// components big-endian, then the CRT exponents and coefficient, then the
+/// private exponent.
+///
+/// A blob built by an AutoIt UDF may stop right after `q` (only prime1/prime2
+/// present), because p, q and e are enough to rebuild the rest; `from_p_q` does
+/// exactly that, so both shapes are accepted here.
 fn parse_rsa_private_blob(blob: &[u8]) -> Option<rsa::RsaPrivateKey> {
-    // BCRYPT_RSAPRIVATE_BLOB: magic, bit length, then the byte lengths of the
-    // public exponent, modulus, prime1 and prime2.
     if blob.len() < 24 {
         return None;
     }
     let word = |i: usize| u32::from_le_bytes(blob[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
-    let magic = word(0);
     // `RSA2` is a private blob, `RSA1` a public one; only the former decrypts.
-    if magic != 0x3241_5352 || word(1) == 0 {
+    if word(0) != 0x3241_5352 {
         return None;
     }
     let (exp_len, mod_len, p_len, q_len) = (word(2), word(3), word(4), word(5));
-    let need = 24 + exp_len + mod_len + 4 * p_len + 2 * q_len + mod_len;
-    if exp_len == 0 || mod_len == 0 || p_len == 0 || q_len == 0 || blob.len() < need {
+    if exp_len == 0 || mod_len == 0 || p_len == 0 || q_len == 0 {
         return None;
     }
-    let mut at = 24;
-    let mut take = |len: usize| {
-        let out = blob.get(at..at + len)?;
-        at += len;
-        Some(out)
-    };
-    let e = BigUint::from_bytes_be(take(exp_len)?);
-    let n = BigUint::from_bytes_be(take(mod_len)?);
-    let p = BigUint::from_bytes_be(take(p_len)?);
-    let q = BigUint::from_bytes_be(take(q_len)?);
-    // Exponent1/Exponent2/Coefficient follow; `from_components` recomputes them.
-    let d = rsa::RsaPrivateKey::from_components(n, e, BigUint::from(0u8), vec![p, q]).ok()?;
-    d.validate().ok()?;
-    Some(d)
+    let (exp_at, mod_at) = (24, 24 + exp_len);
+    let (p_at, q_at) = (mod_at + mod_len, mod_at + mod_len + p_len);
+    let q_end = q_at + q_len;
+    if blob.len() < q_end {
+        return None;
+    }
+    let e = BigUint::from_bytes_be(&blob[exp_at..mod_at]);
+    let n = BigUint::from_bytes_be(&blob[mod_at..p_at]);
+    let p = BigUint::from_bytes_be(&blob[p_at..q_at]);
+    let q = BigUint::from_bytes_be(&blob[q_at..q_end]);
+    // Exponent1, exponent2, coefficient, then the private exponent.
+    let d_at = q_end + 2 * p_len + q_len;
+    if blob.len() >= d_at + mod_len {
+        let d = BigUint::from_bytes_be(&blob[d_at..d_at + mod_len]);
+        let key = rsa::RsaPrivateKey::from_components(n, e, d, vec![p, q]).ok()?;
+        key.validate().ok()?;
+        Some(key)
+    } else {
+        rsa::RsaPrivateKey::from_p_q(p, q, e).ok()
+    }
 }
 
 // ---------------------------------------------------------------------------
