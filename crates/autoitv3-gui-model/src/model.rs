@@ -370,8 +370,32 @@ pub struct Window {
     /// `WinSetOnTop`/`$GUI_ONTOP`: the window stays above the others.
     pub topmost: bool,
     pub resizing: i64,
-    pub on_event: Option<String>,
+    /// `GUISetOnEvent` handlers by `$GUI_EVENT_*` id: one function per event, so
+    /// a window can answer a close and a minimise differently.
+    pub on_events: std::collections::HashMap<i64, String>,
     pub controls: Vec<i64>,
+}
+
+impl Window {
+    /// The function `GUISetOnEvent` registered for `event`, if any.
+    pub fn on_event(&self, event: i64) -> Option<&str> {
+        self.on_events.get(&event).map(String::as_str)
+    }
+
+    /// Register (`Some`) or drop (`None`) the handler for one event.
+    ///
+    /// An empty function name disables the handler, which is what the help page
+    /// says `GUISetOnEvent($event, "")` is for.
+    pub fn set_on_event(&mut self, event: i64, handler: Option<String>) {
+        match handler.filter(|name| !name.is_empty()) {
+            Some(name) => {
+                self.on_events.insert(event, name);
+            }
+            None => {
+                self.on_events.remove(&event);
+            }
+        }
+    }
 }
 
 /// A tray item created with `TrayCreateItem`/`TrayCreateMenu`.
@@ -842,7 +866,7 @@ impl Window {
             focus: None,
             topmost: false,
             resizing: 0,
-            on_event: None,
+            on_events: std::collections::HashMap::new(),
             controls: Vec::new(),
         }
     }

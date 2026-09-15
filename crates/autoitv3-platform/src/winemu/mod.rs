@@ -953,9 +953,15 @@ impl WindowsEmulation {
 
 
 
-    /// Drain the callback invocations the enumerators scheduled.
+    /// Drain the callback invocations the enumerators and the GUI scheduled.
+    ///
+    /// `DllCallbackRegister` + `EnumWindows` is one source, `GUIOnEventMode` the
+    /// other: neither may re-enter the interpreter from inside a call, so both
+    /// leave a function name for the runtime to run once the call has returned.
     pub fn take_pending_callbacks(&mut self) -> Vec<(String, Vec<Value>)> {
-        std::mem::take(&mut self.pending_callbacks)
+        let mut pending = self.gui.take_pending_callbacks();
+        pending.extend(std::mem::take(&mut self.pending_callbacks));
+        pending
     }
 
     /// Hand out a `DllOpen` handle for `name`.
@@ -2022,6 +2028,12 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         // viewport, an offscreen renderer's canvas, or the emulated default.
         "desktopwidth" => Value::Int(i64::from(emu.gui.desktop_size().0)),
         "desktopheight" => Value::Int(i64::from(emu.gui.desktop_size().1)),
+        // ----- the GUI event a callback is running for -----
+        // `@GUI_CtrlId`/`@GUI_CtrlHandle` carry the control that raised the
+        // event and `@GUI_WinHandle` its window. The emulation's handles are the
+        // control ids it hands out, so the two are the same number here.
+        "gui_ctrlid" | "gui_ctrlhandle" => Value::Int(emu.gui.event_control_id()),
+        "gui_winhandle" => Value::Int(emu.gui.event_window()),
         // The assumed display mode of that desktop.
         "desktopdepth" => Value::Int(32),
         "desktoprefresh" => Value::Int(60),
