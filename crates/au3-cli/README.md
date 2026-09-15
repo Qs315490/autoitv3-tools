@@ -95,8 +95,9 @@ au3 run some.au3 SomeFunc --trace
 #   window      —— 跨平台的 eframe 窗口（构建时加 --features gui-window）；
 #                    窗口归主线程（winit 要求），脚本跑在它的工作线程上，
 #                    关闭窗口或脚本结束即退出。不带该 feature 构建时会明确报错。
-au3 run some-gui.au3                     # Windows：真窗口；别处：不画
-au3 run some-gui.au3 --gui headless      # 确定性地跑，什么都不弹
+au3 run some-gui.au3                     # Windows：真窗口、真对话框；别处：不画
+au3 run some-gui.au3 --gui headless      # 确定性地跑：窗口不画，MsgBox/InputBox 也
+                                         # 只按脚本化答案回答（不等人），分析/CI 用这个
 au3 run some-gui.au3 --gui window        # 没有原生路径的主机也能看窗口
 
 # debug：加载脚本并进入交互式调试 shell（断点/单步/异常时停/查看/求值）

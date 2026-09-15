@@ -5,7 +5,7 @@
 //! [`HeadlessBackend`] does neither — it is a no-op renderer — so analysis runs
 //! need no toolkit at all.
 
-use crate::model::{Control, Window, WindowState};
+use crate::model::{Control, Progress, Splash, Window, WindowState};
 
 /// A GUI event a backend can deliver to `GUIGetMsg`/`TrayGetMsg`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +89,62 @@ pub trait GuiBackend {
     fn snapshot(&mut self) -> Option<GuiImage> {
         None
     }
+    /// A real message box, when the backend has somebody to show it to.
+    ///
+    /// `None` means "answer from the scripted queue instead" — the headless and
+    /// offscreen backends — so an analysis run never waits for a user who is not
+    /// there.
+    fn message_box(
+        &mut self,
+        _flags: i64,
+        _title: &str,
+        _text: &str,
+        _timeout: i64,
+    ) -> Option<i64> {
+        None
+    }
+
+    /// A real input box; `Some(None)` is "the user cancelled".
+    fn input_box(
+        &mut self,
+        _title: &str,
+        _prompt: &str,
+        _default: &str,
+        _password: bool,
+        _timeout: i64,
+    ) -> Option<Option<String>> {
+        None
+    }
+
+    /// A real file dialog; `Some(None)` is "the user cancelled". `kind` is `0`
+    /// for open, `1` for save and `2` for a folder.
+    fn file_dialog(
+        &mut self,
+        _kind: i64,
+        _title: &str,
+        _initial: &str,
+        _filter: &str,
+        _default: &str,
+        _options: i64,
+    ) -> Option<Option<String>> {
+        None
+    }
+
+    /// Show, update or hide the splash window.
+    fn splash(&mut self, _splash: &Splash, _off: bool) -> bool {
+        false
+    }
+
+    /// Show, update or hide the progress window.
+    fn progress(&mut self, _progress: &Progress, _off: bool) -> bool {
+        false
+    }
+
+    /// Show the tooltip window; an empty `text` hides it.
+    fn tooltip_window(&mut self, _text: &str, _x: i32, _y: i32) -> bool {
+        false
+    }
+
     /// Send a control message to a real control, when the backend has one.
     ///
     /// `None` means "there is no real control to ask" — the headless backend,

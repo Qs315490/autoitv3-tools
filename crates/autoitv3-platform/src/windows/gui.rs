@@ -63,9 +63,11 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::c_void;
 
 use autoitv3_gui_model::{
-    Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window,
-    WindowState,
+    Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Progress,
+    Splash, Window, WindowState,
 };
+
+use super::dialogs;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     FillRect, GetObjectW, BITMAP, HBRUSH, HBITMAP,
@@ -590,6 +592,8 @@ pub struct Win32Backend {
     topmost: HashMap<i64, bool>,
     /// The control that was last given the input focus.
     focused: Option<i64>,
+    /// The splash, progress and tooltip windows this backend has open.
+    feedback: dialogs::Feedback,
     next_win_id: i32,
     registered: bool,
 }
@@ -612,6 +616,7 @@ impl Win32Backend {
             frames: HashMap::new(),
             topmost: HashMap::new(),
             focused: None,
+            feedback: dialogs::Feedback::default(),
             next_win_id: 1000,
             registered: false,
         }
@@ -1740,6 +1745,57 @@ impl GuiBackend for Win32Backend {
             }
         }
         updates
+    }
+
+    fn message_box(
+        &mut self,
+        flags: i64,
+        title: &str,
+        text: &str,
+        _timeout: i64,
+    ) -> Option<i64> {
+        // The timeout is AutoIt's "close the box by yourself"; Windows' own
+        // message box has no such thing, so a script that sets one waits like
+        // every other script.
+        Some(dialogs::message_box(flags, title, text))
+    }
+
+    fn input_box(
+        &mut self,
+        title: &str,
+        prompt: &str,
+        default: &str,
+        password: bool,
+        _timeout: i64,
+    ) -> Option<Option<String>> {
+        dialogs::input_box(title, prompt, default, password)
+    }
+
+    fn file_dialog(
+        &mut self,
+        kind: i64,
+        title: &str,
+        initial: &str,
+        filter: &str,
+        default: &str,
+        _options: i64,
+    ) -> Option<Option<String>> {
+        match kind {
+            2 => dialogs::select_folder(title, initial),
+            _ => dialogs::file_dialog(kind == 1, title, initial, filter, default, false),
+        }
+    }
+
+    fn splash(&mut self, splash: &Splash, off: bool) -> bool {
+        self.feedback.splash(splash, off)
+    }
+
+    fn progress(&mut self, progress: &Progress, off: bool) -> bool {
+        self.feedback.progress(progress, off)
+    }
+
+    fn tooltip_window(&mut self, text: &str, x: i32, y: i32) -> bool {
+        self.feedback.tooltip(text, x, y)
     }
 
     /// Ask the real control, which knows what the model only approximates.
