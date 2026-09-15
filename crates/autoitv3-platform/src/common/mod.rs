@@ -399,10 +399,18 @@ impl CommonPlatform {
             Access::Read => File::open(&p),
             // Write handles are opened readable too: `FileGetPos`/`FileSetPos`/
             // `FileSetEnd` need to see the bytes already on disk.
+            //
+            // `$FO_APPEND` is *not* C's `"a+b"`: measured on 3.3.16, a handle
+            // opened that way starts at the end of the file but a write after a
+            // `FileSetPos` lands wherever the position now is
+            // (`FileSetPos($h, 0, 0)` + `FileWrite($h, "Z")` overwrites the first
+            // byte). So it is an ordinary read/write handle — only the starting
+            // position differs, which is set below.
             Access::Append => OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
-                .append(true)
+                .write(true)
                 .open(&p),
             Access::Overwrite => OpenOptions::new()
                 .create(true)
@@ -421,8 +429,25 @@ impl CommonPlatform {
                     bytes: None,
                     cursor: 0,
                 })));
+                let handle = self.handles.len() as i64;
+                // `$FO_APPEND` opens with the position at the end of the file,
+                // which is what makes the first write append. Reading the content
+                // once also warms the cache the cursor arithmetic needs.
+                if access == Access::Append {
+                    if binary {
+                        self.ensure_bytes(handle);
+                        if let Some(e) = self.entry_mut(handle) {
+                            e.cursor = e.bytes.as_deref().map(<[u8]>::len).unwrap_or(0);
+                        }
+                    } else {
+                        self.ensure_text(handle);
+                        if let Some(e) = self.entry_mut(handle) {
+                            e.cursor = e.text.as_deref().map(|t| t.chars().count()).unwrap_or(0);
+                        }
+                    }
+                }
                 ctx.set_error(0, 0);
-                Value::Int(self.handles.len() as i64)
+                Value::Int(handle)
             }
             // The help page gives `FileOpen` no `@error` at all — "Failure:
             // -1 if error occurs" — and the interpreter's own source never
@@ -578,45 +603,40 @@ impl CommonPlatform {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
-        // Where the text goes: the *file position* (`fputs` at what `fseek`
-        // left behind), except on a handle opened for appending, where the C
-        // library sends every write to the end whatever the position says. Our
-        // cursor counts characters, so the position has to be turned into the
-        // byte offset the OS wants; that needs the file's current content, which
-        // also has to be loaded before the write invalidates the cache.
+        // Where the text goes: the *file position* (`fputs` at what `fseek` left
+        // behind). Our cursor counts characters, so the position has to be
+        // turned into the byte offset the OS wants; that needs the file's
+        // current content, which also has to be loaded before the write
+        // invalidates the cache. `$FO_APPEND` only *starts* at the end — see
+        // `file_open` — so it needs no special case here.
         let binary = self.entry(handle).is_some_and(|e| e.binary);
         if binary {
             self.ensure_bytes(handle);
         } else {
             self.ensure_text(handle);
         }
-        let (append, cursor, len, byte_at) = match self.entry(handle) {
+        let (cursor, byte_at) = match self.entry(handle) {
             Some(e) if e.binary => {
-                let bytes = e.bytes.as_deref().unwrap_or(&[]);
-                let at = e.cursor.min(bytes.len());
-                (e.access == Access::Append, at, bytes.len(), at)
+                let at = e.cursor.min(e.bytes.as_deref().unwrap_or(&[]).len());
+                (at, at)
             }
             Some(e) => {
                 let text = e.text.as_deref().unwrap_or("");
-                let len = text.chars().count();
-                let at = e.cursor.min(len);
+                let at = e.cursor.min(text.chars().count());
                 let byte = text.chars().take(at).map(char::len_utf8).sum();
-                (e.access == Access::Append, at, len, byte)
+                (at, byte)
             }
-            None => (false, 0, 0, 0),
+            None => (0, 0),
         };
         let written = if binary { payload.len() } else { payload.chars().count() };
         let Some(e) = self.entry_mut(handle) else {
             return Value::Int(0);
         };
-        if !append {
-            let _ = e.file.seek(SeekFrom::Start(byte_at as u64));
-        }
+        let _ = e.file.seek(SeekFrom::Start(byte_at as u64));
         match e.file.write_all(payload.as_bytes()).and_then(|()| e.file.flush()) {
             Ok(()) => {
-                // The position moves past what was written — to the end of the
-                // file in append mode, where the write itself went.
-                e.cursor = if append { len + written } else { cursor + written };
+                // The position moves past what was written.
+                e.cursor = cursor + written;
                 self.invalidate_text(handle);
                 ctx.set_error(0, 0);
                 // "Success: 1" — the help page, and `FileWriteLine` in the
