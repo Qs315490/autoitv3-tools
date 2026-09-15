@@ -42,32 +42,58 @@
 //!
 //! # Known limits
 //!
-//! Bitmaps (`GUICtrlSetImage`) are not loaded into the real static controls,
-//! `GUICtrlSetGraphic` drawing stays in the model, and `ListView` items only get
-//! a first column (no headers). The *semantics* of all of those still work —
-//! `GUICtrlRead` answers from the model — it is the pixels that stay behind.
+//! The pixels are real, but not every one of them is drawn yet:
+//!
+//! * tooltips (`GUICtrlSetTip`) and window icons (`GUISetIcon`) are not shown;
+//! * a graphic control paints the *outlines* of its commands — the fill colour
+//!   behind `$GUI_GR_COLOR`'s second argument is not painted, and the command
+//!   types the model does not carry (bezier, pie, `$GUI_GR_PENSIZE`) are not
+//!   drawn at all;
+//! * a `ListView` row is one line with as many columns as it has cells; the
+//!   icon views, sorting and `$LVS_EX_CHECKBOXES` are not there;
+//! * `WinGetPos` answers with the size the model keeps, which is the client
+//!   area; the frame is added for the real window, so the two differ from what
+//!   the official interpreter reports there.
+//!
+//! The *semantics* of all of it still work: `GUICtrlRead` answers from the
+//! model, so only the pixels stay behind.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::c_void;
 
 use autoitv3_gui_model::{
-    Control, ControlKind, Font, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window, WindowState,
+    Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Window,
+    WindowState,
 };
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, DeleteObject, GetStockObject, InvalidateRect, UpdateWindow,
+    FillRect, GetObjectW, BITMAP, HBRUSH, HBITMAP,
+};
+use windows_sys::Win32::Graphics::Gdi::{
+    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint,
+    GetStockObject, InvalidateRect, LineTo, MoveToEx, Rectangle, SelectObject, SetBkColor,
+    SetTextColor, TextOutW, UpdateWindow, HDC, PAINTSTRUCT,
+};
+use windows_sys::Win32::Graphics::GdiPlus::{
+    GdipCreateBitmapFromFile, GdipCreateHBITMAPFromBitmap, GdipDisposeImage, GdipGetImageHeight,
+    GdipGetImageWidth, GdiplusStartup, GdiplusStartupInput, GpBitmap, GpImage,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    InitCommonControlsEx, INITCOMMONCONTROLSEX, LVITEMW, TCITEMW, TVINSERTSTRUCTW,
+    InitCommonControlsEx, INITCOMMONCONTROLSEX, LVCOLUMNW, LVITEMW, TCITEMW, TVINSERTSTRUCTW,
+    TVITEMW,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DestroyWindow, DispatchMessageW, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, IsIconic, IsWindow, IsZoomed, MoveWindow, PeekMessageW, RegisterClassExW,
-    SendMessageW, SetMenu, SetWindowTextW, ShowWindow, TranslateMessage, MSG, WNDCLASSEXW,
+    AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics,
+    GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsIconic, IsWindow, IsZoomed,
+    LoadCursorW, LoadImageW, MoveWindow, PeekMessageW, RegisterClassExW, SendMessageW, SetCursor,
+    SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
+    WNDCLASSEXW,
 };
 
 // ---------------------------------------------------------------------------
@@ -144,6 +170,22 @@ const UDS_ALIGNRIGHT: u32 = 0x0000_0004;
 const UDS_ARROWKEYS: u32 = 0x0000_0020;
 const MCS_NOTODAY: u32 = 0x0000_0010;
 
+// More window styles (`winuser.h`), the defaults AutoIt's help pages document
+// for each control.
+const SS_NOTIFY: u32 = 0x0000_0100;
+const ES_READONLY: u32 = 0x0000_0800;
+const WS_HSCROLL: u32 = 0x0010_0000;
+const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
+const WS_EX_WINDOWEDGE: u32 = 0x0000_0100;
+const LBS_SORT: u32 = 0x0000_0002;
+const TCS_TOOLTIPS: u32 = 0x0000_0400;
+const TVS_DISABLEDRAGDROP: u32 = 0x0000_0010;
+const TVS_SHOWSELALWAYS: u32 = 0x0000_0020;
+const LVS_SINGLESEL: u32 = 0x0000_0004;
+const LVS_EX_FULLROWSELECT: u32 = 0x0000_0020;
+const DTS_LONGDATEFORMAT: u32 = 0x0000_0004;
+const UDS_SETBUDDYINT: u32 = 0x0000_0002;
+
 // Control messages.
 const BM_GETCHECK: u32 = 0x00F0;
 const BM_SETCHECK: u32 = 0x00F1;
@@ -157,16 +199,47 @@ const CB_RESETCONTENT: u32 = 0x014B;
 const CB_SETCURSEL: u32 = 0x014E;
 const CB_GETCURSEL: u32 = 0x0147;
 const LVM_INSERTITEMW: u32 = 0x104D;
+const LVM_INSERTCOLUMNW: u32 = 0x1061;
+const LVM_SETCOLUMNW: u32 = 0x1060;
+const LVM_SETCOLUMNWIDTH: u32 = 0x101E;
+const LVM_SETITEMW: u32 = 0x1076;
+const LVM_SETITEMSTATE: u32 = 0x102B;
+const LVIS_SELECTED: u32 = 0x0002;
+const LVIS_FOCUSED: u32 = 0x0001;
+const BM_SETIMAGE: u32 = 0x00F7;
+const BS_ICON: u32 = 0x0000_0040;
+const LVCF_TEXT: u32 = 0x0004;
+const LVCF_WIDTH: u32 = 0x0002;
+/// `LVSCW_AUTOSIZE_USEHEADER`: size a column to its heading.
+const LVSCW_AUTOSIZE_USEHEADER: isize = -2;
 const LVM_DELETEALLITEMS: u32 = 0x1009;
 const LVM_GETNEXTITEM: u32 = 0x100C;
+const TVM_GETNEXTITEM: u32 = 0x110A;
 const TVM_INSERTITEMW: u32 = 0x1132;
 const TVM_DELETEITEM: u32 = 0x1101;
+const TVM_EXPAND: u32 = 0x1102;
+const TVM_SELECTITEM: u32 = 0x110B;
+const TVM_SETITEMW: u32 = 0x113F;
 const TCM_INSERTITEMW: u32 = 0x133E;
 const TCM_DELETEALLITEMS: u32 = 0x1305;
+const TCM_GETCURSEL: u32 = 0x130B;
+const TCM_SETCURSEL: u32 = 0x130C;
+const PBM_SETPOS: u32 = 0x0402;
+const TBM_SETPOS: u32 = 0x0405;
+const TBM_SETRANGE: u32 = 0x0406;
+const UDM_SETBUDDY: u32 = 0x112A;
+const UDM_SETRANGE32: u32 = 0x1136;
+const UDM_SETPOS32: u32 = 0x1138;
+const STM_SETICON: u32 = 0x0170;
+const STM_SETIMAGE: u32 = 0x0172;
 const LVIF_TEXT: u32 = 0x0001;
 const LVNI_SELECTED: isize = 0x0002;
 const TVIF_TEXT: u32 = 0x0001;
 const TVI_ROOT: isize = 0;
+const TVIS_BOLD: u32 = 0x0010;
+const TVE_EXPAND: usize = 0x0002;
+const TVGN_CARET: usize = 0x0009;
+const TVIF_STATE: u32 = 0x0008;
 const TVI_LAST: isize = -0x1_0000; // `(HTREEITEM)0xFFFF0000`, sign-extended
 const TCIF_TEXT: u32 = 0x0001;
 
@@ -179,8 +252,35 @@ const ICC_UPDOWN_CLASS: u32 = 0x0000_0010;
 const ICC_PROGRESS_CLASS: u32 = 0x0000_0020;
 const ICC_DATE_CLASSES: u32 = 0x0000_0100;
 
+// Painting, colouring and cursor messages (`winuser.h`).
+const WM_PAINT: u32 = 0x000F;
+const WM_ERASEBKGND: u32 = 0x0014;
+const WM_SETCURSOR: u32 = 0x0020;
+const WM_CTLCOLOREDIT: u32 = 0x0133;
+const WM_CTLCOLORLISTBOX: u32 = 0x0134;
+const WM_CTLCOLORBTN: u32 = 0x0135;
+const WM_CTLCOLORSTATIC: u32 = 0x0138;
+
+// `SetWindowPos` and the pseudo handles it takes.
+const HWND_TOPMOST: isize = -1;
+const HWND_NOTOPMOST: isize = -2;
+const SWP_NOSIZE: u32 = 0x0001;
+const SWP_NOMOVE: u32 = 0x0002;
+const SWP_NOACTIVATE: u32 = 0x0010;
+
+// `LoadImage` flags and types.
+const LR_LOADFROMFILE: u32 = 0x0010;
+const IMAGE_BITMAP: u32 = 0;
+const IMAGE_ICON: u32 = 1;
+
+// GDI arguments used by the graphic painter.
+const NULL_BRUSH: i32 = 5;
+const PS_SOLID: i32 = 0;
+
 // `PeekMessageW` flag and the `GetSystemMetrics` indices used here.
 const PM_REMOVE: u32 = 0x0001;
+/// `WM_SETCURSOR`'s "over the client area" hit test.
+const HTCLIENT: u32 = 1;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
 
@@ -219,6 +319,19 @@ struct Shared {
     dirty: BTreeSet<i64>,
     /// Windows the user minimised/maximised/restored.
     states: HashMap<i64, WindowState>,
+    /// Control `HWND` → the text and background colours a script set.
+    colors: HashMap<usize, (Option<i64>, Option<i64>)>,
+    /// Window `HWND` → the background colour `GUISetBkColor` set.
+    window_bk: HashMap<usize, i64>,
+    /// Graphic control `HWND` → the commands to replay when it paints.
+    drawings: HashMap<usize, Drawing>,
+    /// Control `HWND` → the cursor identifier a script set.
+    cursors: HashMap<usize, i64>,
+    /// Brushes made for those colours, so a `WM_CTLCOLOR*` answer can hand one
+    /// back. They live as long as the process: there are only as many as there
+    /// are distinct colours, and Windows owns the brush a control is painted
+    /// with until the window is destroyed.
+    brushes: HashMap<i64, usize>,
 }
 
 thread_local! {
@@ -248,7 +361,7 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    with_shared(|state| {
+    let answered = with_shared(|state| -> Option<LRESULT> {
         let window = state.window_ids.get(&hwnd_key(hwnd)).copied();
         match message {
             WM_CLOSE => {
@@ -286,10 +399,47 @@ unsafe extern "system" fn wnd_proc(
                     }
                 }
             }
+            // The parent is asked for the brush a child is painted with, which
+            // is how `GUICtrlSetBkColor`/`GUICtrlSetColor` reach a real control.
+            WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
+                let (foreground, background) = state.colors.get(&(lparam as usize)).copied()?;
+                let hdc = wparam as HDC;
+                if let Some(foreground) = foreground {
+                    SetTextColor(hdc, colorref(foreground));
+                }
+                if let Some(background) = background {
+                    SetBkColor(hdc, colorref(background));
+                    return Some(brush_for(state, background) as LRESULT);
+                }
+            }
+            // A window colour is painted by the window itself.
+            WM_ERASEBKGND => {
+                let background = *state.window_bk.get(&hwnd_key(hwnd))?;
+                let brush = brush_for(state, background);
+                let mut rect: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+                FillRect(wparam as HDC, &rect, brush);
+                return Some(1);
+            }
+            // The control under the pointer decides the cursor.
+            WM_SETCURSOR if (lparam & 0xFFFF) as u32 == HTCLIENT => {
+                let mut point: POINT = std::mem::zeroed();
+                GetCursorPos(&mut point);
+                let child = WindowFromPoint(point);
+                if let Some(&cursor) = state.cursors.get(&hwnd_key(child)) {
+                    let handle = LoadCursorW(std::ptr::null_mut(), cursor as *const u16);
+                    if !handle.is_null() {
+                        SetCursor(handle);
+                        return Some(1);
+                    }
+                }
+            }
             _ => {}
         }
-    });
-    DefWindowProcW(hwnd, message, wparam, lparam)
+        None
+    })
+    .flatten();
+    answered.unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam))
 }
 
 /// What a `WM_COMMAND` notification means: `(tell the script about it, the user
@@ -327,8 +477,29 @@ fn notification(kind: ControlKind, code: u32) -> Option<(bool, bool)> {
 // The backend
 // ---------------------------------------------------------------------------
 
+/// What a graphic control paints: its commands and the two colours they use.
+#[derive(Clone)]
+struct Drawing {
+    commands: Vec<DrawCmd>,
+    color: Option<i64>,
+    background: Option<i64>,
+}
+
+/// An image loaded for a control, and whether it is an icon.
+#[derive(Clone)]
+struct LoadedImage {
+    handle: *mut c_void,
+    icon: bool,
+    width: i32,
+    height: i32,
+}
+
 /// One created control, plus the last state pushed into it.
+#[derive(Clone)]
 struct ControlState {
+    /// A copy of the model control this mirrors, so a change to a child — a new
+    /// tree node, a colour — can be re-applied without the semantics layer.
+    control: Control,
     /// The window it lives in; `0` for the ones without an HWND.
     window: i64,
     hwnd: HWND,
@@ -350,6 +521,44 @@ struct ControlState {
     /// Whether a font has been installed at all: without it the first call
     /// cannot tell "stock, not installed yet" from "stock, installed".
     font_set: bool,
+    /// The column headings the real `ListView` was built with.
+    columns: Vec<String>,
+    /// The real tree items, by row.
+    tree_items: Vec<isize>,
+    /// The image file last loaded into the control.
+    image: Option<String>,
+    /// The object that file produced, which this backend has to release.
+    image_handle: Option<LoadedImage>,
+    /// Whether a subclass procedure paints this control.
+    subclassed: bool,
+}
+
+impl ControlState {
+    /// The state for a control that has just been given `hwnd` (`0` when it has
+    /// none of its own, as a menu entry or a list row does not).
+    fn new(control: &Control, win_id: i32, hwnd: HWND) -> Self {
+        Self {
+            control: control.clone(),
+            window: control.window,
+            hwnd,
+            kind: control.kind,
+            win_id,
+            text: control.text.clone(),
+            checked: control.is_checked(),
+            selection: control.selection,
+            items: control.data.clone(),
+            visible: control.is_visible(),
+            enabled: control.is_enabled(),
+            font: None,
+            font_request: None,
+            font_set: false,
+            columns: Vec::new(),
+            tree_items: Vec::new(),
+            image: None,
+            image_handle: None,
+            subclassed: false,
+        }
+    }
 }
 
 /// The real-window GUI backend.
@@ -372,6 +581,11 @@ pub struct Win32Backend {
     /// How much larger a window's frame is than its client area, per window.
     /// Dragging gives a window rectangle, but the model thinks in client sizes.
     frames: HashMap<i64, (i32, i32)>,
+    /// Which windows were last pushed on top, so the z-order is only changed
+    /// when the model asks for a different one.
+    topmost: HashMap<i64, bool>,
+    /// The control that was last given the input focus.
+    focused: Option<i64>,
     next_win_id: i32,
     registered: bool,
 }
@@ -392,6 +606,8 @@ impl Win32Backend {
             current_menu: HashMap::new(),
             applied: HashMap::new(),
             frames: HashMap::new(),
+            topmost: HashMap::new(),
+            focused: None,
             next_win_id: 1000,
             registered: false,
         }
@@ -499,6 +715,49 @@ impl Win32Backend {
             ShowWindow(hwnd, command);
             EnableWindow(hwnd, i32::from(window.enabled));
         }
+        // The z-order, the focus and the background are model state that only
+        // costs a call when it changed.
+        if self
+            .topmost
+            .get(&window.handle)
+            .copied()
+            .unwrap_or(false)
+            != window.topmost
+        {
+            let insert_after = if window.topmost {
+                HWND_TOPMOST
+            } else {
+                HWND_NOTOPMOST
+            };
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    insert_after as _,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+            };
+            self.topmost.insert(window.handle, window.topmost);
+        }
+        if let Some(focus) = window.focus {
+            if self.focused != Some(focus) {
+                if let Some(state) = self.controls.get(&focus) {
+                    if !state.hwnd.is_null() {
+                        unsafe { SetFocus(state.hwnd) };
+                        self.focused = Some(focus);
+                    }
+                }
+            }
+        }
+        if let Some(background) = window.bk_color {
+            let _ = with_shared(|shared| {
+                shared.window_bk.insert(hwnd_key(hwnd), background);
+            });
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+        }
         let _ = &window.cursor;
     }
 
@@ -526,6 +785,10 @@ impl Win32Backend {
                 if control.kind == ControlKind::Menu {
                     unsafe { SetMenu(parent, menu) };
                 }
+                self.controls.insert(
+                    control.id,
+                    ControlState::new(control, 0, std::ptr::null_mut()),
+                );
                 return;
             }
             ControlKind::MenuItem => {
@@ -542,21 +805,27 @@ impl Win32Backend {
                 let _ = with_shared(|state| {
                     state.control_ids.insert(win_id, (control.id, control.kind))
                 });
-                self.controls
-                    .insert(control.id, Self::placeholder(control, win_id));
+                self.controls.insert(
+                    control.id,
+                    ControlState::new(control, win_id, std::ptr::null_mut()),
+                );
                 return;
             }
             // Parts of another control — a `ListView` row, a tree node, a tab
-            // page — are drawn by the control that owns them, and the rest have
-            // no window of their own; the model still tracks them all.
+            // page — are drawn by the control that owns them; the rest have no
+            // window of their own. The model still tracks them, and a new one
+            // has to show up in its owner right away.
             ControlKind::ListViewItem
             | ControlKind::TreeViewItem
             | ControlKind::TabItem
             | ControlKind::Dummy
             | ControlKind::Avi
             | ControlKind::Obj => {
-                self.controls
-                    .insert(control.id, Self::placeholder(control, 0));
+                self.controls.insert(
+                    control.id,
+                    ControlState::new(control, 0, std::ptr::null_mut()),
+                );
+                self.resync_list(control.parent);
                 return;
             }
             _ => {}
@@ -565,20 +834,19 @@ impl Win32Backend {
         let win_id = self.take_win_id();
         let class = to_wide(class_name(control.kind));
         let text = to_wide(&control.text);
-        let style = control_style(control);
         let hwnd = unsafe {
             CreateWindowExW(
                 control_exstyle(control),
                 class.as_ptr(),
                 text.as_ptr(),
-                style,
+                control_style(control),
                 control.x,
                 control.y,
                 control.width.max(1),
                 control.height.max(1),
                 parent,
                 win_id as _,
-                GetModuleHandleW(std::ptr::null()) as _,
+                GetModuleHandleW(std::ptr::null()),
                 std::ptr::null(),
             )
         };
@@ -586,21 +854,7 @@ impl Win32Backend {
             return;
         }
         let _ = with_shared(|state| state.control_ids.insert(win_id, (control.id, control.kind)));
-        let mut created = ControlState {
-            window: control.window,
-            hwnd,
-            kind: control.kind,
-            win_id,
-            text: control.text.clone(),
-            checked: control.is_checked(),
-            selection: control.selection,
-            items: control.data.clone(),
-            visible: control.is_visible(),
-            enabled: control.is_enabled(),
-            font: None,
-            font_request: None,
-            font_set: false,
-        };
+        let mut created = ControlState::new(control, win_id, hwnd);
         unsafe {
             EnableWindow(hwnd, i32::from(created.enabled));
             if matches!(created.kind, ControlKind::Checkbox | ControlKind::Radio) {
@@ -612,120 +866,546 @@ impl Win32Backend {
                     SendMessageW(hwnd, EM_SETLIMITTEXT, limit as usize, 0);
                 }
             }
-            push_items(&mut created, &control.data);
-            apply_font(&mut created, control);
         }
+        self.push_items(&mut created, control);
+        apply_font(&mut created, control);
+        self.apply_buddy(&created, control);
+        self.apply_image(&mut created, control);
+        self.apply_value(&mut created, control);
+        self.apply_colors(&mut created, control);
+        self.apply_cursor(&mut created, control);
+        self.apply_subclass(&mut created, control);
         self.controls.insert(control.id, created);
     }
 
     /// Re-apply a control's model state to its real HWND.
     fn update_control(&mut self, control: &Control) {
-        let Some(state) = self.controls.get_mut(&control.id) else {
+        if !self.controls.contains_key(&control.id) {
+            return;
+        }
+        if let Some(state) = self.controls.get_mut(&control.id) {
+            if state.hwnd.is_null() {
+                // A part: its row or node lives in the owner, which is
+                // refreshed below.
+                state.control = control.clone();
+                state.text = control.text.clone();
+                state.items = control.data.clone();
+                state.selection = control.selection;
+                state.visible = control.is_visible();
+                state.enabled = control.is_enabled();
+            } else {
+                let hwnd = state.hwnd;
+                unsafe {
+                    // A text the model changed has to reach the control —
+                    // except where the control is the text the user types into
+                    // or the items it shows.
+                    if state.text != control.text
+                        && !matches!(
+                            control.kind,
+                            ControlKind::Input
+                                | ControlKind::Edit
+                                | ControlKind::List
+                                | ControlKind::Combo
+                                | ControlKind::ListView
+                                | ControlKind::TreeView
+                                | ControlKind::Tab
+                        )
+                    {
+                        let text = to_wide(&control.text);
+                        SetWindowTextW(hwnd, text.as_ptr());
+                    }
+                    if state.visible != control.is_visible() {
+                        ShowWindow(
+                            hwnd,
+                            if control.is_visible() {
+                                SW_SHOW
+                            } else {
+                                SW_HIDE
+                            },
+                        );
+                    }
+                    if state.enabled != control.is_enabled() {
+                        EnableWindow(hwnd, i32::from(control.is_enabled()));
+                    }
+                    MoveWindow(
+                        hwnd,
+                        control.x,
+                        control.y,
+                        control.width.max(1),
+                        control.height.max(1),
+                        1,
+                    );
+                    if state.checked != control.is_checked()
+                        && matches!(control.kind, ControlKind::Checkbox | ControlKind::Radio)
+                    {
+                        let check = if control.is_checked() { 1 } else { 0 };
+                        SendMessageW(hwnd, BM_SETCHECK, check as usize, 0);
+                    }
+                    if state.selection != control.selection {
+                        match control.kind {
+                            ControlKind::List => {
+                                SendMessageW(
+                                    hwnd,
+                                    LB_SETCURSEL,
+                                    control.selection.unwrap_or(usize::MAX),
+                                    0,
+                                );
+                            }
+                            ControlKind::Combo => {
+                                SendMessageW(
+                                    hwnd,
+                                    CB_SETCURSEL,
+                                    control.selection.unwrap_or(usize::MAX),
+                                    0,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                state.control = control.clone();
+                state.text = control.text.clone();
+                state.selection = control.selection;
+                state.checked = control.is_checked();
+                state.visible = control.is_visible();
+                state.enabled = control.is_enabled();
+            }
+        }
+        let Some(mut state) = self.controls.get(&control.id).cloned() else {
             return;
         };
+        if state.hwnd.is_null() {
+            self.resync_list(control.parent);
+            return;
+        }
+        if state.items != control.data {
+            self.push_items(&mut state, control);
+            state.items = control.data.clone();
+        }
+        apply_font(&mut state, control);
+        self.apply_image(&mut state, control);
+        self.apply_value(&mut state, control);
+        self.apply_colors(&mut state, control);
+        self.apply_cursor(&mut state, control);
+        self.apply_subclass(&mut state, control);
+        self.controls.insert(control.id, state);
+    }
+
+    /// The parts of `owner`, as `(row, the row of the part they hang under)`.
+    fn parts_of(&self, owner: i64) -> Vec<(usize, Option<usize>)> {
+        let mut parts = Vec::new();
+        for state in self.controls.values() {
+            let part = &state.control;
+            if part.parent.is_none() || self.list_owner_in(part.id) != Some(owner) {
+                continue;
+            }
+            let Some(row) = part.row else {
+                continue;
+            };
+            let parent_row = part
+                .parent
+                .and_then(|parent| self.controls.get(&parent))
+                .and_then(|parent| parent.control.row);
+            parts.push((row, parent_row));
+        }
+        parts
+    }
+
+    /// The control that owns the list `id` is a row of: a `TreeViewItem` hangs
+    /// off other items, so the tree at the top of the chain is the owner.
+    fn list_owner_in(&self, id: i64) -> Option<i64> {
+        let control = &self.controls.get(&id)?.control;
+        if control.kind != ControlKind::TreeViewItem {
+            return Some(id);
+        }
+        self.list_owner_in(control.parent?)
+    }
+
+    /// Re-apply the control that owns a list after one of its rows changed.
+    fn resync_list(&mut self, owner: Option<i64>) {
+        let Some(owner) = owner else {
+            return;
+        };
+        let Some(list) = self.list_owner_in(owner) else {
+            return;
+        };
+        let Some(control) = self.controls.get(&list).map(|state| state.control.clone()) else {
+            return;
+        };
+        let Some(mut state) = self.controls.get(&list).cloned() else {
+            return;
+        };
+        if state.hwnd.is_null() {
+            return;
+        }
+        self.push_items(&mut state, &control);
+        self.apply_value(&mut state, &control);
+        state.items = control.data.clone();
+        self.controls.insert(list, state);
+    }
+
+    /// Push the model's items into the real control.
+    ///
+    /// A list's rows, a tree's nodes and a tab's pages are all *parts* of the
+    /// control: the row texts live in its `data`, and the order, the nesting and
+    /// the per-item state come from the parts the model holds. Both are read
+    /// here, which is also what makes a row that was just added show up.
+    fn push_items(&mut self, state: &mut ControlState, control: &Control) {
         let hwnd = state.hwnd;
         if hwnd.is_null() {
             return;
         }
-        unsafe {
-            // A text the model changed has to reach the control — except where
-            // the control is the text the user types into or the items it shows.
-            if state.text != control.text
-                && !matches!(
-                    control.kind,
-                    ControlKind::Input
-                        | ControlKind::Edit
-                        | ControlKind::List
-                        | ControlKind::Combo
-                        | ControlKind::ListView
-                        | ControlKind::TreeView
-                        | ControlKind::Tab
-                )
-            {
-                let text = to_wide(&control.text);
-                SetWindowTextW(hwnd, text.as_ptr());
-            }
-            if state.visible != control.is_visible() {
-                ShowWindow(
-                    hwnd,
-                    if control.is_visible() {
-                        SW_SHOW
-                    } else {
-                        SW_HIDE
-                    },
-                );
-            }
-            if state.enabled != control.is_enabled() {
-                EnableWindow(hwnd, i32::from(control.is_enabled()));
-            }
-            MoveWindow(
-                hwnd,
-                control.x,
-                control.y,
-                control.width.max(1),
-                control.height.max(1),
-                1,
-            );
-            if state.checked != control.is_checked()
-                && matches!(control.kind, ControlKind::Checkbox | ControlKind::Radio)
-            {
-                let check = if control.is_checked() { 1 } else { 0 };
-                SendMessageW(hwnd, BM_SETCHECK, check as usize, 0);
-            }
-            if state.selection != control.selection {
-                // Only the two simple lists: a ListView or TreeView selection is
-                // a state bit per item, which is more than one call and is left
-                // to the user's own clicks.
-                match control.kind {
-                    ControlKind::List => {
-                        SendMessageW(
-                            hwnd,
-                            LB_SETCURSEL,
-                            control.selection.unwrap_or(usize::MAX),
-                            0,
-                        );
+        match control.kind {
+            ControlKind::List => {
+                unsafe {
+                    SendMessageW(hwnd, LB_RESETCONTENT, 0, 0);
+                    for item in &control.data {
+                        let text = to_wide(item);
+                        SendMessageW(hwnd, LB_ADDSTRING, 0, text.as_ptr() as isize);
                     }
-                    ControlKind::Combo => {
-                        SendMessageW(
-                            hwnd,
-                            CB_SETCURSEL,
-                            control.selection.unwrap_or(usize::MAX),
-                            0,
-                        );
+                }
+            }
+            ControlKind::Combo => {
+                unsafe {
+                    SendMessageW(hwnd, CB_RESETCONTENT, 0, 0);
+                    for item in &control.data {
+                        let text = to_wide(item);
+                        SendMessageW(hwnd, CB_ADDSTRING, 0, text.as_ptr() as isize);
                     }
-                    _ => {}
+                }
+            }
+            ControlKind::ListView => {
+                self.push_columns(state, control);
+                unsafe {
+                    SendMessageW(hwnd, LVM_DELETEALLITEMS, 0, 0);
+                    for (index, row) in control.data.iter().enumerate() {
+                        let mut cells = row.split('|');
+                        let mut first = to_wide(cells.next().unwrap_or(""));
+                        let mut item: LVITEMW = std::mem::zeroed();
+                        item.mask = LVIF_TEXT;
+                        item.iItem = index as i32;
+                        item.pszText = first.as_mut_ptr();
+                        SendMessageW(hwnd, LVM_INSERTITEMW, 0, &mut item as *mut _ as isize);
+                        // What is left of the row goes into the subitems, so a
+                        // script that writes "a|b|c" gets three columns.
+                        for (column, cell) in cells.enumerate() {
+                            let mut text = to_wide(cell);
+                            let mut sub: LVITEMW = std::mem::zeroed();
+                            sub.mask = LVIF_TEXT;
+                            sub.iItem = index as i32;
+                            sub.iSubItem = column as i32 + 1;
+                            sub.pszText = text.as_mut_ptr();
+                            SendMessageW(hwnd, LVM_SETITEMW, 0, &mut sub as *mut _ as isize);
+                        }
+                    }
+                    // Rebuilding the rows drops the selection with them.
+                    if let Some(selected) = control.selection {
+                        if selected < control.data.len() {
+                            let mut item: LVITEMW = std::mem::zeroed();
+                            item.state = LVIS_SELECTED | LVIS_FOCUSED;
+                            item.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+                            SendMessageW(
+                                hwnd,
+                                LVM_SETITEMSTATE,
+                                selected,
+                                &mut item as *mut _ as isize,
+                            );
+                        }
+                    }
+                }
+            }
+            ControlKind::TreeView => self.push_tree(state, control),
+            ControlKind::Tab => unsafe {
+                SendMessageW(hwnd, TCM_DELETEALLITEMS, 0, 0);
+                for (index, title) in control.data.iter().enumerate() {
+                    let mut text = to_wide(title);
+                    let mut tab: TCITEMW = std::mem::zeroed();
+                    tab.mask = TCIF_TEXT;
+                    tab.pszText = text.as_mut_ptr();
+                    SendMessageW(hwnd, TCM_INSERTITEMW, index, &mut tab as *mut _ as isize);
+                }
+            },
+            _ => {}
+        }
+    }
+
+    /// Give a `ListView` the column headings its text spells out.
+    ///
+    /// The heading text is used as it is (AutoIt lets a script pad it with
+    /// blanks to choose the width), and the column is then sized to it.
+    fn push_columns(&mut self, state: &mut ControlState, control: &Control) {
+        let columns: Vec<String> = if control.text.is_empty() {
+            Vec::new()
+        } else {
+            control.text.split('|').map(|heading| heading.to_string()).collect()
+        };
+        // Report view shows nothing without a column, so a `ListView` that was
+        // given rows but no headings gets one.
+        let columns = if columns.is_empty() && !control.data.is_empty() {
+            vec![String::new()]
+        } else {
+            columns
+        };
+        if state.columns == columns {
+            return;
+        }
+        let hwnd = state.hwnd;
+        for (index, heading) in columns.iter().enumerate() {
+            let mut text = to_wide(heading);
+            let mut column: LVCOLUMNW = unsafe { std::mem::zeroed() };
+            let message = if index < state.columns.len() {
+                column.mask = LVCF_TEXT;
+                LVM_SETCOLUMNW
+            } else {
+                column.mask = LVCF_TEXT | LVCF_WIDTH;
+                column.cx = 90;
+                LVM_INSERTCOLUMNW
+            };
+            column.pszText = text.as_mut_ptr();
+            unsafe {
+                SendMessageW(hwnd, message, index, &mut column as *mut _ as isize);
+                // `LVSCW_AUTOSIZE_USEHEADER`: size the column to its heading.
+                SendMessageW(hwnd, LVM_SETCOLUMNWIDTH, index, LVSCW_AUTOSIZE_USEHEADER);
+            }
+        }
+        state.columns = columns;
+    }
+
+    /// Give a `TreeView` the nodes the model holds, nesting them the way the
+    /// item controls do.
+    fn push_tree(&mut self, state: &mut ControlState, control: &Control) {
+        let parents: HashMap<usize, Option<usize>> = self.parts_of(control.id).into_iter().collect();
+        let hwnd = state.hwnd;
+        unsafe { SendMessageW(hwnd, TVM_DELETEITEM, 0, TVI_ROOT) };
+        state.tree_items = vec![TVI_ROOT; control.data.len()];
+        for row in 0..control.data.len() {
+            let parent_row = parents.get(&row).copied().flatten();
+            let Some(text) = control.data.get(row) else {
+                continue;
+            };
+            let mut text = to_wide(text);
+            let mut insert: TVINSERTSTRUCTW = unsafe { std::mem::zeroed() };
+            insert.hParent = match parent_row.and_then(|row| state.tree_items.get(row)).copied() {
+                Some(item) => item,
+                None => TVI_ROOT,
+            };
+            insert.hInsertAfter = TVI_LAST;
+            insert.Anonymous.item.mask = TVIF_TEXT;
+            insert.Anonymous.item.pszText = text.as_mut_ptr();
+            let item = unsafe {
+                SendMessageW(hwnd, TVM_INSERTITEMW, 0, &mut insert as *mut _ as isize) as isize
+            };
+            if let Some(slot) = state.tree_items.get_mut(row) {
+                *slot = item;
+            }
+            // An item carries its own state: bold (`$GUI_DEFBUTTON`), expanded
+            // (`$GUI_EXPAND`) and, when it is the selected one, the caret.
+            let part = self
+                .controls
+                .values()
+                .find(|candidate| {
+                    candidate.control.row == Some(row)
+                        && self.list_owner_in(candidate.control.id) == Some(control.id)
+                })
+                .map(|candidate| candidate.control.clone());
+            if let Some(part) = part {
+                if part.state & 0x200 != 0 {
+                    unsafe {
+                        let mut item: TVITEMW = std::mem::zeroed();
+                        item.mask = TVIF_STATE;
+                        item.hItem = self.tree_item(state, row);
+                        item.state = TVIS_BOLD;
+                        item.stateMask = TVIS_BOLD;
+                        SendMessageW(hwnd, TVM_SETITEMW, 0, &mut item as *mut _ as isize);
+                    }
+                }
+                if part.state & 0x400 != 0 {
+                    unsafe {
+                        SendMessageW(hwnd, TVM_EXPAND, TVE_EXPAND, self.tree_item(state, row))
+                    };
                 }
             }
         }
-        if state.items != control.data {
-            state.items = control.data.clone();
-            push_items(state, &control.data);
+        if let Some(caret) = control.selection.and_then(|row| state.tree_items.get(row)) {
+            unsafe { SendMessageW(hwnd, TVM_SELECTITEM, TVGN_CARET, *caret) };
         }
-        state.text = control.text.clone();
-        state.checked = control.is_checked();
-        state.selection = control.selection;
-        state.visible = control.is_visible();
-        state.enabled = control.is_enabled();
-        apply_font(state, control);
     }
 
-    /// A control with no window of its own (a menu item, a dummy, an AVI).
-    fn placeholder(control: &Control, win_id: i32) -> ControlState {
-        ControlState {
-            window: control.window,
-            hwnd: std::ptr::null_mut(),
-            kind: control.kind,
-            win_id,
-            text: control.text.clone(),
-            checked: false,
-            selection: None,
-            items: Vec::new(),
-            visible: control.is_visible(),
-            enabled: control.is_enabled(),
-            font: None,
-            font_request: None,
-            font_set: false,
+    fn tree_item(&self, state: &ControlState, row: usize) -> isize {
+        state.tree_items.get(row).copied().unwrap_or(TVI_ROOT)
+    }
+
+    /// Give a `Progress`, `Slider`, `Updown` or `Tab` the value the model holds.
+    fn apply_value(&mut self, state: &mut ControlState, control: &Control) {
+        if state.hwnd.is_null() {
+            return;
         }
+        let hwnd = state.hwnd;
+        match control.kind {
+            ControlKind::Progress => {
+                let value = control.text.trim().parse::<i64>().unwrap_or(0);
+                unsafe { SendMessageW(hwnd, PBM_SETPOS, value.max(0) as usize, 0) };
+            }
+            ControlKind::Slider => {
+                let (min, max) = control.limit.unwrap_or((0, 100));
+                let value = control.text.trim().parse::<i64>().unwrap_or(min);
+                unsafe {
+                    SendMessageW(hwnd, TBM_SETRANGE, 1, pack16(min as i32, max as i32));
+                    SendMessageW(hwnd, TBM_SETPOS, 1, value as isize);
+                }
+            }
+            ControlKind::Updown => {
+                let (min, max) = control.limit.unwrap_or((0, 100));
+                let value = control.text.trim().parse::<i64>().unwrap_or(min);
+                unsafe {
+                    SendMessageW(hwnd, UDM_SETRANGE32, min.max(0) as usize, max as isize);
+                    SendMessageW(hwnd, UDM_SETPOS32, 0, value as isize);
+                }
+            }
+            ControlKind::Tab => {
+                if let Some(index) = control.selection {
+                    unsafe { SendMessageW(hwnd, TCM_SETCURSEL, index, 0) };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Load the picture a `Pic`/`Icon`/`Button` control asks for.
+    ///
+    /// A static control takes `STM_SETIMAGE`/`STM_SETICON`; a button — and a
+    /// checkbox with `$BS_PUSHLIKE`, the only other kind the help page names —
+    /// takes `BM_SETIMAGE`, and its `$BS_ICON`/`$BS_BITMAP` style says which.
+    fn apply_image(&mut self, state: &mut ControlState, control: &Control) {
+        if state.hwnd.is_null() {
+            return;
+        }
+        let wanted = match control.kind {
+            // A `Pic`/`Icon` is created with its filename as the caption.
+            ControlKind::Pic | ControlKind::Icon => control
+                .image
+                .clone()
+                .filter(|path| !path.is_empty())
+                .or_else(|| (!control.text.is_empty()).then(|| control.text.clone())),
+            _ => control.image.clone(),
+        };
+        if state.image == wanted {
+            return;
+        }
+        if let Some(old) = state.image_handle.take() {
+            unsafe {
+                if old.icon {
+                    DestroyIcon(old.handle);
+                } else {
+                    DeleteObject(old.handle);
+                }
+            }
+        }
+        let button = matches!(control.kind, ControlKind::Button | ControlKind::Checkbox);
+        let styled_icon =
+            button && control.style > 0 && control.style as u32 & BS_ICON != 0;
+        let icon = control.kind == ControlKind::Icon || styled_icon;
+        let message = if button {
+            BM_SETIMAGE
+        } else if icon {
+            STM_SETICON
+        } else {
+            STM_SETIMAGE
+        };
+        let kind = if icon { IMAGE_ICON } else { IMAGE_BITMAP };
+        state.image = wanted.clone();
+        let Some(path) = wanted else {
+            unsafe { SendMessageW(state.hwnd, message, kind as usize, 0) };
+            return;
+        };
+        let Some(loaded) = load_image(&path, icon) else {
+            return;
+        };
+        unsafe { SendMessageW(state.hwnd, message, kind as usize, loaded.handle as isize) };
+        // A picture with no size of its own takes the file's size.
+        if !icon && control.width == 0 && control.height == 0 && loaded.width > 0 {
+            unsafe {
+                MoveWindow(
+                    state.hwnd,
+                    control.x,
+                    control.y,
+                    loaded.width,
+                    loaded.height,
+                    1,
+                )
+            };
+        }
+        state.image_handle = Some(loaded);
+    }
+
+    /// Remember the colours a control was given, which its parent's window
+    /// procedure hands back on `WM_CTLCOLOR*`.
+    fn apply_colors(&mut self, state: &mut ControlState, control: &Control) {
+        if state.hwnd.is_null() {
+            return;
+        }
+        let hwnd = state.hwnd;
+        let _ = with_shared(|shared| {
+            shared.colors.insert(hwnd_key(hwnd), (control.color, control.bk_color));
+        });
+        unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+    }
+
+    /// Remember the cursor a script put over a control.
+    fn apply_cursor(&mut self, state: &mut ControlState, control: &Control) {
+        if state.hwnd.is_null() {
+            return;
+        }
+        if let Some(cursor) = control.cursor {
+            let hwnd = state.hwnd;
+            let _ = with_shared(|shared| {
+                shared.cursors.insert(hwnd_key(hwnd), cursor);
+            });
+        }
+    }
+
+    /// Attach an updown to the input control it was created for.
+    ///
+    /// `GUICtrlCreateUpdown($input)` takes an input rather than a position, and
+    /// the arrow pair is positioned by the control itself once it knows its
+    /// buddy.
+    fn apply_buddy(&mut self, state: &ControlState, control: &Control) {
+        if control.kind != ControlKind::Updown || state.hwnd.is_null() {
+            return;
+        }
+        let Some(buddy) = control
+            .parent
+            .and_then(|parent| self.controls.get(&parent))
+            .filter(|buddy| !buddy.hwnd.is_null())
+            .map(|buddy| buddy.hwnd)
+        else {
+            return;
+        };
+        unsafe { SendMessageW(state.hwnd, UDM_SETBUDDY, buddy as usize, 0) };
+    }
+
+    /// Keep the drawing commands of a graphic control where its paint procedure
+    /// can reach them.
+    fn apply_subclass(&mut self, state: &mut ControlState, control: &Control) {
+        if state.hwnd.is_null() || control.kind != ControlKind::Graphic {
+            return;
+        }
+        let hwnd = state.hwnd;
+        let _ = with_shared(|shared| {
+            shared.drawings.insert(
+                hwnd_key(hwnd),
+                Drawing {
+                    commands: control.draw.clone(),
+                    color: control.color,
+                    background: control.bk_color,
+                },
+            );
+        });
+        if !state.subclassed {
+            unsafe { SetWindowSubclass(hwnd, Some(graphic_proc), 1, 0) };
+            state.subclassed = true;
+        }
+        unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
     }
 
     fn take_win_id(&mut self) -> i32 {
@@ -739,10 +1419,65 @@ impl Win32Backend {
         unsafe {
             let mut message: MSG = std::mem::zeroed();
             while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                TranslateMessage(&message);
-                DispatchMessageW(&message);
+                // `IsDialogMessageW` is what gives a GUI its keyboard habits:
+                // Tab and the arrow keys move between controls, Return presses
+                // the default button and Escape closes the window. AutoIt's own
+                // message loop does the same, so a script sees the same events.
+                let mut handled = false;
+                let _ = with_shared(|shared| {
+                    for hwnd in shared.window_ids.keys() {
+                        let hwnd = *hwnd as HWND;
+                        if IsDialogMessageW(hwnd, &message) != 0 {
+                            handled = true;
+                            break;
+                        }
+                    }
+                });
+                if !handled {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
             }
         }
+    }
+
+    /// The selections a tree or a tab made that `WM_COMMAND` does not carry.
+    fn selection_updates(&mut self) -> Vec<GuiUpdate> {
+        let mut updates = Vec::new();
+        let ids: Vec<i64> = self.controls.keys().copied().collect();
+        for id in ids {
+            let Some(state) = self.controls.get(&id) else {
+                continue;
+            };
+            if state.hwnd.is_null() {
+                continue;
+            }
+            let index = match state.kind {
+                ControlKind::TreeView => {
+                    let item = unsafe {
+                        SendMessageW(state.hwnd, TVM_GETNEXTITEM, TVGN_CARET, 0) as isize
+                    };
+                    state
+                        .tree_items
+                        .iter()
+                        .position(|candidate| *candidate == item)
+                }
+                ControlKind::Tab => {
+                    let index = unsafe { SendMessageW(state.hwnd, TCM_GETCURSEL, 0, 0) };
+                    (index >= 0).then_some(index as usize)
+                }
+                _ => None,
+            };
+            if let Some(index) = index {
+                if let Some(state) = self.controls.get_mut(&id) {
+                    if state.selection != Some(index) {
+                        state.selection = Some(index);
+                        updates.push(GuiUpdate::Select { id, index });
+                    }
+                }
+            }
+        }
+        updates
     }
 
     /// The text currently in a real edit control.
@@ -779,9 +1514,21 @@ impl Win32Backend {
                 unsafe { DeleteObject(font as _) };
             }
         }
+        if let Some(image) = state.image_handle {
+            unsafe {
+                if image.icon {
+                    DestroyIcon(image.handle);
+                } else {
+                    DeleteObject(image.handle);
+                }
+            }
+        }
         let _ = with_shared(|shared| {
             shared.control_ids.remove(&state.win_id);
             shared.dirty.remove(&id);
+            shared.colors.remove(&hwnd_key(state.hwnd));
+            shared.drawings.remove(&hwnd_key(state.hwnd));
+            shared.cursors.remove(&hwnd_key(state.hwnd));
         });
     }
 
@@ -909,6 +1656,9 @@ impl GuiBackend for Win32Backend {
             updates.push(GuiUpdate::SetWindowState { handle, state });
         }
         updates.extend(self.geometry_updates());
+        // A tree or a tab reports a selection change through `WM_NOTIFY`, which
+        // the window procedure does not read; both are asked instead.
+        updates.extend(self.selection_updates());
         for id in dirty {
             let Some(state) = self.controls.get_mut(&id) else {
                 continue;
@@ -995,6 +1745,15 @@ impl Drop for Win32Backend {
                     unsafe { DeleteObject(font as _) };
                 }
             }
+            if let Some(image) = control.image_handle {
+                unsafe {
+                    if image.icon {
+                        DestroyIcon(image.handle);
+                    } else {
+                        DeleteObject(image.handle);
+                    }
+                }
+            }
         }
         for (_, menu) in self.menus.drain() {
             unsafe { DestroyMenu(menu as _) };
@@ -1005,10 +1764,6 @@ impl Drop for Win32Backend {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Model → Win32 translation
-// ---------------------------------------------------------------------------
 
 /// The style a top-level window is created with.
 ///
@@ -1056,125 +1811,94 @@ fn class_name(kind: ControlKind) -> &'static str {
 }
 
 /// The `WS_*`/class styles a child control is created with.
+///
+/// The defaults and the forced styles are the ones the help page of each
+/// `GUICtrlCreate*` names, so a control a script gave no style to still looks
+/// the way AutoIt would have made it.
 fn control_style(control: &Control) -> u32 {
     let script = if control.style > 0 {
         control.style as u32
     } else {
         0
     };
+    let readonly = script & ES_READONLY != 0;
     let base = match control.kind {
-        ControlKind::Label => SS_LEFT,
-        ControlKind::Group => BS_GROUPBOX,
+        ControlKind::Label => SS_NOTIFY | SS_LEFT,
+        ControlKind::Group => WS_GROUP | BS_GROUPBOX,
         ControlKind::Button => 0,
         ControlKind::Checkbox => BS_AUTOCHECKBOX,
         ControlKind::Radio => BS_AUTORADIOBUTTON,
+        // An input is single-line; `$ES_MULTILINE` is reset for it.
         ControlKind::Input => ES_AUTOHSCROLL | WS_BORDER,
-        ControlKind::Edit => ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER,
-        ControlKind::List => LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL,
-        ControlKind::Combo => CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_HASSTRINGS,
-        ControlKind::ListView => LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER,
-        ControlKind::TreeView => TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | WS_BORDER,
-        ControlKind::Tab => 0,
+        ControlKind::Edit => {
+            ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN | WS_VSCROLL
+                | WS_HSCROLL
+                | WS_BORDER
+        }
+        ControlKind::List => LBS_NOTIFY | LBS_SORT | LBS_NOINTEGRALHEIGHT | WS_BORDER | WS_VSCROLL,
+        ControlKind::Combo => CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_HASSTRINGS | WS_VSCROLL,
+        ControlKind::ListView => LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER,
+        ControlKind::TreeView => {
+            TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_DISABLEDRAGDROP
+                | TVS_SHOWSELALWAYS
+        }
+        ControlKind::Tab => TCS_TOOLTIPS | WS_CLIPSIBLINGS,
         ControlKind::Progress => PBS_SMOOTH,
         ControlKind::Slider => TBS_AUTOTICKS,
-        ControlKind::Updown => UDS_ALIGNRIGHT | UDS_ARROWKEYS,
-        ControlKind::Date => 0,
+        ControlKind::Updown => UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_SETBUDDYINT,
+        ControlKind::Date => DTS_LONGDATEFORMAT,
         ControlKind::MonthCal => MCS_NOTODAY,
-        ControlKind::Pic => SS_BITMAP | SS_CENTERIMAGE | WS_BORDER,
-        ControlKind::Icon => SS_ICON | SS_CENTERIMAGE,
-        ControlKind::Graphic => SS_LEFT | WS_BORDER,
+        ControlKind::Pic => SS_NOTIFY | SS_BITMAP | SS_CENTERIMAGE,
+        ControlKind::Icon => SS_NOTIFY | SS_ICON | SS_CENTERIMAGE,
+        ControlKind::Graphic => SS_NOTIFY,
         _ => 0,
+    };
+    // A read-only input or edit is skipped by the tab key, the way AutoIt
+    // leaves it out of the tab order.
+    let tabstop = if matches!(
+        control.kind,
+        ControlKind::Input
+            | ControlKind::Edit
+            | ControlKind::List
+            | ControlKind::Combo
+            | ControlKind::Button
+            | ControlKind::Icon
+            | ControlKind::Tab
+            | ControlKind::TreeView
+            | ControlKind::Date
+            | ControlKind::MonthCal
+    ) && !readonly
+    {
+        WS_TABSTOP
+    } else {
+        0
     };
     let radio_group = if control.kind == ControlKind::Radio {
         WS_GROUP
     } else {
         0
     };
-    let tabstop = if matches!(control.kind, ControlKind::Input | ControlKind::Edit) {
-        WS_TABSTOP
-    } else {
-        0
-    };
-    WS_CHILD
-        | if control.is_visible() { WS_VISIBLE } else { 0 }
-        | radio_group
-        | tabstop
-        | base
-        | script
+    // A child that is visible has to say so at creation: `ShowWindow` after the
+    // fact would flash.
+    let visible = if control.is_visible() { WS_VISIBLE } else { 0 };
+    WS_CHILD | visible | tabstop | radio_group | base | script
 }
 
-/// A control's extended style (only `WS_EX_CLIENTEDGE` is honoured).
+/// A control's extended style: the per-kind default unless the script named one.
 fn control_exstyle(control: &Control) -> u32 {
     if control.exstyle > 0 {
-        control.exstyle as u32
-    } else {
-        WS_EX_CLIENTEDGE
+        return control.exstyle as u32;
     }
-}
-
-/// Push the model's items into the real control.
-fn push_items(state: &mut ControlState, items: &[String]) {
-    let hwnd = state.hwnd;
-    if hwnd.is_null() {
-        return;
-    }
-    unsafe {
-        match state.kind {
-            ControlKind::List => {
-                SendMessageW(hwnd, LB_RESETCONTENT, 0, 0);
-                for item in items {
-                    let text = to_wide(item);
-                    SendMessageW(hwnd, LB_ADDSTRING, 0, text.as_ptr() as isize);
-                }
-            }
-            ControlKind::Combo => {
-                SendMessageW(hwnd, CB_RESETCONTENT, 0, 0);
-                for item in items {
-                    let text = to_wide(item);
-                    SendMessageW(hwnd, CB_ADDSTRING, 0, text.as_ptr() as isize);
-                }
-            }
-            ControlKind::ListView => {
-                SendMessageW(hwnd, LVM_DELETEALLITEMS, 0, 0);
-                for (index, item) in items.iter().enumerate() {
-                    let mut text = to_wide(item);
-                    // A single-column report row: the header is never created,
-                    // so this is the first column.
-                    let mut row: LVITEMW = std::mem::zeroed();
-                    row.mask = LVIF_TEXT;
-                    row.iItem = index as i32;
-                    row.pszText = text.as_mut_ptr();
-                    SendMessageW(hwnd, LVM_INSERTITEMW, 0, &mut row as *mut _ as isize);
-                }
-            }
-            ControlKind::TreeView => {
-                SendMessageW(hwnd, TVM_DELETEITEM, 0, TVI_ROOT);
-                for item in items {
-                    let mut text = to_wide(item);
-                    // Every item is a root: the model's list is flat, so the
-                    // real tree is a list of top-level nodes.
-                    let mut insert: TVINSERTSTRUCTW = std::mem::zeroed();
-                    // `HTREEITEM` is `isize` in `windows-sys`, and a root's
-                    // parent is `TVI_ROOT` (0) rather than a null pointer.
-                    insert.hParent = TVI_ROOT;
-                    insert.hInsertAfter = TVI_LAST;
-                    insert.Anonymous.item.mask = TVIF_TEXT;
-                    insert.Anonymous.item.pszText = text.as_mut_ptr();
-                    SendMessageW(hwnd, TVM_INSERTITEMW, 0, &mut insert as *mut _ as isize);
-                }
-            }
-            ControlKind::Tab => {
-                SendMessageW(hwnd, TCM_DELETEALLITEMS, 0, 0);
-                for (index, item) in items.iter().enumerate() {
-                    let mut text = to_wide(item);
-                    let mut tab: TCITEMW = std::mem::zeroed();
-                    tab.mask = TCIF_TEXT;
-                    tab.pszText = text.as_mut_ptr();
-                    SendMessageW(hwnd, TCM_INSERTITEMW, index, &mut tab as *mut _ as isize);
-                }
-            }
-            _ => {}
-        }
+    match control.kind {
+        ControlKind::Button => WS_EX_WINDOWEDGE,
+        ControlKind::Input
+        | ControlKind::Edit
+        | ControlKind::List
+        | ControlKind::Combo
+        | ControlKind::Date
+        | ControlKind::MonthCal => WS_EX_CLIENTEDGE,
+        ControlKind::ListView => LVS_EX_FULLROWSELECT | WS_EX_CLIENTEDGE,
+        _ => 0,
     }
 }
 
@@ -1236,6 +1960,241 @@ fn apply_font(state: &mut ControlState, control: &Control) {
     state.font_request = wanted;
     state.font_set = true;
     unsafe { SendMessageW(state.hwnd, WM_SETFONT, font as usize, 1) };
+}
+
+/// `MAKELPARAM`: two 16-bit values in the `lParam` of a range message.
+fn pack16(low: i32, high: i32) -> isize {
+    ((((high as i64) & 0xFFFF) << 16) | ((low as i64) & 0xFFFF)) as isize
+}
+
+/// An AutoIt colour (`0xRRGGBB`) as GDI wants it.
+fn colorref(value: i64) -> COLORREF {
+    (value as u32) & 0x00FF_FFFF
+}
+
+/// The brush for a colour, made once and kept.
+///
+/// `WM_CTLCOLOR*` and the graphic painter both hand the handle back to Windows,
+/// which is why it cannot be deleted after the call that made it.
+fn brush_for(shared: &mut Shared, color: i64) -> HBRUSH {
+    if let Some(brush) = shared.brushes.get(&color) {
+        return *brush as HBRUSH;
+    }
+    let brush = unsafe { CreateSolidBrush(colorref(color)) };
+    shared.brushes.insert(color, brush as usize);
+    brush
+}
+
+/// Start GDI+ once per process, for the JPEG and GIF files `LoadImage` cannot
+/// read.
+///
+/// The token is deliberately left alone: GDI+ is shut down with the process, and
+/// a token that outlives every backend is what keeps the next window from
+/// starting it a second time.
+fn ensure_gdiplus() -> bool {
+    static STARTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STARTED.get_or_init(|| unsafe {
+        let mut input: GdiplusStartupInput = std::mem::zeroed();
+        input.GdiplusVersion = 1;
+        let mut token = 0usize;
+        GdiplusStartup(&mut token, &input, std::ptr::null_mut()) == 0
+    })
+}
+
+/// Decode a picture file with GDI+, which reads what `LoadImage` does not.
+fn load_bitmap_gdiplus(path: &[u16]) -> Option<(*mut c_void, i32, i32)> {
+    if !ensure_gdiplus() {
+        return None;
+    }
+    unsafe {
+        let mut bitmap: *mut GpBitmap = std::ptr::null_mut();
+        if GdipCreateBitmapFromFile(path.as_ptr(), &mut bitmap) != 0 || bitmap.is_null() {
+            return None;
+        }
+        let mut width = 0u32;
+        let mut height = 0u32;
+        GdipGetImageWidth(bitmap as *mut GpImage, &mut width);
+        GdipGetImageHeight(bitmap as *mut GpImage, &mut height);
+        let mut handle: HBITMAP = std::ptr::null_mut();
+        let status = GdipCreateHBITMAPFromBitmap(bitmap, &mut handle, 0);
+        GdipDisposeImage(bitmap as *mut GpImage);
+        if status != 0 || handle.is_null() {
+            return None;
+        }
+        Some((handle, width as i32, height as i32))
+    }
+}
+
+/// Load the picture file a control asks for.
+///
+/// `LoadImage` reads BMP, CUR and ICO; JPEG and GIF come from GDI+, which is what
+/// AutoIt itself uses. The size comes back with the object because a picture
+/// control with no size of its own takes the file's.
+fn load_image(path: &str, icon: bool) -> Option<LoadedImage> {
+    let wide = to_wide(path);
+    let kind = if icon { IMAGE_ICON } else { IMAGE_BITMAP };
+    let handle = unsafe {
+        LoadImageW(
+            std::ptr::null_mut(),
+            wide.as_ptr(),
+            kind,
+            0,
+            0,
+            LR_LOADFROMFILE,
+        )
+    };
+    if !handle.is_null() {
+        let (width, height) = if icon {
+            (0, 0)
+        } else {
+            image_size(handle as HBITMAP)
+        };
+        return Some(LoadedImage {
+            handle,
+            icon,
+            width,
+            height,
+        });
+    }
+    if icon {
+        // An icon file the loader refused is not a bitmap: GDI+ would hand back
+        // something `STM_SETICON` cannot use.
+        return None;
+    }
+    let (handle, width, height) = load_bitmap_gdiplus(&wide)?;
+    Some(LoadedImage {
+        handle,
+        icon: false,
+        width,
+        height,
+    })
+}
+
+/// The pixel size of a bitmap GDI loaded.
+fn image_size(handle: HBITMAP) -> (i32, i32) {
+    unsafe {
+        let mut bitmap: BITMAP = std::mem::zeroed();
+        let size = std::mem::size_of::<BITMAP>() as i32;
+        if GetObjectW(handle as _, size, &mut bitmap as *mut _ as *mut c_void) == 0 {
+            return (0, 0);
+        }
+        (bitmap.bmWidth.max(0), bitmap.bmHeight.max(0))
+    }
+}
+
+/// The procedure that paints a graphic control.
+///
+/// AutoIt draws `GUICtrlSetGraphic` itself, and so does this: the static control
+/// created for a `GUICtrlCreateGraphic` gets a subclass procedure that replays
+/// the command list on every paint. The list and the colours live in the
+/// thread's table because a window procedure has no other way back to the
+/// backend that made the window.
+unsafe extern "system" fn graphic_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass: usize,
+    _data: usize,
+) -> LRESULT {
+    match message {
+        WM_ERASEBKGND => {
+            let filled = with_shared(|shared| {
+                let drawing = shared.drawings.get(&hwnd_key(hwnd))?;
+                let color = drawing.background?;
+                let brush = brush_for(shared, color);
+                let mut rect: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+                FillRect(wparam as HDC, &rect, brush);
+                Some(())
+            })
+            .flatten()
+            .is_some();
+            if filled {
+                return 1;
+            }
+        }
+        WM_PAINT => {
+            let mut paint: PAINTSTRUCT = std::mem::zeroed();
+            let hdc = BeginPaint(hwnd, &mut paint);
+            let _ = with_shared(|shared| {
+                let Some(drawing) = shared.drawings.get(&hwnd_key(hwnd)).cloned() else {
+                    return;
+                };
+                let mut rect: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+                if let Some(background) = drawing.background {
+                    let brush = brush_for(shared, background);
+                    FillRect(hdc, &rect, brush);
+                }
+                paint_commands(hdc, &drawing.commands, drawing.color);
+            });
+            EndPaint(hwnd, &paint);
+            return 0;
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, message, wparam, lparam)
+}
+
+/// Replay `GUICtrlSetGraphic`'s command list onto a device context.
+///
+/// The pen is made per shape: a short command list is the normal case, and
+/// keeping a pen alive would mean tracking when the colour or the width changes.
+unsafe fn paint_commands(hdc: HDC, commands: &[DrawCmd], default_color: Option<i64>) {
+    let mut color = default_color.unwrap_or(0);
+    let mut width = 1i32;
+    for command in commands {
+        match command {
+            DrawCmd::SetColor(value) => color = *value,
+            // The fill colour only matters to closed shapes, and AutoIt's
+            // default is "no fill" (`$GUI_GR_NOBKCOLOR`), which the framed
+            // shapes below already draw.
+            DrawCmd::SetBkColor(_) => {}
+            DrawCmd::SetWidth(value) => width = (*value).max(1),
+            DrawCmd::SetStyle(_) => {}
+            DrawCmd::Clear => {
+                // The canvas is the control: clearing means painting over it,
+                // which the next `SetBkColor`-less paint does not do, so this
+                // only resets the pen.
+                color = default_color.unwrap_or(0);
+                width = 1;
+            }
+            DrawCmd::Line { x1, y1, x2, y2 } => {
+                let pen = CreatePen(PS_SOLID, width, colorref(color));
+                let old_pen = SelectObject(hdc, pen);
+                let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                MoveToEx(hdc, *x1, *y1, std::ptr::null_mut());
+                LineTo(hdc, *x2, *y2);
+                SelectObject(hdc, old_brush);
+                SelectObject(hdc, old_pen);
+                DeleteObject(pen);
+            }
+            DrawCmd::Rect { x, y, w, h } => {
+                let pen = CreatePen(PS_SOLID, width, colorref(color));
+                let old_pen = SelectObject(hdc, pen);
+                let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                Rectangle(hdc, *x, *y, x + w, y + h);
+                SelectObject(hdc, old_brush);
+                SelectObject(hdc, old_pen);
+                DeleteObject(pen);
+            }
+            DrawCmd::Ellipse { x, y, w, h } => {
+                let pen = CreatePen(PS_SOLID, width, colorref(color));
+                let old_pen = SelectObject(hdc, pen);
+                let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                Ellipse(hdc, *x, *y, x + w, y + h);
+                SelectObject(hdc, old_brush);
+                SelectObject(hdc, old_pen);
+                DeleteObject(pen);
+            }
+            DrawCmd::Text { x, y, text } => {
+                let wide = to_wide(text);
+                SetTextColor(hdc, colorref(color));
+                TextOutW(hdc, *x, *y, wide.as_ptr(), wide.len() as i32 - 1);
+            }
+        }
+    }
 }
 
 /// A NUL-terminated UTF-16 copy of `text`.
