@@ -11,8 +11,8 @@ use std::rc::Rc;
 use autoitv3_platform::{CommonPlatform, CompositePlatform};
 use autoitv3_platform::winemu::{
     Control, FileRegistry, GuiBackend, GuiEvent, GuiUpdate, HeadlessBackend, MemoryRegistry,
-    RegistryData, RegistryStore, Window, WindowsArch, WindowsEmulation, WindowsPaths,
-    WindowsVersion,
+    Progress, RegistryData, RegistryStore, Splash, Window, WindowsArch, WindowsEmulation,
+    WindowsPaths, WindowsVersion,
 };
 use autoitv3_runtime::profile::ExecutionProfile;
 use autoitv3_runtime::{Runtime, Value};
@@ -1262,6 +1262,103 @@ Local $err = @error
 Return $lines & ":" & $count & ":" & $unknown & ":" & $err
 "#;
     assert_eq!(text(win10(), body), "3:2:0:1");
+}
+
+/// A backend that answers the dialogs itself and records the feedback windows
+/// a script opened.
+#[derive(Clone, Default)]
+struct DialogBackend {
+    log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl GuiBackend for DialogBackend {
+    fn message_box(&mut self, flags: i64, title: &str, text: &str, _timeout: i64) -> Option<i64> {
+        self.log
+            .borrow_mut()
+            .push(format!("msgbox:{flags}:{title}:{text}"));
+        Some(7)
+    }
+
+    fn input_box(
+        &mut self,
+        title: &str,
+        _prompt: &str,
+        _default: &str,
+        password: bool,
+        _timeout: i64,
+    ) -> Option<Option<String>> {
+        self.log.borrow_mut().push(format!("input:{title}:{password}"));
+        Some(Some("typed".to_string()))
+    }
+
+    fn file_dialog(
+        &mut self,
+        kind: i64,
+        title: &str,
+        initial: &str,
+        filter: &str,
+        default: &str,
+        options: i64,
+    ) -> Option<Option<String>> {
+        self.log.borrow_mut().push(format!(
+            "file:{kind}:{title}:{initial}:{filter}:{default}:{options}"
+        ));
+        Some(Some("C:\\picked.txt".to_string()))
+    }
+
+    fn splash(&mut self, splash: &Splash, off: bool) -> bool {
+        self.log
+            .borrow_mut()
+            .push(format!("splash:{}:{}", splash.text, off));
+        true
+    }
+
+    fn progress(&mut self, progress: &Progress, off: bool) -> bool {
+        self.log.borrow_mut().push(format!(
+            "progress:{}:{}:{}:{}",
+            progress.text, progress.sub, progress.percent, off
+        ));
+        true
+    }
+
+    fn tooltip_window(&mut self, text: &str, x: i32, y: i32) -> bool {
+        self.log.borrow_mut().push(format!("tooltip:{text}:{x}:{y}"));
+        true
+    }
+}
+
+#[test]
+fn a_backend_can_answer_the_dialogs_and_show_the_feedback_windows() {
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let body = r#"
+Local $answer = MsgBox(4, "Question", "Go on?")
+Local $typed = InputBox("Ask", "Name", "default", "P")
+Local $file = FileOpenDialog("Open", "C:\temp", "Text (*.txt)")
+SplashTextOn("Splash", "working", 100, 50)
+ProgressOn("Progress", "main", "sub", 10, 10)
+ProgressSet(50, "half")
+ToolTip("hello", 5, 6)
+ProgressOff()
+ToolTip("")
+SplashOff()
+Return $answer & ":" & $typed & ":" & $file
+"#;
+    let emu = win10().with_gui_backend(Box::new(DialogBackend { log: log.clone() }));
+    assert_eq!(text(emu, body), "7:typed:C:\\picked.txt");
+    let seen = log.borrow().join("|");
+    assert!(seen.contains("msgbox:4:Question:Go on?"), "{seen}");
+    assert!(seen.contains("input:Ask:true"), "{seen}");
+    assert!(
+        seen.contains("file:0:Open:C:\\temp:Text (*.txt)::0"),
+        "{seen}"
+    );
+    assert!(seen.contains("splash:working:false"), "{seen}");
+    // `ProgressSet`'s subtext comes before its main text, so the main one is
+    // the label `ProgressOn` set.
+    assert!(seen.contains("progress:main:half:50:false"), "{seen}");
+    assert!(seen.contains("tooltip:hello:5:6"), "{seen}");
+    assert!(seen.contains("progress:main:half:50:true"), "{seen}");
+    assert!(seen.contains("splash:working:true"), "{seen}");
 }
 
 #[test]

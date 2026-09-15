@@ -58,6 +58,7 @@
 
 pub(crate) mod clipboard;
 pub(crate) mod com;
+pub(crate) mod dialogs;
 pub(crate) mod dll;
 mod drive;
 mod files;

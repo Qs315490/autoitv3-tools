@@ -39,7 +39,7 @@ mod messages;
 pub use autoitv3_gui_model as model;
 pub use autoitv3_gui_model::{
     Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiModel, GuiUpdate,
-    HeadlessBackend, TrayItem, Window, WindowState, GUI_EVENT_CLOSE, GUI_EVENT_DROPPED,
+    HeadlessBackend, Progress, Splash, TrayItem, Window, WindowState, GUI_EVENT_CLOSE, GUI_EVENT_DROPPED,
     GUI_EVENT_MAXIMIZE, GUI_EVENT_MINIMIZE, GUI_EVENT_MOUSEMOVE, GUI_EVENT_PRIMARYDOWN,
     GUI_EVENT_PRIMARYUP, GUI_EVENT_RESTORE, GUI_EVENT_RESIZED, GUI_EVENT_SECONDARYDOWN,
     GUI_EVENT_SECONDARYUP,
@@ -1282,6 +1282,20 @@ impl GuiState {
 
             // ---------------- dialogs ----------------
             "msgbox" => {
+                // A backend with a user in front of it shows a real box and
+                // waits; without one the scripted answer below stands in, so an
+                // analysis run cannot hang on a question nobody will answer.
+                let flags = arg_int(args, 0);
+                let title = arg_str(args, 1);
+                let text = arg_str(args, 2);
+                let timeout = arg_int(args, 3);
+                if let Some(answer) =
+                    self.backend
+                        .message_box(flags, &title, &text, timeout)
+                {
+                    ctx.set_error(0, 0);
+                    return Some(Value::Int(answer));
+                }
                 // Consume a scripted answer, else OK; never blocks.
                 let answer = self
                     .events
@@ -1303,6 +1317,27 @@ impl GuiState {
             "inputbox" => {
                 let title = arg_str(args, 0);
                 let prompt = arg_str(args, 1);
+                let default = arg_str(args, 2);
+                let password = arg_str(args, 3);
+                let timeout = arg_int(args, 4);
+                if let Some(answer) = self.backend.input_box(
+                    &title,
+                    &prompt,
+                    &default,
+                    !password.is_empty(),
+                    timeout,
+                ) {
+                    return Some(match answer {
+                        Some(text) => {
+                            ctx.set_error(0, 0);
+                            Value::Str(text)
+                        }
+                        None => {
+                            ctx.set_error(1, 0);
+                            Value::Str(String::new())
+                        }
+                    });
+                }
                 match self.answers.pop_front() {
                     Some(text) => {
                         let notice =
@@ -1322,6 +1357,26 @@ impl GuiState {
             }
             "fileopendialog" | "filesavedialog" | "fileselectfolder" => {
                 let title = arg_str(args, 0);
+                let (kind, initial, filter, default) = match key.as_str() {
+                    "fileopendialog" => (0, arg_str(args, 1), arg_str(args, 2), String::new()),
+                    "filesavedialog" => (1, arg_str(args, 1), arg_str(args, 2), arg_str(args, 3)),
+                    _ => (2, arg_str(args, 1), String::new(), String::new()),
+                };
+                let options = arg_int(args, 4);
+                if let Some(answer) = self.backend.file_dialog(
+                    kind, &title, &initial, &filter, &default, options,
+                ) {
+                    return Some(match answer {
+                        Some(path) => {
+                            ctx.set_error(0, 0);
+                            Value::Str(path)
+                        }
+                        None => {
+                            ctx.set_error(1, 0);
+                            Value::Str(String::new())
+                        }
+                    });
+                }
                 match self.answers.pop_front() {
                     Some(path) if !path.is_empty() => {
                         let notice = file_dialog_notice(name, &title, &format!("{path:?}"));
@@ -1349,6 +1404,7 @@ impl GuiState {
                     visible: true,
                     ..Default::default()
                 };
+                self.show_splash(false);
                 Value::Int(1)
             }
             "splashimageon" => {
@@ -1361,34 +1417,49 @@ impl GuiState {
                     visible: true,
                     ..Default::default()
                 };
+                self.show_splash(false);
                 Value::Int(1)
             }
             "splashoff" => {
                 self.model.splash.visible = false;
+                self.show_splash(true);
                 Value::Int(1)
             }
             "progresson" => {
                 self.model.progress = model::Progress {
                     on: true,
                     text: arg_str(args, 1),
+                    sub: arg_str(args, 2),
                     percent: 0,
                 };
+                self.show_progress(false);
                 Value::Int(1)
             }
             "progressset" => {
+                // `ProgressSet(percent, subtext, maintext)`: the subtext really
+                // does come before the main text here, unlike `ProgressOn`.
                 self.model.progress.percent = arg_int(args, 0);
                 if args.len() > 1 {
-                    self.model.progress.text = arg_str(args, 1);
+                    self.model.progress.sub = arg_str(args, 1);
                 }
+                if args.len() > 2 {
+                    self.model.progress.text = arg_str(args, 2);
+                }
+                self.show_progress(false);
                 Value::Int(1)
             }
             "progressoff" => {
                 self.model.progress.on = false;
+                self.show_progress(true);
                 Value::Int(1)
             }
             "tooltip" => {
-                self.model.tooltip = arg_str(args, 0);
-                self.model.tooltip_visible = !self.model.tooltip.is_empty();
+                let text = arg_str(args, 0);
+                let x = arg_int(args, 1) as i32;
+                let y = arg_int(args, 2) as i32;
+                self.model.tooltip = text.clone();
+                self.model.tooltip_visible = !text.is_empty();
+                self.backend.tooltip_window(&text, x, y);
                 Value::Int(1)
             }
 
@@ -2127,6 +2198,18 @@ impl GuiState {
     }
 
     /// Resolve the `(window, control text)` pair `Control*` functions take.
+    /// Hand the splash window's state to the backend, which may show one.
+    fn show_splash(&mut self, off: bool) {
+        let splash = self.model.splash.clone();
+        self.backend.splash(&splash, off);
+    }
+
+    /// Hand the progress window's state to the backend, which may show one.
+    fn show_progress(&mut self, off: bool) {
+        let progress = self.model.progress.clone();
+        self.backend.progress(&progress, off);
+    }
+
     /// Resolve a `controlID` argument the way AutoIt's functions do: `-1` is
     /// the control created last, anything else must exist.
     fn resolve_control(&self, args: &[Value], index: usize) -> Option<i64> {

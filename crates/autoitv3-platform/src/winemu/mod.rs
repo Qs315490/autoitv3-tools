@@ -82,8 +82,8 @@ mod shell;
 mod version;
 
 pub use gui::{
-    Control, ControlKind, GuiBackend, GuiEvent, GuiImage, GuiUpdate, HeadlessBackend, Window,
-    WindowState,
+    Control, ControlKind, GuiBackend, GuiEvent, GuiImage, GuiUpdate, HeadlessBackend, Progress,
+    Splash, Window, WindowState,
 };
 pub use paths::WindowsPaths;
 pub use crypto::{CipherAlg, HashAlg};

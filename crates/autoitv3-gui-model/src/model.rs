@@ -303,10 +303,16 @@ pub struct Splash {
 }
 
 /// Progress window state.
+///
+/// AutoIt's progress window has two labels: `ProgressOn` is
+/// `(title, maintext, subtext, ...)` and `ProgressSet` is
+/// `(percent, subtext, maintext)` — the two orders are indeed different, which is
+/// why each label has its own field here.
 #[derive(Debug, Clone, Default)]
 pub struct Progress {
     pub on: bool,
     pub text: String,
+    pub sub: String,
     pub percent: i64,
 }
 
