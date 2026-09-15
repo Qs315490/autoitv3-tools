@@ -34,7 +34,15 @@
           files.rs      真实文件属性（RASH）、8.3 短名、EnvUpdate 广播
           misc.rs       MemGetStats/IsAdmin/ShellExecute*/RunAs*/DriveMap*/Shutdown
         winemu/       Windows 仿真层（非 Windows 主机；见下文「Windows 仿真」）
-          mod.rs        WindowsEmulation：宏表、DllCall/注册表/剪贴板/驱动器分发
+          mod.rs        WindowsEmulation：状态 + builder + `Platform::call` 的宏表
+                        与内建分发 + 注册表/剪贴板/驱动器/`FileInstall`
+          com.rs        伪 COM 对象模型（Scripting.Dictionary、WScript.Shell、
+                        Scripting.FileSystemObject）；`obj_get`/`obj_call`
+                        两个 trait 方法仍在 mod.rs，转发到这里
+          dll/          DllCall 仿真：mod.rs（`DllOutcome` + 函数名分派 + A/W
+                        回退 + trace）、memory.rs（DllStruct/地址模型与缓冲辅助）、
+                        crypto.rs（CryptoAPI 分支 + `RtlDecompressBuffer`）、
+                        system.rs（版本/系统信息结构）
           version.rs    WindowsVersion：选定仿真系统版本（默认 win10）
           paths.rs      WindowsPaths：C:\ 目录布局（@WindowsDir、@AppDataDir…）
           registry.rs   RegistryStore 接口 + FileRegistry（默认，落盘 .au3_registry）
@@ -105,10 +113,19 @@
   `FileInstall`…）。要拆的话按领域分（`winemu/sysinfo.rs`、`drive.rs`、`shell.rs`），
   与 DLL/COM 是两件事。
 
-三点提醒：拆分是**纯搬运**，行为不变，但会动一批 `use` 与可见性（现在这些方法都写在
-`impl WindowsEmulation` 里，拆出去就要把字段设成 `pub(crate)` 或换成模块内自由函数）；
+**已经这么做**（本次改动）：`mod.rs` 3327 → 2019 行，新增 `com.rs`(315)、
+`dll/mod.rs`(590)、`dll/memory.rs`(241)、`dll/crypto.rs`(184)、`dll/system.rs`(89)。
+搬运只动了三处可见性——搬出去的方法标 `pub(in crate::winemu)`、`DllOutcome` 与
+`PseudoObject`/`PseudoKind` 同理（兄弟模块要互相看得见），以及子模块用
+`use super::*` 取父模块的私有自由函数（子模块本来就能看祖先的私有项）。行为不变，
+555 项测试全绿。
+
+`obj_get`/`obj_call` 留在 `mod.rs`：它们是 `impl Platform` 的方法，一个 trait impl
+不能跨模块写，于是它们只做一次转发，实现落在 `com.rs`。同理 `dll_call` 的入口
+（`Platform::call` 要调它）也在 `dll/mod.rs` 里保持 `pub(in crate::winemu)`。
+
 `DllCall` 那个 ~600 行的 `match` 本身不因为搬文件而变小，真要可读性得按命名空间切成
-若干小函数；以上都是"下次动这块时顺手做"，没有非做不可的理由。
+若干小函数，那是下一件事。
 
 ## 平台层
 
