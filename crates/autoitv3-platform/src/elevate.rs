@@ -12,6 +12,11 @@
 //! — the tool's effect profile, `--no-elevate`, the "already elevated" case —
 //! belongs to the caller, which also knows which command it was invoked as.
 //!
+//! The elevated copy is also handed a console of its own by the shell service,
+//! which for a command line run means a second window; [`attach_console`] is the
+//! other half of the story — the copy attaches to the caller's console, so the
+//! script's output stays where the command was typed.
+//!
 //! Off Windows there is nothing to elevate with, and [`relaunch_elevated`]
 //! answers [`Elevated::Unsupported`] rather than failing: a Windows-targeted
 //! script analysed on another host should still run the way it always did.
@@ -50,7 +55,13 @@ pub enum Elevated {
 
 /// The Windows implementation, on a host that can actually launch a process.
 #[cfg(windows)]
-pub use crate::windows::elevate::relaunch_elevated;
+pub use crate::windows::elevate::{attach_console, relaunch_elevated};
+
+/// Off Windows: there is no console to reattach to (and no elevation).
+#[cfg(not(windows))]
+pub fn attach_console(_pid: u32) -> bool {
+    false
+}
 
 /// Off Windows: there is no consent prompt to raise and no second token to get.
 #[cfg(not(windows))]

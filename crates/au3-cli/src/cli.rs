@@ -25,6 +25,16 @@ use crate::commands;
     propagate_version = true,
 )]
 pub struct Cli {
+    /// (internal) Attach to the console of the process that started us
+    ///
+    /// The elevated copy an `#RequireAdmin` run starts is given a console of
+    /// its own by the shell, so the script's output would appear in a second
+    /// window. The launcher passes its own process id so the copy can attach
+    /// to the console the command was typed in. Not meant to be used by hand:
+    /// see `autoitv3-platform`'s `elevate` module.
+    #[arg(long = "attach-console", value_name = "PID", hide = true)]
+    pub attach_console: Option<u32>,
+
     /// The subcommand to run.
     #[command(subcommand)]
     pub command: Command,

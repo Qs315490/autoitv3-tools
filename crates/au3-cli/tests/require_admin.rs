@@ -93,6 +93,23 @@ fn a_host_without_elevation_says_so_and_runs_the_script() {
     assert!(out.contains("ran"), "got:\n{out}");
 }
 
+/// The elevated copy is told which console to print into, so its output does
+/// not end up in a second window. Off Windows there is no Windows console to
+/// attach to, and the copy says so instead of falling over; on Windows this
+/// would be the elevation path itself, which a test cannot answer.
+#[cfg(not(windows))]
+#[test]
+fn the_console_hand_off_is_reported_when_there_is_none() {
+    let path = script("attach-console", "ConsoleWrite(\"ran\")\n");
+    let (ok, out) = au3(&["--attach-console", "1234", "run", &path.to_string_lossy()]);
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("note: #RequireAdmin: elevated, but process 1234"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("ran"), "got:\n{out}");
+}
+
 /// The debugger cannot elevate — an elevated copy would be a second process
 /// without this shell's stdin — so it says what it did not do instead.
 #[test]

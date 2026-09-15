@@ -107,14 +107,25 @@ pub fn relaunch_if_required(
     }
 }
 
-/// This process's own arguments, with `--no-elevate` in front of them.
+/// This process's own arguments, with the two flags the copy needs.
 ///
-/// The flag goes right after the subcommand (`au3 run --no-elevate FILE`), so
-/// it is still an option wherever the user put a later `--`.
+/// `--no-elevate` goes right after the subcommand (`au3 run --no-elevate
+/// FILE`), so it is still an option wherever the user put a later `--`;
+/// `--attach-console PID` goes in front of the subcommand, where the top-level
+/// flag lives, and is how the copy finds the console to print into (the callers
+/// pid, ours).
 fn elevated_args() -> Vec<OsString> {
-    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let own: Vec<OsString> = std::env::args_os().skip(1).collect();
+    elevated_args_from(own, std::process::id())
+}
+
+/// [`elevated_args`], with the argument list and pid handed in, so the flag
+/// placement can be checked without a real elevation.
+fn elevated_args_from(mut args: Vec<OsString>, pid: u32) -> Vec<OsString> {
     if args.len() > 1 {
         args.insert(1, OsString::from("--no-elevate"));
+        args.insert(0, OsString::from(pid.to_string()));
+        args.insert(0, OsString::from("--attach-console"));
     }
     args
 }
@@ -123,6 +134,27 @@ fn elevated_args() -> Vec<OsString> {
 mod tests {
     use super::*;
     use autoitv3_ast::parse;
+
+    #[test]
+    fn the_copy_gets_both_flags_where_the_parser_wants_them() {
+        // `--attach-console` is a top-level flag, so it goes in front of the
+        // subcommand; `--no-elevate` belongs to `run`, so it goes behind it and
+        // in front of the file. Both survive a later `--`.
+        let own: Vec<OsString> =
+            vec!["run".into(), "a script.au3".into(), "--".into(), "-x".into()];
+        assert_eq!(
+            elevated_args_from(own, 4242),
+            vec![
+                "--attach-console",
+                "4242",
+                "run",
+                "--no-elevate",
+                "a script.au3",
+                "--",
+                "-x"
+            ]
+        );
+    }
 
     #[test]
     fn the_directive_is_found_at_the_top_level_only() {
