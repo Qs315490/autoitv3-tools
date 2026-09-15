@@ -16,8 +16,25 @@
 ; ConsoleWrite 仍然保留，方便在 SciTE 里直接抄文本。
 Global $Report = ""
 
+; 任何形状都转成字符串再拼——官方在某几行返回的是标量而不是数组，直接取下标的话
+; 整个脚本会以 "Subscript used on non-accessible variable" 终止，一行都拿不到。
+Func Show($v)
+    If IsArray($v) Then
+        Local $s = "array[" & UBound($v) & "]"
+        Local $i
+        For $i = 0 To UBound($v) - 1
+            $s = $s & "|" & Show($v[$i])
+        Next
+        Return $s
+    EndIf
+    If IsString($v) Then
+        Return "[" & $v & "]"
+    EndIf
+    Return "[" & String($v) & "]"
+EndFunc
+
 Func P($label, $value, $err, $ext)
-    Local $line = $label & " => [" & $value & "] @error=" & $err & " @extended=" & $ext
+    Local $line = $label & " => " & Show($value) & " @error=" & $err & " @extended=" & $ext
     ; 普通赋值就改脚本级那个 Global；`Global $Report = $Report & ...` 会被官方
     ; 解释器拒绝："Can not initialize a variable with itself"。
     $Report = $Report & $line & @CRLF
@@ -94,7 +111,7 @@ $v = DirGetSize($missing)
 P("DirGetSize(missing)", $v, @error, @extended)
 
 Local $a = DirGetSize($missing, 1)
-P("DirGetSize(missing,1)[0]", $a[0], @error, @extended)
+P("DirGetSize(missing,1)", $a, @error, @extended)
 
 $v = DirGetSize($dir)
 P("DirGetSize(dir)", $v, @error, @extended)
@@ -110,10 +127,10 @@ P("FileFindFirstFile(missing path)", $v, @error, @extended)
 
 ; ---- 数组 ----
 $a = FileReadToArray($empty)
-P("FileReadToArray(empty)[0]", $a[0], @error, @extended)
+P("FileReadToArray(empty)", $a, @error, @extended)
 
 $a = FileReadToArray($missing)
-P("FileReadToArray(missing)[0]", $a[0], @error, @extended)
+P("FileReadToArray(missing)", $a, @error, @extended)
 
 ; ---- 坏句柄 / 只读句柄（放最后）----
 $v = FileClose(9999)
