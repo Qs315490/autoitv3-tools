@@ -577,6 +577,18 @@ impl WindowsEmulation {
                 Some(DllOutcome::value(Value::Bool(true)))
             }
 
+            // ---------------- checksums ----------------
+            // `RtlComputeCrc32(initial, data, len)`: scripts fold a digest
+            // through it to get the short check value a data file advertises.
+            "rtlcomputecrc32" => {
+                let initial = arg(0)?.to_int() as u32;
+                let len = arg(2)?.to_int().max(0) as usize;
+                let data = self.dll_bytes(&arg(1)?, len)?;
+                Some(DllOutcome::value(Value::Int(i64::from(super::crypto::crc32(
+                    initial, &data,
+                )))))
+            }
+
             // ---------------- LZNT1 ----------------
             "rtlgetcompressionworkspacesize" => {
                 Some(DllOutcome::with(Value::Int(0), 1, Value::Int(0)))
