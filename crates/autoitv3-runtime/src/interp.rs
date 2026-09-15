@@ -145,6 +145,14 @@ pub struct Runtime {
     compiled: bool,
     /// Top-level (script) statements, executed by [`Runtime::run_script`].
     script: Vec<Stmt>,
+    /// The `Opt`/`AutoItSetOption` settings a script changed, by lower-cased
+    /// option name.
+    ///
+    /// Options are read by two very different things: the runtime answers the
+    /// return value of `Opt` (the *previous* setting) and a platform reads the
+    /// ones that describe its own behaviour, through
+    /// [`HostContext::option`](crate::host::HostContext::option).
+    options: HashMap<String, Value>,
 }
 
 /// How many `AdlibRegister` callbacks AutoIt accepts at once.
@@ -295,6 +303,7 @@ impl Runtime {
             profile: ExecutionProfile::default(),
             compiled: false,
             script: Vec::new(),
+            options: HashMap::new(),
         }
     }
 
@@ -550,6 +559,16 @@ impl Runtime {
         self.extended = extended;
     }
 
+    /// An `Opt` setting, as the script last set it.
+    pub fn option(&self, name: &str) -> Option<&Value> {
+        self.options.get(&var_key(name))
+    }
+
+    /// Record an `Opt` setting.
+    pub(crate) fn set_option(&mut self, name: &str, value: Value) {
+        self.options.insert(var_key(name), value);
+    }
+
     /// Read a global variable by name (with or without the leading `$`).
     pub fn get_global(&self, name: &str) -> Option<&Value> {
         self.globals.get(&var_key(name))
@@ -751,8 +770,8 @@ impl Runtime {
         }
         // An explicit host wins over the platform default.
         if self.host.is_some() {
-            let Runtime { globals, error, extended, profile, host, .. } = self;
-            let mut ctx = HostBridge { globals, error, extended, profile };
+            let Runtime { globals, error, extended, profile, options, host, .. } = self;
+            let mut ctx = HostBridge { globals, error, extended, profile, options };
             if let Some(host) = host.as_mut() {
                 if let Some(v) = host.call(display, args.clone(), &mut ctx)? {
                     return Ok(v);
@@ -764,8 +783,8 @@ impl Runtime {
         let mut result = None;
         let mut pending: Vec<(String, Vec<Value>)> = Vec::new();
         if self.platform.is_some() {
-            let Runtime { globals, error, extended, profile, platform, .. } = self;
-            let mut ctx = HostBridge { globals, error, extended, profile };
+            let Runtime { globals, error, extended, profile, options, platform, .. } = self;
+            let mut ctx = HostBridge { globals, error, extended, profile, options };
             if let Some(p) = platform.as_mut() {
                 result = p.call(display, args, &mut ctx)?;
                 pending = p.take_pending_callbacks();
@@ -1202,14 +1221,14 @@ impl Runtime {
                 span: Some(span),
             });
         };
-        let Runtime { globals, error, extended, profile, platform, .. } = self;
+        let Runtime { globals, error, extended, profile, options, platform, .. } = self;
         let Some(platform) = platform.as_mut() else {
             return Err(RuntimeError::Unsupported {
                 what: format!("member access `.{member}` (no platform installed)"),
                 span: Some(span),
             });
         };
-        let mut ctx = HostBridge { globals, error, extended, profile };
+        let mut ctx = HostBridge { globals, error, extended, profile, options };
         platform
             .obj_get(&obj, member, &mut ctx)
             .map(|v| v.unwrap_or(Value::Null))
@@ -1230,14 +1249,14 @@ impl Runtime {
                 span: Some(span),
             });
         };
-        let Runtime { globals, error, extended, profile, platform, .. } = self;
+        let Runtime { globals, error, extended, profile, options, platform, .. } = self;
         let Some(platform) = platform.as_mut() else {
             return Err(RuntimeError::Unsupported {
                 what: format!("method call `.{member}()` (no platform installed)"),
                 span: Some(span),
             });
         };
-        let mut ctx = HostBridge { globals, error, extended, profile };
+        let mut ctx = HostBridge { globals, error, extended, profile, options };
         platform
             .obj_call(&obj, member, &args, &mut ctx)
             .map(|v| v.unwrap_or(Value::Null))
@@ -2532,6 +2551,7 @@ struct HostBridge<'a> {
     error: &'a mut i64,
     extended: &'a mut i64,
     profile: &'a ExecutionProfile,
+    options: &'a HashMap<String, Value>,
 }
 
 impl HostContext for HostBridge<'_> {
@@ -2554,5 +2574,9 @@ impl HostContext for HostBridge<'_> {
 
     fn profile(&self) -> &ExecutionProfile {
         self.profile
+    }
+
+    fn option(&self, name: &str) -> Option<Value> {
+        self.options.get(&var_key(name)).cloned()
     }
 }

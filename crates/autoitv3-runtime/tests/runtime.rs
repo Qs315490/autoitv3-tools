@@ -1894,3 +1894,97 @@ fn the_string_zero_is_true() {
     );
     assert!(matches!(v, Value::Int(0)), "got {v:?}");
 }
+
+#[test]
+fn opt_answers_with_the_previous_setting() {
+    let src = r#"
+Func F()
+    Local $fresh = Opt("GUIOnEventMode", 1)
+    Local $now = Opt("GUIOnEventMode")
+    Local $reset = Opt("GUIOnEventMode", Default)
+    Local $after = Opt("GUIOnEventMode")
+    Local $unknown = Opt("NotAnOption", 1)
+    Local $err = @error
+    Local $close = Opt("GUICloseOnESC")
+    Local $mode = Opt("WinTitleMatchMode", 2)
+    Local $sep = Opt("GUIDataSeparatorChar", ";")
+    Return $fresh & ":" & $now & ":" & $reset & ":" & $after & ":" & $unknown & ":" & $err & ":" & $close & ":" & $mode & ":" & $sep
+EndFunc
+"#;
+    match call(src, "F", vec![]) {
+        // The first call answers the default, the reset answers what was set,
+        // and an option the help page does not list is refused with `@error`.
+        Value::Str(s) => assert_eq!(s, "0:1:1:0:0:1:1:1:|"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn opt_settings_are_kept_for_the_platform_to_read() {
+    // What a platform sees is `HostContext::option`; what the runtime has to do
+    // is remember the setting under the option's own name.
+    let mut runtime = rt("Opt(\"GUIOnEventMode\", 1)\n");
+    runtime.run_script().unwrap();
+    assert!(matches!(
+        runtime.option("GUIOnEventMode"),
+        Some(Value::Int(1))
+    ));
+    assert!(runtime.option("NothingLikeThis").is_none());
+}
+
+#[test]
+fn every_documented_option_is_known() {
+    // The list the `Opt` help page gives, in its own spelling: a name that is
+    // misspelled in the table below would answer `@error = 1` here.
+    let names = [
+        "CaretCoordMode",
+        "ExpandEnvStrings",
+        "ExpandVarStrings",
+        "GUICloseOnESC",
+        "GUICoordMode",
+        "GUIDataSeparatorChar",
+        "GUIEventOptions",
+        "GUIOnEventMode",
+        "GUIResizeMode",
+        "MouseClickDelay",
+        "MouseClickDownDelay",
+        "MouseClickDragDelay",
+        "MouseCoordMode",
+        "MustDeclareVars",
+        "PixelCoordMode",
+        "SendAttachMode",
+        "SendCapslockMode",
+        "SendKeyDelay",
+        "SendKeyDownDelay",
+        "SetExitCode",
+        "TCPTimeout",
+        "TrayAutoPause",
+        "TrayIconDebug",
+        "TrayIconHide",
+        "TrayMenuMode",
+        "TrayOnEventMode",
+        "WinDetectHiddenText",
+        "WinSearchChildren",
+        "WinTextMatchMode",
+        "WinTitleMatchMode",
+        "WinWaitDelay",
+    ];
+    let mut runtime = rt("");
+    for name in names {
+        let value = runtime
+            .call_named(
+                "Opt",
+                vec![Value::Str(name.into())],
+                autoitv3_ast::span::Span::new(
+                    autoitv3_ast::span::Pos::new(1, 1),
+                    autoitv3_ast::span::Pos::new(1, 1),
+                ),
+            )
+            .unwrap();
+        assert_eq!(runtime.error(), 0, "Opt(\"{name}\") is not a known option");
+        assert!(
+            !matches!(value, Value::Null),
+            "Opt(\"{name}\") answered nothing"
+        );
+    }
+}

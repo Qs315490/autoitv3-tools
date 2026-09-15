@@ -33,6 +33,17 @@ pub trait HostContext {
     /// The execution profile in force, so a platform can honour it (skipping
     /// `Sleep`, seeding `Random`, refusing writes).
     fn profile(&self) -> &ExecutionProfile;
+    /// The value of an AutoIt option, as the script last set it.
+    ///
+    /// `Opt`/`AutoItSetOption` is interpreter state — the runtime owns the table
+    /// and answers the return value — but some options only mean something to a
+    /// platform: the GUI's `GUIOnEventMode`, a tray's `TrayOnEventMode`. Those
+    /// read it here. `None` means the script has not set it, so the platform
+    /// applies the documented default.
+    fn option(&self, name: &str) -> Option<Value> {
+        let _ = name;
+        None
+    }
     /// The effective decision for one class of external effect: the profile's
     /// per-kind override when set, otherwise its base [`EffectPolicy`].
     ///
