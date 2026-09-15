@@ -67,6 +67,7 @@
 //! rather stop at the boundary, install [`crate::host_platform`] without this
 //! layer (set `AU3_WIN_EMU=0`, or use `--no-win-emu`).
 
+mod bcrypt;
 mod compress;
 mod crypto;
 pub mod gui;
@@ -478,6 +479,8 @@ pub struct WindowsEmulation {
     dlls: Vec<Option<String>>,
     /// Emulated CryptoAPI objects.
     crypto: CryptoState,
+    /// `bcrypt.dll` (CNG) objects: providers, hashes and keys.
+    bcrypt: bcrypt::BcryptState,
     /// Next synthetic address handed out (`&struct`, `LockResource`).
     next_addr: u64,
     origin: Instant,
@@ -546,6 +549,7 @@ impl WindowsEmulation {
             pseudo_objects: Vec::new(),
             dlls: Vec::new(),
             crypto: CryptoState::default(),
+            bcrypt: bcrypt::BcryptState::default(),
             next_addr: 0x0100_0000,
             origin: Instant::now(),
             trace_dll: false,
@@ -1693,6 +1697,154 @@ impl WindowsEmulation {
             }
 
             // ---------------- CryptoAPI ----------------
+            // ---------------- bcrypt.dll (CNG) ----------------
+            "bcryptopenalgorithmprovider" => {
+                let alg = arg_str(&values, 1);
+                let hmac = arg_int(&values, 3) & 8 != 0; // BCRYPT_ALG_HANDLE_HMAC_FLAG
+                let handle = self.bcrypt.open_provider(&alg, hmac)?;
+                Some(DllOutcome::with(Value::Int(0), 0, Value::Int(handle)))
+            }
+            "bcryptclosealgorithmprovider" => {
+                self.bcrypt.close_provider(arg_int(&values, 0));
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptgetproperty" => {
+                let property = self
+                    .bcrypt
+                    .property(arg_int(&values, 0), &arg_str(&values, 1))?;
+                let bytes = property.bytes();
+                let out = values.get(2).cloned().unwrap_or(Value::Null);
+                if !is_null_ptr(&out) {
+                    let cap = arg_int(&values, 3).max(0) as usize;
+                    let take = if cap == 0 { bytes.len() } else { cap.min(bytes.len()) };
+                    self.write_buffer(&out, &bytes[..take]);
+                }
+                Some(DllOutcome::with(Value::Int(0), 4, Value::Int(bytes.len() as i64)))
+            }
+            "bcryptsetproperty" => {
+                let ok = self.bcrypt.set_property(
+                    arg_int(&values, 0),
+                    &arg_str(&values, 1),
+                    &arg_str(&values, 2),
+                );
+                // An unknown property leaves the script's own error path to run.
+                ok.then(|| DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptcreatehash" => {
+                let secret = if arg_int(&values, 4) != 0 {
+                    let len = arg_int(&values, 5).max(0) as usize;
+                    self.dll_bytes(&values[4], len)
+                } else {
+                    None
+                };
+                let handle = self
+                    .bcrypt
+                    .create_hash(arg_int(&values, 0), secret.as_deref())?;
+                Some(DllOutcome::with(Value::Int(0), 1, Value::Int(handle)))
+            }
+            "bcrypthashdata" => {
+                let len = arg_int(&values, 2).max(0) as usize;
+                let data = self.dll_bytes(&values[1], len)?;
+                if !self.bcrypt.hash_data(arg_int(&values, 0), &data) {
+                    return None;
+                }
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptfinishhash" => {
+                let digest = self.bcrypt.finish_hash(arg_int(&values, 0))?;
+                let cap = arg_int(&values, 2).max(0) as usize;
+                // STATUS_BUFFER_TOO_SMALL, the way CNG reports a short buffer.
+                if cap < digest.len() {
+                    return Some(DllOutcome::value(Value::Int(0xC000_0023u32 as i64)));
+                }
+                self.write_buffer(&values[1], &digest);
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptdestroyhash" => {
+                self.bcrypt.destroy_hash(arg_int(&values, 0));
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptgeneratesymmetrickey" => {
+                // The secret is either its own argument or, as these scripts
+                // pass it, the bytes of the key-object buffer.
+                let secret = if arg_int(&values, 2) != 0 {
+                    let len = arg_int(&values, 3).max(0) as usize;
+                    self.dll_bytes(&values[2], len)
+                } else {
+                    let len = arg_int(&values, 5).max(0) as usize;
+                    self.dll_bytes(&values[4], len)
+                }?;
+                let handle = self
+                    .bcrypt
+                    .generate_symmetric_key(arg_int(&values, 0), &secret)?;
+                Some(DllOutcome::with(Value::Int(0), 1, Value::Int(handle)))
+            }
+            "bcryptdestroykey" => {
+                self.bcrypt.destroy_key(arg_int(&values, 0));
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptencrypt" | "bcryptdecrypt" => {
+                let encrypt = lower == "bcryptencrypt";
+                let key = arg_int(&values, 0);
+                let len = arg_int(&values, 2).max(0) as usize;
+                let data = self.dll_bytes(&values[1], len)?;
+                let iv_len = arg_int(&values, 5).max(0) as usize;
+                let iv = if arg_int(&values, 4) != 0 {
+                    self.dll_bytes(&values[4], iv_len)
+                } else {
+                    None
+                };
+                let flags = arg_int(&values, 9);
+                let padding = flags & 1 != 0; // BCRYPT_BLOCK_PADDING
+                let out = values.get(6).cloned().unwrap_or(Value::Null);
+                // A null output buffer asks "how much would this take?".
+                if is_null_ptr(&out) {
+                    let size = self.bcrypt.crypt_output_len(key, data.len(), padding)?;
+                    return Some(DllOutcome::with(Value::Int(0), 8, Value::Int(size as i64)));
+                }
+                let result = self.bcrypt.crypt(key, &data, iv.as_deref(), encrypt, padding)?;
+                let cap = arg_int(&values, 7).max(0) as usize;
+                let take = if cap == 0 { result.len() } else { cap.min(result.len()) };
+                self.write_buffer(&out, &result[..take]);
+                Some(DllOutcome::with(Value::Int(0), 8, Value::Int(take as i64)))
+            }
+            "bcryptderivekeypbkdf2" => {
+                let pw_len = arg_int(&values, 2).max(0) as usize;
+                let salt_len = arg_int(&values, 4).max(0) as usize;
+                let out_len = arg_int(&values, 7).max(0) as usize;
+                let password = self.dll_bytes(&values[1], pw_len)?;
+                let salt = self.dll_bytes(&values[3], salt_len)?;
+                let iterations = arg_int(&values, 5).max(0) as u64;
+                let derived = self.bcrypt.derive_pbkdf2(
+                    arg_int(&values, 0),
+                    &password,
+                    &salt,
+                    iterations,
+                    out_len,
+                )?;
+                self.write_buffer(&values[6], &derived);
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptgenrandom" => {
+                let len = arg_int(&values, 2).max(0) as usize;
+                let bytes = self.bcrypt.random(len);
+                self.write_buffer(&values[1], &bytes);
+                Some(DllOutcome::value(Value::Int(0)))
+            }
+            "bcryptimportkeypair" => {
+                let blob_type = arg_str(&values, 2);
+                if !blob_type.eq_ignore_ascii_case("RSAPRIVATEBLOB")
+                    && !blob_type.eq_ignore_ascii_case("BCRYPT_RSAPRIVATE_BLOB")
+                {
+                    return None;
+                }
+                let len = arg_int(&values, 5).max(0) as usize;
+                let blob = self.dll_bytes(&values[4], len)?;
+                let handle = self
+                    .bcrypt
+                    .import_rsa_private_key(arg_int(&values, 0), &blob)?;
+                Some(DllOutcome::with(Value::Int(0), 3, Value::Int(handle)))
+            }
             "cryptacquirecontexta" | "cryptacquirecontextw" => {
                 Some(DllOutcome::with(
                     Value::Bool(true),
@@ -1936,6 +2088,27 @@ impl WindowsEmulation {
                 let bytes = self.struct_ref(handle).map(|s| s.bytes())?;
                 let take = if len == 0 { bytes.len() } else { len.min(bytes.len()) };
                 Some(bytes[..take].to_vec())
+            }
+        }
+    }
+
+    /// Bytes for a `DllCall` argument that names a buffer.
+    ///
+    /// Unlike [`WindowsEmulation::read_buffer`] this also resolves a raw
+    /// address, which is what the crypto calls pass: the scripts hand CNG a
+    /// `PTR` from `DllStructGetPtr`, not the struct handle.
+    fn dll_bytes(&self, value: &Value, len: usize) -> Option<Vec<u8>> {
+        match value {
+            Value::Binary(_) | Value::Str(_) | Value::Null => self.read_buffer(value, len),
+            _ => {
+                let raw = value.to_int();
+                if raw == 0 {
+                    return None;
+                }
+                if let Some(bytes) = self.read_buffer(value, len) {
+                    return Some(bytes);
+                }
+                self.memory_read(raw as u64, len)
             }
         }
     }
@@ -3109,6 +3282,11 @@ fn arg_str(args: &[Value], i: usize) -> String {
 }
 
 /// Argument as an integer.
+/// Whether a `DllCall` pointer argument was passed as null.
+fn is_null_ptr(value: &Value) -> bool {
+    matches!(value, Value::Null) || (matches!(value, Value::Int(_)) && value.to_int() == 0)
+}
+
 fn arg_int(args: &[Value], i: usize) -> i64 {
     args.get(i).map(|v| v.to_int()).unwrap_or(0)
 }

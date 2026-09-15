@@ -10,6 +10,14 @@ autoitv3-gui-model = { path = "../autoitv3-gui-model" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
 # Optional GUI renderer: `gui-egui` pulls it (and egui) in.
 autoitv3-gui-egui = { path = "../autoitv3-gui-egui", optional = true }
+sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+pbkdf2 = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+rsa = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
