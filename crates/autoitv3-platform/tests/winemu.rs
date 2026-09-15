@@ -1097,8 +1097,9 @@ GUICtrlSetState(-1, 32)
 Return GUICtrlRead($label) & ":" & GUICtrlGetState($label)
 "#;
     // A control nobody has touched reports `$GUI_SHOW | $GUI_ENABLE` (0x50),
-    // which is what the official interpreter prints too.
-    assert_eq!(text(win10(), body), "second:112");
+    // and hiding it clears `$GUI_SHOW` and sets `$GUI_HIDE`: the official
+    // interpreter answers 96 (0x60) here.
+    assert_eq!(text(win10(), body), "second:96");
 }
 
 #[test]
@@ -1189,7 +1190,9 @@ Local $found = ControlListView("T", "", $list, "FindItem", "sue")
 Local $missing = ControlListView("T", "", $list, "FindItem", "nobody")
 Return $count & ":" & $cell & ":" & $subs & ":" & $selected & ":" & $is & ":" & $found & ":" & $missing
 "#;
-    assert_eq!(text(win10(), body), "2:sue:1:1:1:1:-1");
+    // `GetSubItemCount` is the column count (two columns here), which is what
+    // the official interpreter answers.
+    assert_eq!(text(win10(), body), "2:sue:2:1:1:1:-1");
 }
 
 #[test]
