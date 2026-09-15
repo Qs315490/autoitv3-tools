@@ -31,6 +31,23 @@
 //! "just finished", which is the wrong thing for an analysis run to say. A
 //! dialog is usually the only visible reason for such a branch, so it is worth
 //! the noise; repeats of the same dialog are folded.
+//!
+//! # OnEvent mode
+//!
+//! `Opt("GUIOnEventMode", 1)` turns the events around: `GUISetOnEvent` and
+//! `GUICtrlSetOnEvent` handlers are called instead of the event reaching
+//! `GUIGetMsg`, which is what the help page means by "when in this mode
+//! `GUIGetMsg()` is NOT used at all". A window's close/minimise/… handler, a
+//! control's click handler and a tray *item*'s handler are all dispatched, and
+//! `@GUI_CtrlId`/`@GUI_WinHandle` describe the event while the function runs.
+//! An event with no handler is still returned, so a script that mixes the two
+//! styles keeps working.
+//!
+//! `TraySetOnEvent` (the tray *icon*), `GUIRegisterMsg` (a window message) and
+//! `GUICtrlRegisterListViewSort` (a column click) are recorded but not called:
+//! the first needs a tray-icon event table the model does not have, and the
+//! other two name functions a real window would have to ask for from inside its
+//! own procedure, which is the piece that is missing.
 
 mod messages;
 
@@ -246,6 +263,17 @@ pub struct GuiState {
     /// The `TabItem` new controls belong to, until `GUICtrlCreateTabItem("")`
     /// closes the tab structure or `GUISwitch` names another page.
     current_tabitem: Option<i64>,
+    /// The `GUISetOnEvent`/`GUICtrlSetOnEvent` functions an event asked for,
+    /// waiting for the interpreter to call them once the current GUI call has
+    /// returned.
+    ///
+    /// A host cannot re-enter the interpreter from inside a call, so the name
+    /// is left here and the runtime runs it at the next boundary — see
+    /// `WindowsEmulation::take_pending_callbacks`.
+    pending: Vec<(String, Vec<Value>)>,
+    /// `@GUI_CtrlId`/`@GUI_WinHandle`/`@GUI_CtrlHandle` for the callback that
+    /// was queued last: the event the helper function is running for.
+    event_macros: Option<(i64, i64)>,
 }
 
 impl Default for GuiState {
@@ -268,7 +296,27 @@ impl GuiState {
             desktop: (0, 0),
             dialogs_seen: std::collections::HashSet::new(),
             current_tabitem: None,
+            pending: Vec::new(),
+            event_macros: None,
         }
+    }
+
+    /// The `GUISetOnEvent`/`GUICtrlSetOnEvent` functions the events asked for.
+    ///
+    /// Drained by the platform once the call that raised the events returns:
+    /// `OnEvent` mode means the script never sees the event, only the call.
+    pub fn take_pending_callbacks(&mut self) -> Vec<(String, Vec<Value>)> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// `@GUI_CtrlId` — the control the last queued callback is for.
+    pub fn event_control_id(&self) -> i64 {
+        self.event_macros.map(|(control, _)| control).unwrap_or(0)
+    }
+
+    /// `@GUI_WinHandle` — the window the last queued callback is for.
+    pub fn event_window(&self) -> i64 {
+        self.event_macros.map(|(_, window)| window).unwrap_or(0)
     }
 
     /// A GUI state that starts with `backend` installed.
@@ -516,21 +564,95 @@ impl GuiState {
     }
 
     /// Drain backend events, then hand out the next scripted one.
-    fn poll_message(&mut self) -> i64 {
+    ///
+    /// With `Opt("GUIOnEventMode", 1)` an event that has a handler registered
+    /// goes to that function instead of to the script: the help page is explicit
+    /// that "when in this mode `GUIGetMsg()` is NOT used at all". The call is
+    /// queued rather than made here — a host cannot re-enter the interpreter
+    /// from inside a call — and the runtime runs it as soon as this one returns.
+    /// An event nobody registered for is still returned, which is what keeps a
+    /// script that mixes the two styles working.
+    fn poll_message(&mut self, ctx: &mut dyn HostContext) -> i64 {
         for event in self.backend.poll() {
             self.events.push_back(event);
         }
         self.polls += 1;
         if let Some(event) = self.events.pop_front() {
+            if self.dispatch_event(&event, ctx) {
+                return 0;
+            }
             return event.message();
         }
         if let Some(limit) = self.auto_close {
             if self.polls >= limit {
                 self.auto_close = None;
-                return GUI_EVENT_CLOSE;
+                if !self.dispatch_event(&GuiEvent::System(GUI_EVENT_CLOSE), ctx) {
+                    return GUI_EVENT_CLOSE;
+                }
             }
         }
         0
+    }
+
+    /// Whether the script asked to be called back instead of polling.
+    fn on_event_mode(ctx: &dyn HostContext) -> bool {
+        ctx.option("GUIOnEventMode")
+            .is_some_and(|value| value.to_int() != 0)
+    }
+
+    /// Hand `event` to the function registered for it, if there is one.
+    ///
+    /// Answers whether a call was queued; `false` means the event should go on
+    /// to `GUIGetMsg` as usual.
+    fn dispatch_event(&mut self, event: &GuiEvent, ctx: &mut dyn HostContext) -> bool {
+        if !Self::on_event_mode(ctx) {
+            return false;
+        }
+        let control = match event {
+            GuiEvent::Control(id) | GuiEvent::Menu(id) => Some(*id),
+            _ => None,
+        };
+        let window = match event {
+            GuiEvent::Close(handle) => Some(*handle),
+            GuiEvent::System(_) => self.model.current_window,
+            _ => control
+                .and_then(|id| self.model.control(id))
+                .map(|control| control.window),
+        };
+        let handler = match event {
+            GuiEvent::Close(handle) => self
+                .model
+                .window(*handle)
+                .and_then(|window| window.on_event(GUI_EVENT_CLOSE))
+                .map(str::to_string),
+            GuiEvent::System(id) => window
+                .and_then(|handle| self.model.window(handle))
+                .and_then(|window| window.on_event(*id))
+                .map(str::to_string),
+            GuiEvent::Control(id) | GuiEvent::Menu(id) => self
+                .model
+                .control(*id)
+                .and_then(|control| control.on_event.clone()),
+            GuiEvent::Tray(id) => self
+                .model
+                .tray
+                .iter()
+                .find(|item| item.id == *id)
+                .and_then(|item| item.on_event.clone()),
+            GuiEvent::Dialog(_) => None,
+        };
+        let Some(handler) = handler else {
+            return false;
+        };
+        // `@GUI_CtrlId` and friends are macros of the interpreter, which has no
+        // idea a GUI exists; the values are kept here for it to read back.
+        self.event_macros = Some((
+            control.unwrap_or(0),
+            window.unwrap_or(0),
+        ));
+        self.pending.push((handler, Vec::new()));
+        ctx.set_error(0, 0);
+        true
     }
 
     fn notify_window(&mut self, handle: i64) {
@@ -591,7 +713,7 @@ impl GuiState {
                     focus: None,
                     topmost: false,
                     resizing: 0,
-                    on_event: None,
+                    on_events: std::collections::HashMap::new(),
                     controls: Vec::new(),
                 };
                 self.model.add_window(window);
@@ -646,7 +768,7 @@ impl GuiState {
             }
             "guigetmsg" => {
                 ctx.set_error(0, 0);
-                Value::Int(self.poll_message())
+                Value::Int(self.poll_message(ctx))
             }
             "guigetcursorinfo" => {
                 let (x, y) = self.model.mouse;
@@ -717,9 +839,10 @@ impl GuiState {
             }
             "guisetonevent" => {
                 if let Some(handle) = self.window_arg(args, 2) {
+                    let event = arg_int(args, 0);
                     let handler = arg_str(args, 1);
                     if let Some(window) = self.model.window_mut(handle) {
-                        window.on_event = Some(handler);
+                        window.set_on_event(event, Some(handler));
                     }
                 }
                 Value::Int(1)
@@ -1623,7 +1746,7 @@ impl GuiState {
             }
             "traygetmsg" => {
                 ctx.set_error(0, 0);
-                Value::Int(self.poll_message())
+                Value::Int(self.poll_message(ctx))
             }
             "trayitemdelete" => {
                 let id = arg_int(args, 0);

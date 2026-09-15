@@ -2446,3 +2446,110 @@ Return 1
         "{seen:?}"
     );
 }
+
+/// Run a whole script — its own top-level statements and its own functions —
+/// against `emu`, and hand back the runtime so a test can read a global.
+///
+/// [`run`] wraps its body in `Func F()`, which is exactly what an `OnEvent`
+/// handler cannot live inside: those have to be top-level functions.
+fn run_whole(emu: WindowsEmulation, src: &str) -> Runtime {
+    let prog = autoitv3_ast::parse(src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    rt.set_platform(Box::new(CompositePlatform::new(
+        "winemu+common",
+        vec![Box::new(emu), Box::new(CommonPlatform::new())],
+    )));
+    rt.set_profile(ExecutionProfile::faithful());
+    rt.run_script().expect("no runtime error");
+    rt
+}
+
+/// A global's value as the script left it.
+fn global(rt: &Runtime, name: &str) -> String {
+    rt.get_global(name)
+        .map(|value| value.to_autoit_string())
+        .unwrap_or_default()
+}
+
+#[test]
+fn on_event_mode_calls_the_registered_function() {
+    // The switch is `Opt("GUIOnEventMode", 1)`, the handler is registered per
+    // control, and `GUIGetMsg` never sees the click: the function runs instead.
+    // An empty function name disables the handler, as the help page says.
+    let src = r#"
+Global $log = ""
+Func Clicked()
+    $log = "@GUI_CtrlId=" & @GUI_CtrlId
+EndFunc
+Opt("GUIOnEventMode", 1)
+GUICreate("t", 100, 100)
+Local $id = GUICtrlCreateButton("go", 0, 0)
+GUICtrlSetOnEvent($id, "Clicked")
+GUICtrlSetOnEvent($id, "")
+GUICtrlSetOnEvent($id, "Clicked")
+Local $msg = GUIGetMsg()
+$log = $msg & ":" & $log
+"#;
+    let emu = win10().with_gui_events(vec![GuiEvent::Control(1)]);
+    let rt = run_whole(emu, src);
+    assert_eq!(global(&rt, "log"), "0:@GUI_CtrlId=1");
+}
+
+#[test]
+fn on_event_mode_dispatches_a_window_event() {
+    let src = r#"
+Global $closed = 0
+Global $result = ""
+Func Closing()
+    $closed = 1
+EndFunc
+Opt("GUIOnEventMode", 1)
+Local $h = GUICreate("t", 100, 100)
+GUISetOnEvent(-3, "Closing", $h)
+Local $msg = GUIGetMsg()
+$result = $msg & ":" & $closed
+"#;
+    let emu = win10().with_gui_events(vec![GuiEvent::Close(0x10000)]);
+    let rt = run_whole(emu, src);
+    assert_eq!(global(&rt, "result"), "0:1");
+}
+
+#[test]
+fn a_window_event_without_a_handler_is_still_returned() {
+    // `GUISetOnEvent` registered a minimise handler, not a close one: the close
+    // reaches `GUIGetMsg` as usual.
+    let src = r#"
+Global $result = ""
+Func Minimising()
+    $result = "called"
+EndFunc
+Opt("GUIOnEventMode", 1)
+Local $h = GUICreate("t", 100, 100)
+GUISetOnEvent(-4, "Minimising", $h)
+Local $msg = GUIGetMsg()
+$result = $msg & ":" & $result
+"#;
+    let emu = win10().with_gui_events(vec![GuiEvent::Close(0x10000)]);
+    let rt = run_whole(emu, src);
+    assert_eq!(global(&rt, "result"), "-3:");
+}
+
+#[test]
+fn without_on_event_mode_the_event_is_still_returned() {
+    // The handler is registered but the option is not: the click is an ordinary
+    // `GUIGetMsg` answer, and the function is not called.
+    let src = r#"
+Global $log = ""
+Func Clicked()
+    $log = "called"
+EndFunc
+GUICreate("t", 100, 100)
+Local $id = GUICtrlCreateButton("go", 0, 0)
+GUICtrlSetOnEvent($id, "Clicked")
+Local $msg = GUIGetMsg()
+$log = $msg & ":" & $log
+"#;
+    let emu = win10().with_gui_events(vec![GuiEvent::Control(1)]);
+    let rt = run_whole(emu, src);
+    assert_eq!(global(&rt, "log"), "1:");
+}
