@@ -632,6 +632,30 @@ fn file_get_and_set_pos() {
 }
 
 #[test]
+fn file_set_pos_honours_the_origin() {
+    let dir = scratch("origin");
+    let path = dir.join("o.txt");
+    std::fs::write(&path, "abcdef").unwrap();
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 0)
+    Local $end = FileSetPos($h, 0, 2)
+    Local $at_end = FileGetPos($h)
+    Local $back = FileSetPos($h, -2, 1)
+    Local $at_back = FileGetPos($h)
+    Local $start = FileSetPos($h, 2, 0)
+    Local $at_start = FileGetPos($h)
+    Local $before = FileSetPos($h, -1, 0)
+    Local $after = FileGetPos($h)
+    Return $end & ":" & $at_end & ":" & $back & ":" & $at_back & ":" & $start & ":" & $at_start & ":" & $before & ":" & $after"#,
+        p = path.display()
+    );
+    // $FILE_END (0 from the end), $FILE_CURRENT (backwards 2), $FILE_BEGIN, and
+    // a position before the start, which `fseek` refuses and the help page calls
+    // a failure — without moving the cursor.
+    assert_eq!(text(&body), "1:6:1:4:1:2:0:2");
+}
+
+#[test]
 fn file_set_end_truncates_at_the_cursor() {
     let dir = scratch("setend");
     let path = dir.join("b.txt");

@@ -805,20 +805,50 @@ impl CommonPlatform {
                 Value::Int(pos as i64)
             }
             "filesetpos" => {
+                // `FileSetPos(filehandle, offset, origin)` — three parameters
+                // in 3.3 ("Sets the current file position"), and the offset may
+                // be negative. Origin: `$FILE_BEGIN` (0, what a two-argument
+                // call means), `$FILE_CURRENT` (1) or `$FILE_END` (2).
                 let handle = arg_int(args, 0);
-                let pos = arg_int(args, 1).max(0) as usize;
+                let offset = arg_int(args, 1);
+                let origin = arg_int(args, 2);
                 if self.entry(handle).is_none() {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 }
-                self.ensure_text(handle);
-                let len = self
-                    .entry(handle)
-                    .and_then(|e| e.text.as_ref())
-                    .map(|t| t.chars().count())
-                    .unwrap_or(0);
+                if self.entry(handle).is_some_and(|e| e.binary) {
+                    self.ensure_bytes(handle);
+                } else {
+                    self.ensure_text(handle);
+                }
+                let (current, len) = match self.entry(handle) {
+                    Some(e) if e.binary => {
+                        let n = e.bytes.as_deref().map(<[u8]>::len).unwrap_or(0);
+                        (e.cursor.min(n), n)
+                    }
+                    Some(e) => {
+                        let n = e.text.as_deref().map(|t| t.chars().count()).unwrap_or(0);
+                        (e.cursor.min(n), n)
+                    }
+                    None => (0, 0),
+                };
+                let base = match origin {
+                    1 => current as i64,
+                    2 => len as i64,
+                    _ => 0,
+                };
+                let target = base + offset;
+                if target < 0 {
+                    // `fseek` refuses a position before the start of the file,
+                    // and the help page answers False.
+                    ctx.set_error(1, 0);
+                    return Some(Value::Int(0));
+                }
+                // A position past the end is not clamped: `fseek` allows it and
+                // `FileGetPos` reports it back. The readers clamp when they take
+                // a slice, so this is safe to store.
                 if let Some(e) = self.entry_mut(handle) {
-                    e.cursor = pos.min(len);
+                    e.cursor = target as usize;
                 }
                 ctx.set_error(0, 0);
                 Value::Int(1)
