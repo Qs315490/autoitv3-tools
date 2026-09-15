@@ -143,6 +143,29 @@ fn file_write_read_round_trip() {
 }
 
 #[test]
+fn file_write_takes_a_filename_and_answers_one() {
+    let dir = scratch("write-name");
+    let named = dir.join("named.txt");
+    let body = format!(
+        r#"Local $w1 = FileWrite("{p}", "one")
+    Local $w2 = FileWriteLine("{p}", "two")
+    Local $w3 = FileWriteLine("{p}", "three" & @CRLF)
+    Local $w4 = FileWriteLine("{p}", "")
+    Return $w1 & ":" & $w2 & ":" & $w3 & ":" & $w4 & ":" & FileGetSize("{p}")"#,
+        p = named.display()
+    );
+    // A filename opens (creating it), writes and closes within the call, in
+    // append mode; success is 1 rather than a byte count; and `FileWriteLine`
+    // adds its CRLF unless the line already ends in one, the empty line
+    // included. "one" + "two\r\n" + "three\r\n" + "\r\n" is 17 bytes.
+    assert_eq!(text(&body), "1:1:1:1:17");
+    assert_eq!(
+        std::fs::read_to_string(&named).unwrap(),
+        "onetwo\r\nthree\r\n\r\n"
+    );
+}
+
+#[test]
 fn file_read_line_is_one_based_and_reports_eof() {
     let dir = scratch("lines");
     let path = dir.join("b.txt");

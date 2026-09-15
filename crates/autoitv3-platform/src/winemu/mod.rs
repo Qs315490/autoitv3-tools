@@ -2089,7 +2089,15 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         "systemdrive" => Value::Str(p.system_drive()),
         "homeshare" => Value::Str(p.home_share()),
         "homepath" | "userprofiledir" => Value::Str(p.user_profile.clone()),
-        "tempdir" => Value::Str(p.temp()),
+        // The one directory macro that names the *host's* directory rather than
+        // a spot in the emulated Windows layout. `C:\Users\<user>\AppData\
+        // Local\Temp` is a view of a machine that does not exist here, so a
+        // script writing its scratch files there would fail; `@TempDir` is
+        // where a script *writes*, so it answers the directory the host really
+        // has — wearing the emulated drive, so it still round-trips through the
+        // path map. (On Windows the native layer answers this macro first, from
+        // `GetTempPathW`.)
+        "tempdir" => host_path_macro(emu, &std::env::temp_dir()),
         "desktopdir" => Value::Str(p.desktop()),
         "desktopcommondir" => Value::Str(format!(r"{}\Public\Desktop", drive_root(&p.home_drive))),
         "mydocumentsdir" => Value::Str(p.documents()),
