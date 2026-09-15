@@ -52,6 +52,19 @@ use autoitv3_runtime::value::Value;
 
 use autoitv3_gui_model::{GUI_CHECKED, GUI_DISABLE, GUI_HIDE, GUI_PAGE_HIDDEN};
 
+/// Messages a script can pass that change nothing the model keeps, so only a
+/// real control can act on them. Everything else is answered (and, where it
+/// mutates, applied) by the model, because a `lParam` that points at script
+/// memory addresses the emulation's memory rather than the control's.
+const NATIVE_ONLY_MESSAGES: &[u32] = &[
+    0x000B, // WM_SETREDRAW
+    0x00B1, // EM_SETSEL
+    0x1013, // LVM_ENSUREVISIBLE
+    0x1014, // LVM_SCROLL
+    0x014F, // CB_SHOWDROPDOWN
+    0x1115, // TVM_ENSUREVISIBLE
+];
+
 /// Every GUI function this layer answers.
 pub const FUNCTIONS: &[&str] = &[
     // GUI window / controls
@@ -905,30 +918,46 @@ impl GuiState {
                 };
                 let msg = arg_int(args, 1) as u32;
                 let wparam = arg_int(args, 2);
-                match self.model.control(id) {
-                    Some(control) => {
-                        let (result, known) = messages::send(control, msg, wparam);
-                        ctx.set_error(if known { 0 } else { 1 }, 0);
-                        Value::Int(result)
-                    }
-                    None => {
-                        ctx.set_error(1, 0);
-                        Value::Int(0)
+                let lparam = arg_int(args, 3);
+                let sent = self
+                    .model
+                    .control_mut(id)
+                    .map(|control| messages::send(control, msg, wparam, lparam));
+                if let Some((result, true)) = sent {
+                    // The model answered, and may well have changed: what it
+                    // says is what every backend renders.
+                    self.notify_control(id);
+                    ctx.set_error(0, 0);
+                    return Some(Value::Int(result));
+                }
+                // Nothing the model knows. A real control can still act on it,
+                // as long as the message carries no pointer: a pointer a script
+                // holds addresses the emulation's memory, not the control's.
+                if NATIVE_ONLY_MESSAGES.contains(&msg) {
+                    if let Some(result) = self.backend.send_message(id, msg, wparam as usize, lparam as isize)
+                    {
+                        ctx.set_error(0, 0);
+                        return Some(Value::Int(result));
                     }
                 }
+                ctx.set_error(1, 0);
+                Value::Int(0)
             }
             "guictrlrecvmsg" => {
                 let Some(id) = self.resolve_control(args, 0) else {
                     return Some(Self::no_such_control(ctx));
                 };
                 let msg = arg_int(args, 1) as u32;
-                let result = match self.model.control(id) {
-                    Some(control) => messages::send(control, msg, 0).0,
-                    None => {
-                        ctx.set_error(1, 0);
-                        return Some(Value::array(vec![Value::Int(0)]));
-                    }
+                let lparam = arg_int(args, 2);
+                let sent = self
+                    .model
+                    .control_mut(id)
+                    .map(|control| messages::send(control, msg, 0, lparam));
+                let Some((result, _known)) = sent else {
+                    ctx.set_error(1, 0);
+                    return Some(Value::array(vec![Value::Int(0)]));
                 };
+                self.notify_control(id);
                 ctx.set_error(0, 0);
                 Value::array(vec![Value::Int(result)])
             }
@@ -971,12 +1000,17 @@ impl GuiState {
                 let window = self.window_arg(args, 0).and_then(|h| self.model.window(h));
                 match window {
                     Some(w) => {
+                        // The model's rectangle is the *client* area, which is
+                        // what `GUICreate` means by its width and height; the
+                        // frame around it is the backend's to know, and a
+                        // headless one has none.
+                        let (frame_width, frame_height) = self.backend.frame_size(w);
                         ctx.set_error(0, 0);
                         Value::array(vec![
                             Value::Int(i64::from(w.x)),
                             Value::Int(i64::from(w.y)),
-                            Value::Int(i64::from(w.width)),
-                            Value::Int(i64::from(w.height)),
+                            Value::Int(i64::from(w.width + frame_width)),
+                            Value::Int(i64::from(w.height + frame_height)),
                         ])
                     }
                     None => {
@@ -1165,9 +1199,11 @@ impl GuiState {
                 Value::Str(text)
             }
             "controlsettext" => {
-                let id = self.control_arg(args).map(|c| c.id);
-                if let Some(id) = id {
-                    let text = arg_str(args, 2);
+                let id = self
+                    .control_at(args, 3)
+                    .map(|(id, offset)| (id, offset))
+                    .map(|(id, offset)| (id, arg_str(args, offset)));
+                if let Some((id, text)) = id {
                     if let Some(control) = self.model.control_mut(id) {
                         control.text = text;
                     }
@@ -1187,54 +1223,62 @@ impl GuiState {
                 }
                 Value::Int(1)
             }
-            "controlcommand" => {
-                let command = arg_str(args, 2).to_ascii_lowercase();
-                let control = self.control_arg(args);
-                match command.as_str() {
-                    "isvisible" => Value::Str(
-                        if control.map(|c| c.is_visible()).unwrap_or(false) {
-                            "1"
-                        } else {
-                            "0"
-                        }
-                        .to_string(),
-                    ),
-                    "isenabled" => Value::Str(
-                        if control.map(|c| c.is_enabled()).unwrap_or(false) {
-                            "1"
-                        } else {
-                            "0"
-                        }
-                        .to_string(),
-                    ),
-                    _ => Value::str(""),
-                }
-            }
+            "controlcommand" => self.control_command(args, ctx),
+            "controllistview" => self.control_listview(args, ctx),
+            "controltreeview" => self.control_treeview(args, ctx),
             "controldisable" | "controlenable" | "controlfocus" | "controlhide"
-            | "controlshow" | "controlmove" | "controlsend" | "controllistview"
-            | "controltreeview" => {
-                let id = self.control_arg(args).map(|c| c.id);
-                if let Some(id) = id {
-                    if let Some(control) = self.model.control_mut(id) {
-                        match key.as_str() {
-                            "controldisable" => control.state |= GUI_DISABLE,
-                            "controlenable" => control.state &= !GUI_DISABLE,
-                            "controlhide" => control.state |= GUI_HIDE,
-                            "controlshow" => control.state &= !GUI_HIDE,
-                            "controlmove" => {
-                                control.x = arg_int(args, 2) as i32;
-                                control.y = arg_int(args, 3) as i32;
-                                control.width = arg_int(args, 4) as i32;
-                                control.height = arg_int(args, 5) as i32;
+            | "controlshow" | "controlmove" | "controlsend" => {
+                // `ControlMove` and `ControlSend` take their own arguments after
+                // the control, so the control's place decides where those start.
+                let short = match key.as_str() {
+                    "controlmove" => 6,
+                    "controlsend" => 3,
+                    _ => 2,
+                };
+                let Some((id, offset)) = self.control_at(args, short) else {
+                    ctx.set_error(1, 0);
+                    return Some(Self::no_such_control(ctx));
+                };
+                if let Some(control) = self.model.control_mut(id) {
+                    match key.as_str() {
+                        "controldisable" => control.state |= GUI_DISABLE,
+                        "controlenable" => control.state &= !GUI_DISABLE,
+                        "controlhide" => control.state |= GUI_HIDE,
+                        "controlshow" => control.state &= !GUI_HIDE,
+                        "controlfocus" => {
+                            let window = control.window;
+                            if let Some(window) = self.model.window_mut(window) {
+                                window.focus = Some(id);
                             }
-                            _ => {}
                         }
+                        "controlmove" => {
+                            control.x = arg_int(args, offset) as i32;
+                            control.y = arg_int(args, offset + 1) as i32;
+                            control.width = arg_int(args, offset + 2) as i32;
+                            control.height = arg_int(args, offset + 3) as i32;
+                        }
+                        "controlsend" => {
+                            let text = arg_str(args, offset);
+                            if !text.is_empty() {
+                                self.events.push_back(GuiEvent::Control(id));
+                            }
+                        }
+                        _ => {}
                     }
-                    self.notify_control(id);
                 }
+                self.notify_control(id);
+                ctx.set_error(0, 0);
                 Value::Int(1)
             }
-            "controlgetfocus" => Value::str(""),
+            "controlgetfocus" => {
+                let focus = self
+                    .window_arg(args, 0)
+                    .and_then(|window| self.model.window(window))
+                    .and_then(|window| window.focus)
+                    .unwrap_or(0);
+                ctx.set_error(if focus == 0 { 1 } else { 0 }, 0);
+                Value::Int(focus)
+            }
 
             // ---------------- dialogs ----------------
             "msgbox" => {
@@ -2095,11 +2139,455 @@ impl GuiState {
         Value::Int(0)
     }
 
-    fn control_arg(&self, args: &[Value]) -> Option<&Control> {
+    /// Resolve the control a `Control*` function names, and where its own
+    /// arguments start.
+    ///
+    /// AutoIt's shape is `("title", "text", controlID, ...)`, where `text` is
+    /// the *window's* text and `controlID` is a control identifier or the
+    /// control's own text. The shorter `("title", controlID, ...)` form is
+    /// accepted as well — it is what a call without a window text looks like —
+    /// so the control is tried third first and second afterwards. `short` is how
+    /// many arguments the call has without the window text, which is what tells
+    /// the two shapes apart when optional arguments follow.
+    fn control_at(&self, args: &[Value], short: usize) -> Option<(i64, usize)> {
         let window = self.window_arg(args, 0)?;
-        let text = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();
-        let id = self.model.find_control(window, &text)?;
+        let candidates: &[(usize, usize)] = if args.len() > short {
+            &[(2, 3), (1, 2)]
+        } else {
+            &[(1, 2)]
+        };
+        for (index, offset) in candidates {
+            let text = args
+                .get(*index)
+                .map(|value| value.to_autoit_string())
+                .unwrap_or_default();
+            if let Some(id) = self.model.find_control(window, &text) {
+                return Some((id, *offset));
+            }
+        }
+        None
+    }
+
+    fn control_arg(&self, args: &[Value]) -> Option<&Control> {
+        let (id, _) = self.control_at(args, 2)?;
         self.model.control(id)
+    }
+
+    /// `ControlCommand`: the commands the help page lists.
+    fn control_command(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
+        let Some((id, offset)) = self.control_at(args, 3) else {
+            ctx.set_error(1, 0);
+            return Value::str("");
+        };
+        let command = args
+            .get(offset)
+            .map(|value| value.to_autoit_string().to_ascii_lowercase())
+            .unwrap_or_default();
+        // The option is the argument after the command; the short shape puts its
+        // own arguments one place earlier.
+        let option_arg = args
+            .get(offset + 1)
+            .map(|value| value.to_autoit_string())
+            .unwrap_or_default();
+        let Some(control) = self.model.control(id) else {
+            ctx.set_error(1, 0);
+            return Value::str("");
+        };
+        let visible = control.is_visible();
+        let enabled = control.is_enabled();
+        let selected = control.selection.unwrap_or(0);
+        let current = control.data.get(selected).cloned().unwrap_or_default();
+        let count = control.data.len();
+        ctx.set_error(0, 0);
+        match command.as_str() {
+            "isvisible" => Value::Int(i64::from(visible)),
+            "isenabled" => Value::Int(i64::from(enabled)),
+            "getcount" => Value::Int(count as i64),
+            "getcurrentselection" => Value::Str(current),
+            "getlinecount" => Value::Int(
+                self.model
+                    .control(id)
+                    .map(|control| control.text.matches('\n').count() as i64 + 1)
+                    .unwrap_or(0),
+            ),
+            "getline" => {
+                let line: usize = option_arg.trim().parse().unwrap_or(0);
+                let text = self.model.control(id).map(|c| c.text.clone()).unwrap_or_default();
+                Value::Str(text.split('\n').nth(line).unwrap_or("").trim_end().to_string())
+            }
+            "addstring" => {
+                if let Some(control) = self.model.control_mut(id) {
+                    control.data.push(option_arg);
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "delstring" => {
+                let occurrence: usize = option_arg.trim().parse().unwrap_or(0);
+                if let Some(control) = self.model.control_mut(id) {
+                    if occurrence < control.data.len() {
+                        control.data.remove(occurrence);
+                        control.selection = None;
+                    }
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "findstring" => {
+                let index = self
+                    .model
+                    .control(id)
+                    .and_then(|control| control.data.iter().position(|item| *item == option_arg))
+                    .map(|index| index as i64)
+                    .unwrap_or(-1);
+                Value::Int(index)
+            }
+            "setcurrentselection" | "selectstring" => {
+                let index = if command == "selectstring" {
+                    self.model
+                        .control(id)
+                        .and_then(|control| control.data.iter().position(|item| *item == option_arg))
+                } else {
+                    option_arg.trim().parse::<usize>().ok()
+                };
+                if let Some(control) = self.model.control_mut(id) {
+                    control.selection = index;
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "ischecked" => Value::Int(i64::from(
+                self.model.control(id).map(|c| c.is_checked()).unwrap_or(false),
+            )),
+            "check" | "uncheck" => {
+                let check = command == "check";
+                if let Some(control) = self.model.control_mut(id) {
+                    if check {
+                        control.state |= 0x01;
+                    } else {
+                        control.state &= !0x01;
+                    }
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "editpaste" => {
+                if let Some(control) = self.model.control_mut(id) {
+                    control.text.push_str(&option_arg);
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "currenttab" => Value::Int(
+                self.model
+                    .control(id)
+                    .and_then(|control| control.selection)
+                    .map(|index| index as i64)
+                    .unwrap_or(-1),
+            ),
+            "tabright" | "tableft" => {
+                let step = if command == "tabright" { 1 } else { usize::MAX };
+                if let Some(control) = self.model.control_mut(id) {
+                    let pages = control.data.len();
+                    if pages > 0 {
+                        let current = control.selection.unwrap_or(0);
+                        control.selection = Some((current + step) % pages);
+                    }
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "getcurrentline" | "getcurrentcol" | "getselected" => Value::str(""),
+            "showdropdown" | "hidedropdown" | "sendcommandid" => Value::Int(1),
+            _ => {
+                ctx.set_error(1, 0);
+                Value::str("")
+            }
+        }
+    }
+
+    /// `ControlListView`: the commands the help page lists.
+    ///
+    /// The model keeps one selection per list, so the multi-select commands
+    /// answer for that one item.
+    fn control_listview(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
+        let Some((id, offset)) = self.control_at(args, 3) else {
+            ctx.set_error(1, 0);
+            return Value::str("");
+        };
+        let command = args
+            .get(offset)
+            .map(|value| value.to_autoit_string().to_ascii_lowercase())
+            .unwrap_or_default();
+        let option1 = arg_int(args, offset + 1);
+        let option2 = arg_int(args, offset + 2);
+        let Some(control) = self.model.control(id) else {
+            ctx.set_error(1, 0);
+            return Value::str("");
+        };
+        let rows = control.data.clone();
+        let selection = control.selection;
+        ctx.set_error(0, 0);
+        match command.as_str() {
+            "getitemcount" => Value::Int(rows.len() as i64),
+            "getsubitemcount" => Value::Int(
+                rows.iter()
+                    .map(|row| row.split('|').count().saturating_sub(1))
+                    .max()
+                    .unwrap_or(0) as i64,
+            ),
+            "getselectedcount" => Value::Int(i64::from(selection.is_some())),
+            "getselected" => {
+                let all = args.len() > offset + 1 && arg_int(args, offset + 1) == 1;
+                match selection {
+                    Some(index) if all => Value::Str(index.to_string()),
+                    Some(index) => Value::Int(index as i64),
+                    None => Value::str(""),
+                }
+            }
+            "isselected" => Value::Int(i64::from(selection == Some(option1.max(0) as usize))),
+            "gettext" => {
+                let item = option1.max(0) as usize;
+                let subitem = option2.max(0) as usize;
+                Value::Str(
+                    rows.get(item)
+                        .and_then(|row| row.split('|').nth(subitem))
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            }
+            "finditem" => {
+                let needle = args
+                    .get(offset + 1)
+                    .map(|value| value.to_autoit_string())
+                    .unwrap_or_default();
+                let subitem = option2.max(0) as usize;
+                let index = rows
+                    .iter()
+                    .position(|row| {
+                        row.split('|')
+                            .nth(subitem)
+                            .map(|cell| cell == needle)
+                            .unwrap_or(false)
+                    })
+                    .map(|index| index as i64)
+                    .unwrap_or(-1);
+                Value::Int(index)
+            }
+            "select" | "deselect" => {
+                let from = option1.max(0) as usize;
+                let to = if option2 >= option1 { option2 as usize } else { from };
+                let wanted = command == "select";
+                if let Some(control) = self.model.control_mut(id) {
+                    control.selection = wanted.then_some(from).filter(|index| {
+                        // A range selection in a single-selection list is the
+                        // first item of the range.
+                        *index < rows.len() && to >= from
+                    });
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "selectall" => {
+                if let Some(control) = self.model.control_mut(id) {
+                    control.selection = (!rows.is_empty()).then_some(0);
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "selectclear" => {
+                if let Some(control) = self.model.control_mut(id) {
+                    control.selection = None;
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "selectinvert" => {
+                if let Some(control) = self.model.control_mut(id) {
+                    control.selection = match selection {
+                        Some(_) => None,
+                        None if !rows.is_empty() => Some(0),
+                        None => None,
+                    };
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            "viewchange" => {
+                let view = args
+                    .get(offset + 1)
+                    .map(|value| value.to_autoit_string().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let style = match view.as_str() {
+                    "list" => 0x0000_0001,
+                    "details" | "report" => 0x0000_0001,
+                    "smallicons" => 0x0000_0002,
+                    "largeicons" | "icon" => 0x0000_0000,
+                    _ => 0x0000_0001,
+                };
+                if let Some(control) = self.model.control_mut(id) {
+                    control.style = style as i64;
+                }
+                self.notify_control(id);
+                Value::Int(1)
+            }
+            _ => {
+                ctx.set_error(1, 0);
+                Value::str("")
+            }
+        }
+    }
+
+    /// `ControlTreeView`: the commands the help page lists.
+    ///
+    /// An item is named level by level, `|` between them, by its text or by an
+    /// index with `#` in front (`"#0|#1"`); an empty reference is the tree's
+    /// root.
+    fn control_treeview(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
+        let Some((id, offset)) = self.control_at(args, 3) else {
+            ctx.set_error(1, 0);
+            return Value::str("");
+        };
+        let command = args
+            .get(offset)
+            .map(|value| value.to_autoit_string().to_ascii_lowercase())
+            .unwrap_or_default();
+        let reference = args
+            .get(offset + 1)
+            .map(|value| value.to_autoit_string())
+            .unwrap_or_default();
+        let tree = id;
+        let row = if command == "getselected" {
+            self.model.control(tree).and_then(|control| control.selection)
+        } else if command == "getitemcount" && reference.trim().is_empty() {
+            None
+        } else {
+            self.tree_row(tree, &reference)
+        };
+        if row.is_none() && !(command == "getitemcount" && reference.trim().is_empty()) {
+            if !self
+                .model
+                .control(tree)
+                .map(|control| !control.data.is_empty())
+                .unwrap_or(false)
+            {
+                ctx.set_error(1, 0);
+                return Value::str("");
+            }
+        }
+        ctx.set_error(0, 0);
+        let item_id = row.and_then(|row| self.model.part_at(tree, row));
+        match command.as_str() {
+            "exists" => Value::Int(i64::from(row.is_some())),
+            "getitemcount" => Value::Int(self.tree_children(tree, row).len() as i64),
+            "gettext" => Value::Str(
+                row.and_then(|row| {
+                    self.model
+                        .control(tree)
+                        .and_then(|control| control.data.get(row).cloned())
+                })
+                .unwrap_or_default(),
+            ),
+            "getselected" => {
+                let by_index = args.len() > offset + 1 && arg_int(args, offset + 1) == 1;
+                match row {
+                    Some(row) if by_index => Value::Int(row as i64),
+                    Some(row) => Value::Str(
+                        self.model
+                            .control(tree)
+                            .and_then(|control| control.data.get(row).cloned())
+                            .unwrap_or_default(),
+                    ),
+                    None => Value::str(""),
+                }
+            }
+            "select" => {
+                if let Some(row) = row {
+                    if let Some(control) = self.model.control_mut(tree) {
+                        control.selection = Some(row);
+                    }
+                    self.notify_control(tree);
+                }
+                Value::Int(1)
+            }
+            "expand" | "collapse" | "check" | "uncheck" => {
+                let bit = match command.as_str() {
+                    "expand" => 0x400,
+                    "collapse" => 0x400,
+                    "check" => 0x01,
+                    _ => 0x01,
+                };
+                let set = matches!(command.as_str(), "expand" | "check");
+                if let Some(item) = item_id {
+                    if let Some(control) = self.model.control_mut(item) {
+                        if set {
+                            control.state |= bit;
+                        } else {
+                            control.state &= !bit;
+                        }
+                    }
+                    self.notify_control(item);
+                }
+                Value::Int(1)
+            }
+            "ischecked" => Value::Int(match item_id {
+                Some(item) => i64::from(
+                    self.model
+                        .control(item)
+                        .map(|control| control.is_checked())
+                        .unwrap_or(false),
+                ),
+                None => -1,
+            }),
+            _ => {
+                ctx.set_error(1, 0);
+                Value::str("")
+            }
+        }
+    }
+
+    /// The rows that hang under `parent` (a row, or the tree's root).
+    fn tree_children(&self, tree: i64, parent: Option<usize>) -> Vec<usize> {
+        let parent_id = match parent {
+            Some(row) => match self.model.part_at(tree, row) {
+                Some(id) => id,
+                None => return Vec::new(),
+            },
+            None => tree,
+        };
+        let mut rows: Vec<usize> = self
+            .model
+            .children_of(parent_id)
+            .into_iter()
+            .filter_map(|id| self.model.control(id).and_then(|control| control.row))
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    /// Resolve a `ControlTreeView` item reference to a row.
+    fn tree_row(&self, tree: i64, reference: &str) -> Option<usize> {
+        let reference = reference.trim();
+        if reference.is_empty() {
+            return None;
+        }
+        let mut parent: Option<usize> = None;
+        for level in reference.split('|') {
+            let level = level.trim();
+            let children = self.tree_children(tree, parent);
+            let row = match level.strip_prefix('#') {
+                Some(index) => *children.get(index.trim().parse::<usize>().ok()?)?,
+                None => *children.iter().find(|row| {
+                    self.model
+                        .control(tree)
+                        .and_then(|control| control.data.get(**row))
+                        .map(|text| text == level)
+                        .unwrap_or(false)
+                })?,
+            };
+            parent = Some(row);
+        }
+        parent
     }
 }
 

@@ -1152,6 +1152,71 @@ Return $index & ":" & $advanced & ":" & $one & ":" & $hidden_second & ":" & $ind
 }
 
 #[test]
+fn control_listview_commands_read_and_change_the_rows() {
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $list = GUICtrlCreateListView("name|age", 0, 0, 200, 100)
+Local $bob = GUICtrlCreateListViewItem("bob|30", $list)
+Local $sue = GUICtrlCreateListViewItem("sue|25", $list)
+Local $count = ControlListView("T", "", $list, "GetItemCount")
+Local $cell = ControlListView("T", "", $list, "GetText", 1, 0)
+Local $subs = ControlListView("T", "", $list, "GetSubItemCount")
+ControlListView("T", "", $list, "Select", 1)
+Local $selected = ControlListView("T", "", $list, "GetSelected")
+Local $is = ControlListView("T", "", $list, "IsSelected", 1)
+Local $found = ControlListView("T", "", $list, "FindItem", "sue")
+Local $missing = ControlListView("T", "", $list, "FindItem", "nobody")
+Return $count & ":" & $cell & ":" & $subs & ":" & $selected & ":" & $is & ":" & $found & ":" & $missing
+"#;
+    assert_eq!(text(win10(), body), "2:sue:1:1:1:1:-1");
+}
+
+#[test]
+fn control_treeview_commands_take_item_references() {
+    let body = r##"
+GUICreate("T", 300, 200)
+Local $tree = GUICtrlCreateTreeView(0, 0, 200, 150)
+Local $root = GUICtrlCreateTreeViewItem("root", $tree)
+Local $child = GUICtrlCreateTreeViewItem("child", $root)
+Local $other = GUICtrlCreateTreeViewItem("other", $tree)
+Local $roots = ControlTreeView("T", "", $tree, "GetItemCount", "")
+Local $kids = ControlTreeView("T", "", $tree, "GetItemCount", "root")
+Local $text = ControlTreeView("T", "", $tree, "GetText", "root|child")
+Local $by_index = ControlTreeView("T", "", $tree, "GetText", "#1")
+ControlTreeView("T", "", $tree, "Select", "root|child")
+Local $selected = ControlTreeView("T", "", $tree, "GetSelected")
+Local $exists = ControlTreeView("T", "", $tree, "Exists", "root|child")
+Local $missing = ControlTreeView("T", "", $tree, "Exists", "nope")
+Return $roots & ":" & $kids & ":" & $text & ":" & $by_index & ":" & $selected & ":" & $exists & ":" & $missing
+"##;
+    assert_eq!(text(win10(), body), "2:1:child:other:child:1:0");
+}
+
+#[test]
+fn control_command_and_sendmsg_change_the_model() {
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $combo = GUICtrlCreateCombo("", 0, 0)
+GUICtrlSetData($combo, "a|b")
+Local $count = ControlCommand("T", "", $combo, "GetCount")
+ControlCommand("T", "", $combo, "SelectString", "b")
+Local $current = ControlCommand("T", "", $combo, "GetCurrentSelection")
+Local $check = GUICtrlCreateCheckbox("c", 0, 30)
+ControlCommand("T", "", $check, "Check")
+Local $checked = ControlCommand("T", "", $check, "IsChecked")
+Local $list = GUICtrlCreateListView("a", 0, 60, 100, 50)
+GUICtrlCreateListViewItem("row1", $list)
+GUICtrlCreateListViewItem("row2", $list)
+Local $before = GUICtrlSendMsg($list, 0x1004, 0, 0)
+GUICtrlSendMsg($list, 0x1009, 0, 0)
+Local $after = GUICtrlSendMsg($list, 0x1004, 0, 0)
+Local $unknown = GUICtrlSendMsg($list, 0x1234, 0, 0)
+Return $count & ":" & $current & ":" & $checked & ":" & $before & ":" & $after & ":" & $unknown & ":" & @error
+"#;
+    assert_eq!(text(win10(), body), "2:b:1:2:0:0:1");
+}
+
+#[test]
 fn a_list_or_combo_appends_until_it_is_told_to_start_over() {
     let body = r#"
 GUICreate("T", 200, 150)
