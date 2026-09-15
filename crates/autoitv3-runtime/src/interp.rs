@@ -4,7 +4,12 @@
 //! call into it. It is deliberately small but semantically careful about the
 //! parts of AutoIt the obfuscator leans on:
 //!
-//! * `ByRef` parameters (copy-in/copy-out plus shared array storage)
+//! * `ByRef` parameters — copy-in/copy-out, not a true alias. A bare `$name`
+//!   argument goes back to the variable the call site named; an element
+//!   (`$a[$i]`, `$m["k"]`) goes back through the container the call site
+//!   captured, whose subscripts are evaluated exactly once. A literal or an
+//!   expression has no target and is left alone (AutoIt rejects literals)
+//! * `Static` locals, which outlive the call and are shared by every activation
 //! * `ReDim` resizing an array in place
 //! * `For ... To ... Step` and `For ... In`
 //! * compound assignment (`+=`, `&=`, ...)
@@ -618,18 +623,6 @@ impl Runtime {
     /// Call a function value (as produced by evaluating a bare identifier),
     /// falling back to a builtin when no user function matches.
     pub fn call_value(&mut self, callee: &Value, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
-        self.call_value_targets(callee, args, None, span)
-    }
-
-    /// [`Runtime::call_value`] with the argument expressions of the call site,
-    /// which name the caller variables `ByRef` parameters copy back into.
-    fn call_value_targets(
-        &mut self,
-        callee: &Value,
-        args: Vec<Value>,
-        call_args: Option<&[Expr]>,
-        span: Span,
-    ) -> Result<Value, RuntimeError> {
         let Value::FuncRef(name) = callee else {
             return Err(RuntimeError::Type {
                 expected: "function reference",
@@ -639,13 +632,13 @@ impl Runtime {
         };
         // The reference is shared and carries its own lookup key, so neither
         // the name nor the key has to be copied here.
-        self.call_named_key(name.key(), name.display(), args, call_args, span)
+        self.call_named_key(name.key(), name.display(), args, span)
     }
 
     /// Call `name` — user function first, then builtin, then host.
     pub fn call_named(&mut self, name: &str, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
         let key = var_key(name);
-        self.call_named_key(&key, name, args, None, span)
+        self.call_named_key(&key, name, args, span)
     }
 
     /// [`Runtime::call_named`] for callers that already hold the lookup key
@@ -654,24 +647,86 @@ impl Runtime {
     /// `display` is the name as the script wrote it, used for error messages and
     /// the debugger hook; `key` drives the lookups, so no call has to lower-case
     /// a name or allocate one.
-    ///
-    /// `call_args` are the argument *expressions* of the call site, when there
-    /// is one: the callee's `ByRef` parameters need them to find the caller's
-    /// variable to copy their final value back into (the value handed over was
-    /// a copy). `None` — a callback, the public `call_*` API — has no call site
-    /// to read, and falls back to the parameter name.
     fn call_named_key(
         &mut self,
         key: &str,
         display: &str,
         args: Vec<Value>,
-        call_args: Option<&[Expr]>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        if self.funcs.contains_key(key) {
-            return self.call_user_key(key, display, args, call_args, Some(span));
+        let Some(def) = self.funcs.get(key).cloned() else {
+            return self.call_external(key, display, args, span);
+        };
+        // Values only: these entry points have no call site to read, so a
+        // `ByRef` parameter falls back to writing back by parameter name.
+        self.call_user_def(def, args, None, Some(span))
+    }
+
+    /// Evaluate a call's arguments and invoke the user function they name,
+    /// gathering the `ByRef` write-back targets on the way.
+    ///
+    /// This is the call-site path (`Foo($a[0])`): it has the argument
+    /// *expressions*, and the callee's definition, so it can both decide which
+    /// arguments need a target and evaluate a subscript exactly once for the
+    /// value *and* for the path back.
+    fn call_user_args(
+        &mut self,
+        def: Rc<FuncDef>,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        let gather = def.params.iter().any(|p| p.by_ref);
+        let mut values = Vec::with_capacity(args.len());
+        // One slot per argument; only built when the callee has `ByRef`
+        // parameters at all, so an ordinary call pays nothing for this.
+        let mut targets = if gather { Some(Vec::with_capacity(args.len())) } else { None };
+        for (i, a) in args.iter().enumerate() {
+            let by_ref = gather && def.params.get(i).is_some_and(|p| p.by_ref);
+            if by_ref {
+                let (value, target) = self.eval_call_arg(a, span)?;
+                values.push(value);
+                targets.as_mut().expect("gather implies Some").push(Some(target));
+            } else {
+                values.push(self.eval_expr(a)?);
+                if let Some(t) = targets.as_mut() {
+                    t.push(None);
+                }
+            }
         }
-        self.call_external(key, display, args, span)
+        self.call_user_def(def, values, targets, Some(span))
+    }
+
+    /// Evaluate one argument of a `ByRef` parameter, together with where its
+    /// final value goes back to.
+    fn eval_call_arg<'a>(
+        &mut self,
+        a: &'a Expr,
+        span: Span,
+    ) -> Result<(Value, ByRefTarget<'a>), RuntimeError> {
+        let ExprKind::Var(v) = &a.kind else {
+            // A literal or an expression has no variable to write back to.
+            return Ok((self.eval_expr(a)?, ByRefTarget::Nothing));
+        };
+        if v.indices.is_empty() {
+            return Ok((self.eval_expr(a)?, ByRefTarget::Caller(v.name.key())));
+        }
+        // `$a[...]`: evaluate the subscripts *once* and use them both for the
+        // value and for the write-back path — re-evaluating them later could
+        // run their side effects twice, or see a changed index.
+        let base = self.read_var_key(v.name.key(), span)?;
+        let mut keys = Vec::with_capacity(v.indices.len());
+        for idx in &v.indices {
+            keys.push(self.eval_expr(idx)?);
+        }
+        let value = index_by_keys(&base, &keys, span)?;
+        let target = match &base {
+            // The container is shared (`Rc`), so writing through it is visible
+            // to the caller without any copy-out.
+            Value::Array(_) | Value::Map(_) => ByRefTarget::Elem { base, keys },
+            // `$s[0]` on a string, or on a null: no element to write into.
+            _ => ByRefTarget::Nothing,
+        };
+        Ok((value, target))
     }
 
     /// Call a builtin or host function.
@@ -745,7 +800,7 @@ impl Runtime {
         span: Option<Span>,
     ) -> Result<Value, RuntimeError> {
         let key = var_key(name);
-        self.call_user_key(&key, name, args, None, span)
+        self.call_user_key(&key, name, args, span)
     }
 
     /// [`Runtime::call_user`] for callers that already hold the lookup key.
@@ -754,7 +809,6 @@ impl Runtime {
         key: &str,
         display: &str,
         args: Vec<Value>,
-        call_args: Option<&[Expr]>,
         span: Option<Span>,
     ) -> Result<Value, RuntimeError> {
         let Some(def) = self.funcs.get(key).cloned() else {
@@ -763,13 +817,30 @@ impl Runtime {
                 span,
             });
         };
+        self.call_user_def(def, args, None, span)
+    }
 
+    /// Invoke a user function whose definition is already in hand.
+    ///
+    /// `targets` is the call site's `ByRef` write-back plan, one slot per
+    /// argument: `Some(..)` means the call site was read (a slot that is `None`
+    /// had nothing to write back to); `None` means there was no call site —
+    /// a callback or the public `call_*` API — where the parameter name is the
+    /// only thing left to copy out to.
+    fn call_user_def(
+        &mut self,
+        def: Rc<FuncDef>,
+        args: Vec<Value>,
+        targets: Option<Vec<Option<ByRefTarget<'_>>>>,
+        span: Option<Span>,
+    ) -> Result<Value, RuntimeError> {
         if self.frames.len() >= self.max_depth {
             return Err(RuntimeError::CallDepthExceeded { limit: self.max_depth });
         }
 
         // Set up the frame with parameters bound. `ByRef` parameters remember
         // where their final value goes (see [`ByRefTarget`]).
+        let mut targets = targets;
         let mut vars: HashMap<String, Value> = HashMap::new();
         let mut by_ref: Vec<(String, ByRefTarget<'_>, Value)> = Vec::new();
         for (i, p) in def.params.iter().enumerate() {
@@ -780,16 +851,18 @@ impl Runtime {
             let k = var_key(&p.name.name);
             vars.insert(k.clone(), arg.clone());
             if p.by_ref {
-                let target = byref_target(i, call_args);
+                let target = match targets.as_mut() {
+                    Some(t) => t
+                        .get_mut(i)
+                        .and_then(Option::take)
+                        .unwrap_or(ByRefTarget::Nothing),
+                    None => ByRefTarget::ParamName,
+                };
                 by_ref.push((k, target, arg));
             }
         }
 
-        let display = self
-            .func_names
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| display.to_string());
+        let display = def.name.name.clone();
         if let Some(dbg) = self.debugger.as_mut() {
             dbg.on_call_enter(&display, &args);
         }
@@ -836,14 +909,17 @@ impl Runtime {
         let frame = self.frames.pop().expect("frame pushed above");
         // Copy-out `ByRef` parameters back into the caller's variable.
         for (k, target, _) in &by_ref {
-            let name = match target {
-                ByRefTarget::Caller(name) => *name,
-                ByRefTarget::ParamName => k.as_str(),
-                ByRefTarget::Nothing => continue,
-            };
-            if let Some(v) = frame.vars.get(k) {
-                let v = v.clone();
-                self.write_back_by_ref(name, v);
+            let Some(value) = frame.vars.get(k).cloned() else { continue };
+            match target {
+                ByRefTarget::Caller(name) => self.write_back_by_ref(name, value),
+                ByRefTarget::ParamName => self.write_back_by_ref(k, value),
+                ByRefTarget::Elem { base, keys } => {
+                    // Straight into the shared container, so no copy-out step
+                    // is needed. Best effort: if the array shrank or changed
+                    // shape while the call ran, there is nowhere to put it.
+                    let _ = store_index_path(base, keys, value, span.unwrap_or_default());
+                }
+                ByRefTarget::Nothing => {}
             }
         }
 
@@ -1029,28 +1105,35 @@ impl Runtime {
                 self.index_value(base, &v.indices, e.span)
             }
             ExprKind::Call(c) => {
+                // A user function is called from its definition, so the
+                // arguments can be evaluated with the `ByRef` write-back plan
+                // in hand (see `call_user_args`).
+                if let Some(def) = self.funcs.get(c.callee.key()).cloned() {
+                    return self.call_user_args(def, &c.args, e.span);
+                }
                 let mut args = Vec::with_capacity(c.args.len());
                 for a in &c.args {
                     args.push(self.eval_expr(a)?);
                 }
-                self.call_named_key(
-                    c.callee.key(),
-                    &c.callee.name,
-                    args,
-                    Some(&c.args),
-                    e.span,
-                )
+                self.call_external(c.callee.key(), &c.callee.name, args, e.span)
             }
             ExprKind::IndexCall(v, args) => {
                 let callee = {
                     let base = self.read_var_key(v.name.key(), e.span)?;
                     self.index_value(base, &v.indices, e.span)?
                 };
+                // `$table[i](...)`: the callee resolved to a function value, so
+                // a user function is reachable by key exactly as above.
+                if let Value::FuncRef(name) = &callee {
+                    if let Some(def) = self.funcs.get(name.key()).cloned() {
+                        return self.call_user_args(def, args, e.span);
+                    }
+                }
                 let mut argv = Vec::with_capacity(args.len());
                 for a in args {
                     argv.push(self.eval_expr(a)?);
                 }
-                self.call_value_targets(&callee, argv, Some(args), e.span)
+                self.call_value(&callee, argv, e.span)
             }
             ExprKind::Subscript(base, indices) => {
                 let base = self.eval_expr(base)?;
@@ -1343,37 +1426,7 @@ impl Runtime {
         let mut cur = base;
         for idx in indices {
             let key = self.eval_expr(idx)?;
-            cur = match &cur {
-                Value::Array(a) => {
-                    let i = key.to_int();
-                    let arr = a.borrow();
-                    if i < 0 || i as usize >= arr.len() {
-                        return Err(RuntimeError::IndexOutOfBounds {
-                            index: i,
-                            len: arr.len(),
-                            span: Some(span),
-                        });
-                    }
-                    arr[i as usize].clone()
-                }
-                Value::Map(m) => {
-                    let k = MapKey::from_value(&key);
-                    m.borrow().get(&k).cloned().unwrap_or(Value::Null)
-                }
-                Value::Str(s) => {
-                    // AutoIt strings are not indexable; return "".
-                    let _ = s;
-                    Value::Str(String::new())
-                }
-                Value::Null => Value::Null,
-                other => {
-                    return Err(RuntimeError::Type {
-                        expected: "Array or Map",
-                        got: other.type_name().to_string(),
-                        span: Some(span),
-                    })
-                }
-            };
+            cur = index_step(&cur, &key, span)?;
         }
         Ok(cur)
     }
@@ -1393,58 +1446,11 @@ impl Runtime {
         let mut container = base;
         for idx in &indices[..indices.len() - 1] {
             let key = self.eval_expr(idx)?;
-            container = match &container {
-                Value::Array(a) => {
-                    let i = key.to_int();
-                    let arr = a.borrow();
-                    if i < 0 || i as usize >= arr.len() {
-                        return Err(RuntimeError::IndexOutOfBounds {
-                            index: i,
-                            len: arr.len(),
-                            span: Some(span),
-                        });
-                    }
-                    arr[i as usize].clone()
-                }
-                Value::Map(m) => {
-                    let k = MapKey::from_value(&key);
-                    m.borrow().get(&k).cloned().unwrap_or(Value::Null)
-                }
-                other => {
-                    return Err(RuntimeError::Type {
-                        expected: "Array or Map",
-                        got: other.type_name().to_string(),
-                        span: Some(span),
-                    })
-                }
-            };
+            container = index_step(&container, &key, span)?;
         }
         let last = &indices[indices.len() - 1];
         let key = self.eval_expr(last)?;
-        match &container {
-            Value::Array(a) => {
-                let i = key.to_int();
-                let mut arr = a.borrow_mut();
-                if i < 0 || i as usize >= arr.len() {
-                    return Err(RuntimeError::IndexOutOfBounds {
-                        index: i,
-                        len: arr.len(),
-                        span: Some(span),
-                    });
-                }
-                arr[i as usize] = value;
-                Ok(())
-            }
-            Value::Map(m) => {
-                m.borrow_mut().insert(MapKey::from_value(&key), value);
-                Ok(())
-            }
-            other => Err(RuntimeError::Type {
-                expected: "Array or Map",
-                got: other.type_name().to_string(),
-                span: Some(span),
-            }),
-        }
+        store_index(&container, &key, value, span)
     }
 
     /// Resolve an AutoIt macro.
@@ -2264,34 +2270,123 @@ fn var_key(name: &str) -> String {
     name.trim_start_matches('$').to_ascii_lowercase()
 }
 
+/// One subscript step: `base[key]`.
+///
+/// Shared by reads (`index_value`), writes (`assign_index`) and the `ByRef`
+/// write-back path, so a `$a[$i]` read, a `$a[$i] =` write and a `Foo($a[$i])`
+/// copy-out all resolve the same way. A string is not indexable and yields `""`,
+/// which is what AutoIt does.
+fn index_step(base: &Value, key: &Value, span: Span) -> Result<Value, RuntimeError> {
+    match base {
+        Value::Array(a) => {
+            let i = key.to_int();
+            let arr = a.borrow();
+            if i < 0 || i as usize >= arr.len() {
+                return Err(RuntimeError::IndexOutOfBounds {
+                    index: i,
+                    len: arr.len(),
+                    span: Some(span),
+                });
+            }
+            Ok(arr[i as usize].clone())
+        }
+        Value::Map(m) => {
+            let k = MapKey::from_value(key);
+            Ok(m.borrow().get(&k).cloned().unwrap_or(Value::Null))
+        }
+        Value::Str(_) => Ok(Value::Str(String::new())),
+        Value::Null => Ok(Value::Null),
+        other => Err(RuntimeError::Type {
+            expected: "Array or Map",
+            got: other.type_name().to_string(),
+            span: Some(span),
+        }),
+    }
+}
+
+/// [`index_step`] over already-evaluated subscripts.
+///
+/// The `ByRef` call path evaluates subscripts once and then needs the value
+/// *and* the path back, so it cannot go through `index_value`, which evaluates
+/// as it walks.
+fn index_by_keys(base: &Value, keys: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    let mut cur = base.clone();
+    for key in keys {
+        cur = index_step(&cur, key, span)?;
+    }
+    Ok(cur)
+}
+
+/// Store `value` under `key` of `container`, which must be an array or a map.
+fn store_index(
+    container: &Value,
+    key: &Value,
+    value: Value,
+    span: Span,
+) -> Result<(), RuntimeError> {
+    match container {
+        Value::Array(a) => {
+            let i = key.to_int();
+            let mut arr = a.borrow_mut();
+            if i < 0 || i as usize >= arr.len() {
+                return Err(RuntimeError::IndexOutOfBounds {
+                    index: i,
+                    len: arr.len(),
+                    span: Some(span),
+                });
+            }
+            arr[i as usize] = value;
+            Ok(())
+        }
+        Value::Map(m) => {
+            m.borrow_mut().insert(MapKey::from_value(key), value);
+            Ok(())
+        }
+        other => Err(RuntimeError::Type {
+            expected: "Array or Map",
+            got: other.type_name().to_string(),
+            span: Some(span),
+        }),
+    }
+}
+
+/// [`store_index`] along an already-evaluated path: the write-back of a `ByRef`
+/// argument like `$a[$i][$j]`, whose subscripts the call site resolved.
+fn store_index_path(
+    base: &Value,
+    keys: &[Value],
+    value: Value,
+    span: Span,
+) -> Result<(), RuntimeError> {
+    let Some((last, leading)) = keys.split_last() else { return Ok(()) };
+    let mut container = base.clone();
+    for key in leading {
+        container = index_step(&container, key, span)?;
+    }
+    store_index(&container, last, value, span)
+}
+
 /// Where a `ByRef` parameter copies its final value back to.
 ///
 /// The callee is handed a *copy* of the argument, so the write has to be
-/// replayed at the call site. Borrowing the call-site expression is all this
-/// needs, which keeps the per-call cost at zero.
+/// replayed at the call site. Except for [`ByRefTarget::Elem`], which holds a
+/// shared container, this is a borrow of the call-site expression: no name is
+/// copied, and an ordinary call pays nothing for the mechanism.
 enum ByRefTarget<'a> {
     /// The caller's variable, as the call site named it.
     Caller(&'a str),
+    /// An element of a container the caller shares: `$a[$i]`, `$m["k"]`.
+    ///
+    /// The subscripts were evaluated once at the call site and are replayed
+    /// here, because the array is `Rc`-shared — writing through it is visible to
+    /// the caller with no copy-out at all.
+    Elem { base: Value, keys: Vec<Value> },
     /// No call site to read (a callback, the public `call_*` API): the
     /// parameter name stands in, the best a positional caller can offer.
     ParamName,
-    /// The argument was not a variable — a literal, an expression, an array
-    /// element — so there is nothing to copy back to. AutoIt rejects those.
+    /// The argument was not a variable — a literal, an expression, `$s[0]` on a
+    /// string — so there is nothing to copy back to. AutoIt rejects literals.
     Nothing,
-}
-
-/// [`ByRefTarget`] for the `ByRef` parameter `i`, given the argument
-/// expressions of the call site.
-///
-/// The name comes from [`Ident::key`](autoitv3_ast::ast::Ident::key), which
-/// caches the lower-cased form on the identifier, so not even a `ByRef` call
-/// allocates here.
-fn byref_target<'a>(i: usize, call_args: Option<&'a [Expr]>) -> ByRefTarget<'a> {
-    let Some(args) = call_args else { return ByRefTarget::ParamName };
-    match args.get(i).map(|a| &a.kind) {
-        Some(ExprKind::Var(v)) if v.indices.is_empty() => ByRefTarget::Caller(v.name.key()),
-        _ => ByRefTarget::Nothing,
-    }
 }
 
 /// A variable name is a non-empty identifier: ASCII letters, digits and `_`,

@@ -22,8 +22,8 @@
         error.rs      RuntimeError 与控制流信号 Flow
         lib.rs        公共 API
       tests/
-        runtime.rs    解释器/host/debug 接口 + 可选样本集成测试（63 项）
-        regexp.rs     StringRegExp / StringRegExpReplace（29 项）
+        runtime.rs    解释器/host/debug 接口 + 可选样本集成测试（95 项）
+        regexp.rs     StringRegExp / StringRegExpReplace（31 项）
         unit/vocab.rs 内置函数 / 宏词表的单元测试（3 项，`#[path]` 回挂）
 ```
 
@@ -35,9 +35,10 @@
 
 该 crate 提供三样东西：
 
-1. **小型解释器**（`interp.rs`）——供反混淆调用。覆盖 `ByRef`（含数组共享存储）、
-   `ReDim` 原地扩容、`For To Step` / `For In`、复合赋值、`@error`/`@extended`、
-   `Select`/`Switch`、递归与步数护栏。
+1. **小型解释器**（`interp.rs`）——供反混淆调用。覆盖 `ByRef`（拷入/拷出，含数组元素，
+   见下文）、数组共享存储、`ReDim` 原地扩容、`Static`（函数级、跨调用共享）、
+   `For To Step` / `For In`、复合赋值、`@error`/`@extended`、`Select`/`Switch`、
+   递归与步数护栏。
 2. **完整运行时的接口**（`host.rs`）——`Host` / `HostContext` / `NativeHost`：
    把 Win32、COM、GUI、DllCall 等原生能力注册进来，解释器核心不依赖任何平台。
 3. **调试接口**（`debug.rs`）——`Debugger`（每条语句回调，可返回
@@ -93,6 +94,26 @@ au3 run sample.au3 F --faithful   # 真的 Sleep、真的随机、真的写文�
 时钟宏 `@YEAR`/`@MON`/`@MDAY`/`@HOUR`/`@MIN`/`@SEC`/`@MSEC`/`@WDAY`/`@YDAY`
 （解释器直接提供，不再落回平台的 `Null`）按 AutoIt 的零填充字符串格式返回；
 确定性配置下是固定时刻，否则取宿主时钟。
+
+### `ByRef` 的拷入/拷出
+
+`ByRef` 在这里是**拷入/拷出**，不是真正的变量别名：被调函数拿到的是一份拷贝，调用返回
+时把最终值写回调用点。四类实参都覆盖到了：
+
+| 实参 | 怎么写回 |
+| ---- | -------- |
+| `$x` | 按调用点写下的变量名回写（形参叫 `$v` 也没关系）。落点按普通写入的优先级：`Static` → 调用者帧局部 → 全局 → 都没有就地新建 |
+| `$a` | 数组是 `Rc` 共享存储：`ReDim` 与元素改写本来就互相可见；整只重新赋值再按名字拷出 |
+| `$a[$i]` / `$m["k"]` | 调用点把「容器 + 已求值的下标」一起交给回写。容器是共享的 `Rc`，写进去调用者立刻可见；**下标只求值一次**，不会因为回写再跑一遍 |
+| 字面量 / 表达式 | 无处可回写，静默跳过（AutoIt 直接拒绝字面量实参） |
+
+"数组元素也能传 `ByRef`" 不是我们自己加的：AutoIt 官方
+[`Func`](https://www.autoitscript.com/autoit3/docs/keywords/Func.htm) 帮助原文就是
+"not only a named variable can be passed for a ByRef parameter"。
+
+模型上的取舍：真别名要把每个变量都变成引用单元，成本摊在每一次读写上；拷入/拷出把成本
+放在调用点，而且只在形参确实是 `ByRef` 时才收集回写目标——普通调用为此付 0。跨层转发也
+对：每层各自拷出，名字一层层落回最外层。
 
 其余仍属**有意为之的近似**（与执行配置无关，已在模块文档逐条标注）：
 
