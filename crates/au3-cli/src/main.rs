@@ -30,6 +30,21 @@ use clap::Parser;
 fn main() {
     let cli = cli::Cli::parse();
 
+    // The elevated copy of an `#RequireAdmin` run is created by the shell
+    // service, which hands it a console of its own — the output would open in a
+    // second window. Attaching to the launcher's console first puts everything
+    // back where the command was typed, including this note.
+    if let Some(pid) = cli.attach_console {
+        if autoitv3_platform::elevate::attach_console(pid) {
+            eprintln!("note: #RequireAdmin: elevated, sharing the console of process {pid}");
+        } else {
+            eprintln!(
+                "note: #RequireAdmin: elevated, but process {pid} has no console to share — \
+                 this output has a window of its own"
+            );
+        }
+    }
+
     if let Err(err) = commands::dispatch(&cli) {
         eprintln!("error: {}", err.message);
         std::process::exit(err.code);

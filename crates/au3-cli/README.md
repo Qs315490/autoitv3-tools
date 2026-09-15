@@ -149,7 +149,12 @@ AU3_INCLUDE_PATH='D:\Programs\autoitv3\Include' au3 run script.au3
 
 * 原进程**等到**提权副本结束再退出，并把它的退出码写进提示行——AutoIt 会立刻退出，
   在批处理里等一等更有用；
-* 提权副本拿到同一条命令行外加 `--no-elevate`，所以它不会再次提权。
+* 提权副本拿到同一条命令行外加 `--no-elevate`，所以它不会再次提权；
+* 提权副本被 shell 服务放进**它自己的控制台**（也就是新开一个窗口）。原进程会把
+  自己的 pid 通过 `--attach-console` 传过去，副本先 `FreeConsole` 再
+  `AttachConsole(parent)`，把 `CONOUT$`/`CONIN$` 重新装回标准句柄——`ConsoleWrite`
+  与提示就留在你敲命令的那个窗口里。原进程没有控制台（输出被重定向、从 GUI 启动）
+  时附不上去，副本就自己开一个窗口并说明这一点。
 
 ```bash
 au3 run setup.au3                  # 脚本里有 #RequireAdmin 且当前不是管理员 → 弹 UAC
