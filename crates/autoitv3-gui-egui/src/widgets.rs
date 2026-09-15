@@ -50,6 +50,19 @@ pub struct Interaction {
 /// Hidden controls are skipped; disabled ones are drawn greyed out and inert;
 /// a non-empty `tip` becomes a hover tooltip.
 pub fn draw_control(ui: &mut egui::Ui, control: &Control) -> Vec<Interaction> {
+    draw_control_with(ui, control, &[])
+}
+
+/// As [`draw_control`], but told about the window's other controls.
+///
+/// A tree draws its own rows, and the row hierarchy lives in the item controls,
+/// so the renderer needs to see them; a control drawn on its own (as the unit
+/// tests do) falls back to reading the row text.
+pub fn draw_control_with(
+    ui: &mut egui::Ui,
+    control: &Control,
+    siblings: &[Control],
+) -> Vec<Interaction> {
     let mut actions: Vec<Action> = Vec::new();
     if !control.is_visible() {
         return Vec::new();
@@ -58,7 +71,7 @@ pub fn draw_control(ui: &mut egui::Ui, control: &Control) -> Vec<Interaction> {
         .push_id(control.id, |ui| {
             ui.add_enabled_ui(control.is_enabled(), |ui| {
                 apply_style(ui, control);
-                let mut body = |ui: &mut egui::Ui| draw_kind(ui, control, &mut actions);
+                let mut body = |ui: &mut egui::Ui| draw_kind(ui, control, &mut actions, siblings);
                 match control.bk_color {
                     // A background color paints behind whatever the control draws.
                     Some(color) => {
@@ -772,42 +785,17 @@ pub fn draw_window_body(ui: &mut egui::Ui, controls: &[Control]) -> Vec<Interact
     let mut actions: Vec<Interaction> = Vec::new();
     let menus: Vec<&Control> = controls
         .iter()
-        .filter(|control| control.kind == ControlKind::Menu && control.is_visible())
+        .filter(|control| {
+            control.kind == ControlKind::Menu && control.is_visible() && control.parent.is_none()
+        })
         .collect();
     let has_menus = !menus.is_empty();
     if has_menus {
-        let items: Vec<&Control> = controls
-            .iter()
-            .filter(|control| {
-                matches!(
-                    control.kind,
-                    ControlKind::MenuItem | ControlKind::ContextMenu
-                ) && control.is_visible()
-            })
-            .collect();
         ui.horizontal(|ui| {
             for menu in menus {
                 let title = text_or(&menu.text, "Menu");
                 ui.menu_button(title, |ui| {
-                    if items.is_empty() {
-                        ui.label("(no items)");
-                    }
-                    for item in &items {
-                        // (The model keeps no menu→item link, so each menu
-                        // lists the window's items.)
-                        if ui
-                            .add_enabled(
-                                item.is_enabled(),
-                                egui::Button::new(text_or(&item.text, "Item")),
-                            )
-                            .clicked()
-                        {
-                            actions.push(Interaction {
-                                id: item.id,
-                                action: Action::Menu,
-                            });
-                        }
-                    }
+                    draw_menu_entries(ui, menu.id, controls, &mut actions, 0);
                 });
             }
         });
@@ -824,9 +812,66 @@ pub fn draw_window_body(ui: &mut egui::Ui, controls: &[Control]) -> Vec<Interact
         if control.kind == ControlKind::Menu || drawn_by_bar {
             continue;
         }
-        actions.append(&mut draw_control(ui, control));
+        // A list row or tree node belongs to the control that owns it, which
+        // draws every row itself: drawing the item here as well would show the
+        // same row twice.
+        if matches!(control.kind, ControlKind::ListViewItem | ControlKind::TreeViewItem)
+            && control.parent.is_some()
+        {
+            continue;
+        }
+        actions.append(&mut draw_control_with(ui, control, controls));
     }
     actions
+}
+
+/// Draw one menu level: the entries that hang under `menu`.
+///
+/// AutoIt keeps the menu structure in the model — a `MenuItem` (or a submenu
+/// `Menu`) names the menu it belongs to — so this walks it the same way the
+/// script built it.
+fn draw_menu_entries(
+    ui: &mut egui::Ui,
+    menu: i64,
+    controls: &[Control],
+    actions: &mut Vec<Interaction>,
+    depth: usize,
+) {
+    let entries: Vec<&Control> = controls
+        .iter()
+        .filter(|control| {
+            control.parent == Some(menu)
+                && control.is_visible()
+                && matches!(
+                    control.kind,
+                    ControlKind::Menu | ControlKind::MenuItem | ControlKind::ContextMenu
+                )
+        })
+        .collect();
+    if entries.is_empty() {
+        ui.label("(no items)");
+        return;
+    }
+    for entry in entries {
+        if entry.kind == ControlKind::Menu && depth < 4 {
+            // A submenu opens the menu it names.
+            let title = text_or(&entry.text, "Menu");
+            ui.menu_button(title, |ui| {
+                draw_menu_entries(ui, entry.id, controls, actions, depth + 1);
+            });
+        } else if ui
+            .add_enabled(
+                entry.is_enabled(),
+                egui::Button::new(text_or(&entry.text, "Item")),
+            )
+            .clicked()
+        {
+            actions.push(Interaction {
+                id: entry.id,
+                action: Action::Menu,
+            });
+        }
+    }
 }
 
 /// Apply the control's font and text color to every text style inside `ui`.
@@ -863,7 +908,12 @@ fn apply_style(ui: &mut egui::Ui, control: &Control) {
     }
 }
 
-fn draw_kind(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+fn draw_kind(
+    ui: &mut egui::Ui,
+    control: &Control,
+    actions: &mut Vec<Action>,
+    siblings: &[Control],
+) {
     match control.kind {
         ControlKind::Label => {
             ui.label(&control.text);
@@ -912,7 +962,7 @@ fn draw_kind(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
         ControlKind::Combo => draw_combo(ui, control, actions),
         ControlKind::ListView => draw_listview(ui, control, actions),
         ControlKind::ListViewItem => draw_listview_item(ui, control, actions),
-        ControlKind::TreeView => draw_treeview(ui, control, actions),
+        ControlKind::TreeView => draw_treeview(ui, control, actions, siblings),
         ControlKind::TreeViewItem => {
             let selected = control.selection == Some(0);
             if ui
@@ -1068,7 +1118,12 @@ fn draw_listview_item(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Ac
     }
 }
 
-fn draw_treeview(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+fn draw_treeview(
+    ui: &mut egui::Ui,
+    control: &Control,
+    actions: &mut Vec<Action>,
+    siblings: &[Control],
+) {
     if control.data.is_empty() {
         ui.label(text_or(&control.text, "[empty tree]"));
         return;
@@ -1079,11 +1134,61 @@ fn draw_treeview(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>
         .show(ui, |ui| {
             for (index, item) in control.data.iter().enumerate() {
                 let selected = control.selection == Some(index);
-                if ui.selectable_label(selected, indent(item)).clicked() {
+                // What an item hangs under is a fact about the item control, so
+                // a tree drawn on its own falls back to the row text.
+                let label = if siblings.is_empty() {
+                    indent(item)
+                } else {
+                    format!("{}{}", "    ".repeat(tree_depth(control.id, index, siblings)), item)
+                };
+                if ui.selectable_label(selected, label).clicked() {
                     actions.push(Action::Selected(index));
                 }
             }
         });
+}
+
+/// The item control that stands for row `row` of the tree `tree`.
+fn tree_item(tree: i64, row: usize, siblings: &[Control]) -> Option<&Control> {
+    siblings.iter().find(|control| {
+        control.kind == ControlKind::TreeViewItem
+            && control.row == Some(row)
+            && tree_owns(tree, control, siblings)
+    })
+}
+
+/// Whether `item` is part of the tree `tree`.
+fn tree_owns(tree: i64, item: &Control, siblings: &[Control]) -> bool {
+    let mut parent = item.parent;
+    while let Some(id) = parent {
+        if id == tree {
+            return true;
+        }
+        match siblings.iter().find(|control| control.id == id) {
+            Some(control) => parent = control.parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// How deeply a tree row hangs, counted through the item controls.
+fn tree_depth(tree: i64, row: usize, siblings: &[Control]) -> usize {
+    let Some(item) = tree_item(tree, row, siblings) else {
+        return 0;
+    };
+    let mut depth = 0;
+    let mut parent = item.parent;
+    while let Some(id) = parent {
+        match siblings.iter().find(|control| control.id == id) {
+            Some(control) if control.kind == ControlKind::TreeViewItem => {
+                depth += 1;
+                parent = control.parent;
+            }
+            _ => break,
+        }
+    }
+    depth
 }
 
 /// Render a stand-in box for controls whose real content (a bitmap, an icon, a

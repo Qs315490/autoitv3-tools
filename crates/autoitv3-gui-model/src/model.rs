@@ -112,9 +112,22 @@ pub struct Control {
     pub height: i32,
     pub style: i64,
     pub exstyle: i64,
-    /// The `$GUI_*` state bits.
+    /// The `$GUI_*` state bits, plus [`GUI_PAGE_HIDDEN`].
     pub state: i64,
-    /// Items for List/Combo/ListView/TreeView.
+    /// The control this one belongs to.
+    ///
+    /// For a part (see [`ControlKind::is_part`]) that is the control it is a row,
+    /// node or page of — a `TreeViewItem`'s parent is its `TreeView` or the item
+    /// it hangs under. For a control on a tab page it is the `TabItem` whose page
+    /// the control appears on, which is how a page is switched without moving
+    /// anything.
+    pub parent: Option<i64>,
+    /// Where this part sits inside its owner: the row of a
+    /// `ListView`/`TreeView` item, or the page number of a `TabItem`. Rows are
+    /// re-numbered when an earlier one is deleted, so this stays the index into
+    /// the owner's [`data`](Self::data).
+    pub row: Option<usize>,
+    /// Items for List/Combo/ListView/TreeView, and page titles for a Tab.
     pub data: Vec<String>,
     /// Which item is selected in a list-like control, when the backend knows.
     pub selection: Option<usize>,
@@ -146,6 +159,16 @@ pub const GUI_DISABLE: i64 = 0x80;
 /// `$GUI_CHECKED`.
 pub const GUI_CHECKED: i64 = 0x01;
 
+/// Not an AutoIt constant: "this control is on a tab page that is not the
+/// selected one".
+///
+/// AutoIt shows the controls of the selected page and hides the rest, but a
+/// script can also hide a control on the page that *is* selected, so the two
+/// reasons have to stay apart. Every backend reads one state word, so this is
+/// where the page's own hiding goes; [`Control::is_visible`] treats it like
+/// `$GUI_HIDE`.
+pub const GUI_PAGE_HIDDEN: i64 = 1 << 30;
+
 impl Control {
     /// A control with default geometry and state.
     pub fn new(id: i64, window: i64, kind: ControlKind) -> Self {
@@ -161,6 +184,8 @@ impl Control {
             style: 0,
             exstyle: 0,
             state: 0,
+            parent: None,
+            row: None,
             data: Vec::new(),
             selection: None,
             tip: String::new(),
@@ -177,13 +202,42 @@ impl Control {
     }
 
     pub fn is_visible(&self) -> bool {
-        self.state & GUI_HIDE == 0
+        self.state & (GUI_HIDE | GUI_PAGE_HIDDEN) == 0
+    }
+
+    /// The `$GUI_*` word a script sees: hiding a control because its tab page is
+    /// not the selected one reads as `$GUI_HIDE`, while the bit itself stays
+    /// private so a later `GUICtrlSetState($c, $GUI_SHOW)` cannot reveal a
+    /// control on somebody else's page.
+    pub fn public_state(&self) -> i64 {
+        let bits = self.state & !GUI_PAGE_HIDDEN;
+        if self.state & GUI_PAGE_HIDDEN != 0 {
+            bits | GUI_HIDE
+        } else {
+            bits
+        }
     }
     pub fn is_enabled(&self) -> bool {
         self.state & GUI_DISABLE == 0
     }
     pub fn is_checked(&self) -> bool {
         self.state & GUI_CHECKED != 0
+    }
+}
+
+impl ControlKind {
+    /// Whether this kind is a *part* of another control rather than a window of
+    /// its own.
+    ///
+    /// AutoIt's `ListViewItem`, `TreeViewItem`, `TabItem` and `MenuItem` are
+    /// rows, nodes, pages and menu entries of the control that owns them: they
+    /// have an identifier a script can use, but no window, and a renderer draws
+    /// them through their owner.
+    pub fn is_part(self) -> bool {
+        matches!(
+            self,
+            Self::ListViewItem | Self::TreeViewItem | Self::TabItem | Self::MenuItem
+        )
     }
 }
 
@@ -217,6 +271,10 @@ pub struct Window {
     pub font: Option<Font>,
     pub cursor: Option<i64>,
     pub icon: Option<String>,
+    /// The control with the input focus, when a script or a click set one.
+    pub focus: Option<i64>,
+    /// `WinSetOnTop`/`$GUI_ONTOP`: the window stays above the others.
+    pub topmost: bool,
     pub resizing: i64,
     pub on_event: Option<String>,
     pub controls: Vec<i64>,
@@ -258,6 +316,9 @@ pub struct GuiModel {
     pub windows: Vec<Option<Window>>,
     pub controls: Vec<Option<Control>>,
     pub current_window: Option<i64>,
+    /// The control the `-1` control identifier stands for: AutoIt lets every
+    /// `GUICtrl*` function take `-1` for "the last created control".
+    pub last_control: Option<i64>,
     next_window: i64,
     next_control: i64,
     next_menu: i64,
@@ -400,6 +461,73 @@ impl GuiModel {
             .and_then(|i| self.controls[i].as_mut())
     }
 
+    /// Resolve a control identifier the way AutoIt does: `-1` means the last
+    /// created control.
+    pub fn control_id(&self, id: i64) -> Option<i64> {
+        match id {
+            -1 => self.last_control.filter(|id| self.control(*id).is_some()),
+            id if id >= 1 => self.control(id).map(|control| control.id),
+            _ => None,
+        }
+    }
+
+    /// The control that owns the flat item list `id` is a part of.
+    ///
+    /// A `TreeViewItem` knows its structural parent — the item it hangs under,
+    /// or the `TreeView` itself — but every item of one tree shares that tree's
+    /// list, so the owner is the `TreeView` at the top of the chain. Everything
+    /// else owns its own list.
+    pub fn list_owner(&self, id: i64) -> Option<i64> {
+        let control = self.control(id)?;
+        if control.kind != ControlKind::TreeViewItem {
+            return Some(id);
+        }
+        self.list_owner(control.parent?)
+    }
+
+    /// The controls that hang directly off `parent`.
+    pub fn children_of(&self, parent: i64) -> Vec<i64> {
+        self.controls
+            .iter()
+            .flatten()
+            .filter(|control| control.parent == Some(parent))
+            .map(|control| control.id)
+            .collect()
+    }
+
+    /// The list a part belongs to: the owner of the control it hangs off.
+    ///
+    /// A `ListViewItem`'s parent *is* its list, but a tree node hangs off
+    /// another node, so this walks to the `TreeView` at the top.
+    pub fn part_owner(&self, id: i64) -> Option<i64> {
+        let parent = self.control(id)?.parent?;
+        self.list_owner(parent)
+    }
+
+    /// The part that stands for row `row` of `owner`, if any.
+    pub fn part_at(&self, owner: i64, row: usize) -> Option<i64> {
+        self.controls
+            .iter()
+            .flatten()
+            .find(|control| control.row == Some(row) && self.part_owner(control.id) == Some(owner))
+            .map(|control| control.id)
+    }
+
+    /// Add a control that is a part of another one and return its id.
+    ///
+    /// The part's text becomes a row of its owner's item list, which is the list
+    /// `GUICtrlRead` and the item-count messages answer from: AutoIt's item
+    /// controls *are* the rows of their owner, not windows beside it.
+    pub fn add_part_control(&mut self, mut control: Control) -> i64 {
+        if let Some(owner) = control.parent.and_then(|parent| self.list_owner(parent)) {
+            if let Some(owner_control) = self.control_mut(owner) {
+                owner_control.data.push(control.text.clone());
+                control.row = Some(owner_control.data.len() - 1);
+            }
+        }
+        self.add_control(control)
+    }
+
     /// Add a control to `window` and return its id.
     pub fn add_control(&mut self, mut control: Control) -> i64 {
         let id = self.alloc_control_id();
@@ -412,22 +540,114 @@ impl GuiModel {
             self.controls.push(None);
         }
         self.controls.push(Some(control));
+        self.last_control = Some(id);
         id
     }
 
+    /// Remove a control, and with it the row or page it stood for.
+    ///
+    /// Deleting a `TreeViewItem` takes its children with it, the way deleting a
+    /// node takes its subtree; the rows after a deleted one are re-numbered so
+    /// `row` keeps pointing at the same item.
     pub fn remove_control(&mut self, id: i64) -> bool {
         let Some(index) = self.control_index(id) else {
             return false;
         };
-        let removed = self.controls[index].take();
-        match removed {
-            Some(control) => {
-                if let Some(window) = self.window_mut(control.window) {
-                    window.controls.retain(|c| *c != id);
-                }
-                true
+        if self.controls[index].is_none() {
+            return false;
+        }
+        // Everything that hangs off this control goes with it — deleting a tree
+        // node deletes its subtree — and the rows each of them stood for are
+        // read *before* any control disappears, because a row's owner is found
+        // through the control that is about to be removed.
+        let mut doomed = self.descendants_of(id);
+        doomed.push(id);
+        let mut rows: Vec<(i64, i64, usize)> = doomed
+            .iter()
+            .filter_map(|part| {
+                let row = self.control(*part)?.row?;
+                Some((*part, self.part_owner(*part)?, row))
+            })
+            .collect();
+        rows.sort_by_key(|(_, _, row)| std::cmp::Reverse(*row));
+        for doomed_id in &doomed {
+            let Some(index) = self.control_index(*doomed_id) else {
+                continue;
+            };
+            let Some(control) = self.controls[index].take() else {
+                continue;
+            };
+            if let Some(window) = self.window_mut(control.window) {
+                window.controls.retain(|c| *c != *doomed_id);
             }
-            None => false,
+            if self.last_control == Some(*doomed_id) {
+                self.last_control = None;
+            }
+        }
+        for (part, owner, row) in rows {
+            if let Some(owner_control) = self.control_mut(owner) {
+                if row < owner_control.data.len() {
+                    owner_control.data.remove(row);
+                }
+            }
+            let _ = part;
+        }
+        self.renumber_rows();
+        true
+    }
+
+    /// Every control that hangs off `id`, directly or through other parts.
+    fn descendants_of(&self, id: i64) -> Vec<i64> {
+        let mut found = Vec::new();
+        let mut frontier = vec![id];
+        while let Some(parent) = frontier.pop() {
+            for child in self.children_of(parent) {
+                found.push(child);
+                frontier.push(child);
+            }
+        }
+        found
+    }
+
+    /// Make `row` the index into the owner's list again after a deletion.
+    fn renumber_rows(&mut self) {
+        let owners: Vec<i64> = self
+            .controls
+            .iter()
+            .flatten()
+            .filter(|control| {
+                matches!(
+                    control.kind,
+                    ControlKind::ListView | ControlKind::TreeView | ControlKind::Tab
+                )
+            })
+            .map(|control| control.id)
+            .collect();
+        for owner in owners {
+            let mut parts: Vec<(usize, i64)> = self
+                .children_of(owner)
+                .into_iter()
+                .chain(
+                    // A tree's items hang off each other, so the parts of the
+                    // whole tree are gathered through `list_owner` instead.
+                    self.controls
+                        .iter()
+                        .flatten()
+                        .map(|control| control.id)
+                        .filter(|id| self.part_owner(*id) == Some(owner)),
+                )
+                .filter_map(|id| {
+                    let control = self.control(id)?;
+                    Some((control.row?, id))
+                })
+                .collect();
+            parts.sort_unstable();
+            parts.dedup();
+            for (new_row, (_, id)) in parts.into_iter().enumerate() {
+                if let Some(control) = self.control_mut(id) {
+                    control.row = Some(new_row);
+                }
+            }
         }
     }
 
@@ -519,6 +739,8 @@ impl Window {
             font: None,
             cursor: None,
             icon: None,
+            focus: None,
+            topmost: false,
             resizing: 0,
             on_event: None,
             controls: Vec::new(),

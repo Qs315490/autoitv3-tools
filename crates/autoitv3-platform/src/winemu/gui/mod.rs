@@ -50,7 +50,7 @@ use std::collections::VecDeque;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::value::Value;
 
-use autoitv3_gui_model::{GUI_DISABLE, GUI_HIDE};
+use autoitv3_gui_model::{GUI_CHECKED, GUI_DISABLE, GUI_HIDE, GUI_PAGE_HIDDEN};
 
 /// Every GUI function this layer answers.
 pub const FUNCTIONS: &[&str] = &[
@@ -141,6 +141,9 @@ pub struct GuiState {
     /// cannot flood stderr — an emulated dialog answers instantly where a real
     /// one would block on the user.
     dialogs_seen: std::collections::HashSet<String>,
+    /// The `TabItem` new controls belong to, until `GUICtrlCreateTabItem("")`
+    /// closes the tab structure or `GUISwitch` names another page.
+    current_tabitem: Option<i64>,
 }
 
 impl Default for GuiState {
@@ -162,6 +165,7 @@ impl GuiState {
             draw_pen: (0, 0),
             desktop: (0, 0),
             dialogs_seen: std::collections::HashSet::new(),
+            current_tabitem: None,
         }
     }
 
@@ -315,8 +319,18 @@ impl GuiState {
                     id
                 }
                 GuiUpdate::Select { id, index } => {
+                    let tab = self
+                        .model
+                        .control(id)
+                        .filter(|control| control.kind == ControlKind::Tab)
+                        .map(|control| control.id);
                     if let Some(control) = self.model.control_mut(id) {
                         control.selection = Some(index);
+                    }
+                    // A tab click shows another page's controls and hides the
+                    // ones that were on screen.
+                    if let Some(tab) = tab {
+                        self.apply_tab_visibility(tab);
                     }
                     id
                 }
@@ -465,6 +479,8 @@ impl GuiState {
                     font: None,
                     cursor: None,
                     icon: None,
+                    focus: None,
+                    topmost: false,
                     resizing: 0,
                     on_event: None,
                     controls: Vec::new(),
@@ -507,6 +523,15 @@ impl GuiState {
                 let handle = self.window_arg(args, 0);
                 let previous = self.model.active_window().unwrap_or(0);
                 self.model.current_window = handle;
+                // `GUISwitch($win, $tabitem)` also says which page the controls
+                // created next belong to.
+                self.current_tabitem = self
+                    .model
+                    .control_id(arg_int(args, 1))
+                    .filter(|page| {
+                        self.model.control(*page).map(|control| control.kind)
+                            == Some(ControlKind::TabItem)
+                    });
                 ctx.set_error(if handle.is_some() { 0 } else { 1 }, 0);
                 Value::Int(previous)
             }
@@ -620,23 +645,29 @@ impl GuiState {
 
             // ---------------- control state ----------------
             "guictrldelete" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let ok = self.model.remove_control(id);
                 self.backend.on_control_removed(id);
                 ctx.set_error(if ok { 0 } else { 1 }, 0);
                 Value::Int(i64::from(ok))
             }
             "guictrlgethandle" => {
-                let id = arg_int(args, 0);
-                ctx.set_error(if self.model.control(id).is_some() { 0 } else { 1 }, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
+                ctx.set_error(0, 0);
                 Value::Int(id)
             }
             "guictrlgetstate" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 match self.model.control(id) {
                     Some(control) => {
                         ctx.set_error(0, 0);
-                        Value::Int(control.state)
+                        Value::Int(control.public_state())
                     }
                     None => {
                         ctx.set_error(1, 0);
@@ -646,8 +677,12 @@ impl GuiState {
             }
             "guictrlread" => self.read_control(args, ctx),
             "guictrlsetstate" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let state = arg_int(args, 1);
+                let kind = self.model.control(id).map(|control| control.kind);
+                let window = self.model.control(id).map(|control| control.window);
                 if let Some(control) = self.model.control_mut(id) {
                     if state & 0x10 != 0 {
                         control.state &= !GUI_HIDE;
@@ -661,14 +696,76 @@ impl GuiState {
                     if state & GUI_DISABLE != 0 {
                         control.state |= GUI_DISABLE;
                     }
-                    if state & 0x01 != 0 {
-                        control.state |= 0x01;
-                    }
-                    if state & 0x02 != 0 {
-                        control.state &= !0x01;
+                    // `$GUI_CHECKED` (1), `$GUI_INDETERMINATE` (2) and
+                    // `$GUI_UNCHECKED` (4) describe one three-way state, so
+                    // asking for one of them clears the other two.
+                    if state & (GUI_CHECKED | 0x02 | 0x04) != 0 {
+                        control.state &= !(GUI_CHECKED | 0x02);
+                        if state & GUI_CHECKED != 0 {
+                            control.state |= GUI_CHECKED;
+                        }
+                        if state & 0x02 != 0 {
+                            control.state |= 0x02;
+                        }
                     }
                     if state & 0x08 != 0 {
                         control.state |= 0x08;
+                    }
+                    if state & 0x1000 != 0 {
+                        control.state &= !0x08;
+                    }
+                    // A `TreeViewItem` is painted bold while `$GUI_DEFBUTTON`
+                    // is set, and the documented way to turn that off again is
+                    // to set the state to 0.
+                    if state & 0x200 != 0 {
+                        control.state |= 0x200;
+                    } else if state == 0 {
+                        control.state &= !0x200;
+                    }
+                    if state & 0x400 != 0 {
+                        control.state |= 0x400;
+                    }
+                    if state & 0x800 != 0 {
+                        control.state &= !0x800;
+                    }
+                }
+                // `$GUI_FOCUS` selects an item, `$GUI_SHOW` shows a page, and
+                // for a control that is a window of its own it takes the input
+                // focus.
+                if state & 0x100 != 0 {
+                    if let Some(control) = self.model.control_mut(id) {
+                        control.state |= 0x100;
+                    }
+                    match kind {
+                        Some(ControlKind::TreeViewItem) | Some(ControlKind::ListViewItem) => {
+                            let owner = self.model.part_owner(id);
+                            let row = self.model.control(id).and_then(|control| control.row);
+                            if let (Some(owner), Some(row)) = (owner, row) {
+                                if let Some(owner_control) = self.model.control_mut(owner) {
+                                    owner_control.selection = Some(row);
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Some(window) = window.and_then(|w| self.model.window_mut(w)) {
+                                window.focus = Some(id);
+                            }
+                        }
+                    }
+                }
+                if state & 0x2000 != 0 {
+                    if let Some(window) = window.and_then(|w| self.model.window_mut(w)) {
+                        window.focus = None;
+                    }
+                }
+                if state & 0x800 != 0 {
+                    if let Some(window) = window.and_then(|w| self.model.window_mut(w)) {
+                        window.topmost = true;
+                    }
+                }
+                if state & 0x10 != 0 && kind == Some(ControlKind::TabItem) {
+                    if let Some(tab) = self.model.control(id).and_then(|control| control.parent) {
+                        self.select_tab(tab, id);
                     }
                 }
                 self.notify_control(id);
@@ -677,7 +774,9 @@ impl GuiState {
             }
             "guictrlsetdata" => self.set_control_data(args, ctx),
             "guictrlsetbkcolor" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let color = arg_int(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
                     control.bk_color = Some(color);
@@ -686,7 +785,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetcolor" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let color = arg_int(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
                     control.color = Some(color);
@@ -695,7 +796,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetcursor" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let cursor = arg_int(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
                     control.cursor = Some(cursor);
@@ -704,7 +807,9 @@ impl GuiState {
             }
             "guictrlsetdefbkcolor" | "guictrlsetdefcolor" => Value::Int(1),
             "guictrlsetfont" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let font = Font {
                     name: arg_str(args, 4),
                     size: arg_int(args, 1) as i32,
@@ -718,7 +823,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetimage" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let image = arg_str(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
                     control.image = Some(image);
@@ -727,7 +834,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetlimit" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let limit = (arg_int(args, 1), arg_int(args, 2));
                 if let Some(control) = self.model.control_mut(id) {
                     control.limit = Some(limit);
@@ -735,7 +844,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetonevent" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let handler = arg_str(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
                     control.on_event = Some(handler);
@@ -743,7 +854,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetpos" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 if let Some(control) = self.model.control_mut(id) {
                     control.x = arg_int(args, 1) as i32;
                     control.y = arg_int(args, 2) as i32;
@@ -754,7 +867,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetresizing" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let resizing = arg_int(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
                     control.resizing = resizing;
@@ -762,7 +877,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsetstyle" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let (style, exstyle) = (arg_int(args, 1), arg_int(args, 2));
                 if let Some(control) = self.model.control_mut(id) {
                     control.style = style;
@@ -772,7 +889,9 @@ impl GuiState {
                 Value::Int(1)
             }
             "guictrlsettip" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let tip = arg_str(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
                     control.tip = tip;
@@ -781,7 +900,9 @@ impl GuiState {
             }
             "guictrlsetgraphic" => self.set_graphic(args, ctx),
             "guictrlsendmsg" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let msg = arg_int(args, 1) as u32;
                 let wparam = arg_int(args, 2);
                 match self.model.control(id) {
@@ -797,7 +918,9 @@ impl GuiState {
                 }
             }
             "guictrlrecvmsg" => {
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 let msg = arg_int(args, 1) as u32;
                 let result = match self.model.control(id) {
                     Some(control) => messages::send(control, msg, 0).0,
@@ -812,7 +935,9 @@ impl GuiState {
             "guictrlregisterlistviewsort" => Value::Int(1),
             "guictrlsendtodummy" => {
                 // Tell the script's own handler by queueing a control event.
-                let id = arg_int(args, 0);
+                let Some(id) = self.resolve_control(args, 0) else {
+                    return Some(Self::no_such_control(ctx));
+                };
                 if args.len() > 1 {
                     self.events.push_back(GuiEvent::Control(id));
                 }
@@ -1356,6 +1481,12 @@ impl GuiState {
     }
 
     /// `GUICtrlCreate*`: build a control on the current window.
+    /// Create a control of `kind` from a `GUICtrlCreate...` call.
+    ///
+    /// Where the caption and the geometry sit in `args` depends on the kind, and
+    /// the four "part" kinds ([`ControlKind::is_part`]) have no geometry at all:
+    /// they are rows, nodes, pages and menu entries of another control, so they
+    /// go through [`Self::create_part`].
     fn create_control(
         &mut self,
         kind: ControlKind,
@@ -1369,10 +1500,18 @@ impl GuiState {
                 return Value::Int(0);
             }
         };
-        // Most creators take a caption/filename first; the rest start at `left`.
-        // `GUICtrlCreateAvi` is special: `(filename, subfileid, left, top, ...)`.
+        if kind.is_part() {
+            return self.create_part(kind, window, args, ctx);
+        }
+        // Most creators take a caption or a filename first, then the geometry.
+        // `GUICtrlCreateAvi` and `GUICtrlCreateIcon` carry one more value in
+        // front of it, `GUICtrlCreateObj` starts with the object itself, and
+        // `GUICtrlCreateUpdown` is handed an input control instead of a
+        // position. The geometry-less kinds (a `Tab`, a `Graphic`, a `Dummy`)
+        // start at `left`.
         let (text, base) = match kind {
-            ControlKind::Avi => (arg_str(args, 0), 2),
+            ControlKind::Avi | ControlKind::Icon => (arg_str(args, 0), 2),
+            ControlKind::Obj => (String::new(), 1),
             ControlKind::Label
             | ControlKind::Button
             | ControlKind::Checkbox
@@ -1382,17 +1521,15 @@ impl GuiState {
             | ControlKind::Edit
             | ControlKind::List
             | ControlKind::Combo
+            | ControlKind::ListView
             | ControlKind::Pic
-            | ControlKind::Icon
-            | ControlKind::TabItem
-            | ControlKind::MenuItem
-            | ControlKind::ListViewItem
-            | ControlKind::TreeViewItem
             | ControlKind::Date
-            | ControlKind::MonthCal => (arg_str(args, 0), 1),
+            | ControlKind::MonthCal
+            | ControlKind::Menu
+            | ControlKind::ContextMenu => (arg_str(args, 0), 1),
             _ => (String::new(), 0),
         };
-        let control = Control {
+        let mut control = Control {
             id: 0,
             window,
             kind,
@@ -1404,6 +1541,8 @@ impl GuiState {
             style: arg_int(args, base + 4),
             exstyle: arg_int(args, base + 5),
             state: 0,
+            parent: None,
+            row: None,
             data: Vec::new(),
             selection: None,
             tip: String::new(),
@@ -1417,71 +1556,429 @@ impl GuiState {
             resizing: 0,
             draw: Vec::new(),
         };
+        match kind {
+            // `GUICtrlCreateUpdown($input)` is an arrow pair growing onto an
+            // input control: there is no position in its arguments.
+            ControlKind::Updown => {
+                control.parent = self.model.control_id(arg_int(args, 0));
+            }
+            // A menu entry hangs under the menu it names, or under the one made
+            // last; a top-level menu of the bar names no parent.
+            ControlKind::Menu | ControlKind::ContextMenu => {
+                control.parent = self.menu_parent(window, Some(arg_int(args, 1)));
+            }
+            _ => {
+                // A control created while a tab page is current belongs to that
+                // page, which is how `GUICtrlCreateTabItem` selects where the
+                // following controls go.
+                control.parent = self.current_page(window);
+            }
+        }
+        let page = control.parent;
         let id = self.model.add_control(control);
+        // A control created on a page takes that page's visibility with it.
+        if let Some(tab) = page.and_then(|page| self.model.control(page)?.parent) {
+            if self.model.control(tab).map(|control| control.kind) == Some(ControlKind::Tab) {
+                self.apply_tab_visibility(tab);
+            }
+        }
         self.notify_control(id);
         ctx.set_error(0, 0);
         Value::Int(id)
     }
 
-    /// `GUICtrlRead`.
+    /// Create one of the "part" kinds: a row, node, page or menu entry of
+    /// another control.
+    ///
+    /// None of them takes a position. `GUICtrlCreateListViewItem` names the
+    /// `ListView` that holds the row, `GUICtrlCreateTreeViewItem` names either
+    /// its `TreeView` or the item it hangs under, `GUICtrlCreateMenuItem` names
+    /// the menu, and `GUICtrlCreateTabItem("")` is not a control at all: it ends
+    /// the tab structure, so later controls belong to the window again.
+    fn create_part(
+        &mut self,
+        kind: ControlKind,
+        window: i64,
+        args: &[Value],
+        ctx: &mut dyn HostContext,
+    ) -> Value {
+        let text = arg_str(args, 0);
+        if kind == ControlKind::TabItem && text.is_empty() {
+            self.current_tabitem = None;
+            ctx.set_error(0, 0);
+            return Value::Int(0);
+        }
+        let parent = match kind {
+            ControlKind::ListViewItem | ControlKind::MenuItem => {
+                match self.model.control_id(arg_int(args, 1)) {
+                    Some(parent) => Some(parent),
+                    None => {
+                        ctx.set_error(1, 0);
+                        return Value::Int(0);
+                    }
+                }
+            }
+            ControlKind::TreeViewItem => {
+                let named = if args.len() > 1 {
+                    self.model.control_id(arg_int(args, 1))
+                } else {
+                    None
+                };
+                match named.or_else(|| self.last_tree_view(window)) {
+                    Some(parent) => Some(parent),
+                    None => {
+                        ctx.set_error(1, 0);
+                        return Value::Int(0);
+                    }
+                }
+            }
+            ControlKind::TabItem => match self.current_tab(window) {
+                Some(tab) => Some(tab),
+                None => {
+                    ctx.set_error(1, 0);
+                    return Value::Int(0);
+                }
+            },
+            _ => None,
+        };
+        // The row is a row of the *owner's* window, which is where a renderer
+        // has to put it.
+        let window = parent
+            .and_then(|parent| self.model.control(parent))
+            .map(|control| control.window)
+            .unwrap_or(window);
+        let control = Control {
+            id: 0,
+            window,
+            kind,
+            text,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            style: 0,
+            exstyle: 0,
+            state: 0,
+            parent,
+            row: None,
+            data: Vec::new(),
+            selection: None,
+            tip: String::new(),
+            on_event: None,
+            bk_color: None,
+            color: None,
+            font: None,
+            cursor: None,
+            image: None,
+            limit: None,
+            resizing: 0,
+            draw: Vec::new(),
+        };
+        let id = self.model.add_part_control(control);
+        if kind == ControlKind::TabItem {
+            // A page becomes the current one for the controls that follow it,
+            // and the first page is the one the tab control shows.
+            let tab = self.model.control(id).and_then(|control| control.parent);
+            if let Some(tab) = tab {
+                self.current_tabitem = Some(id);
+                if self.model.control(tab).and_then(|control| control.selection).is_none() {
+                    self.select_tab(tab, id);
+                }
+            }
+        }
+        self.notify_control(id);
+        // Page membership decides visibility, and the new row may be on a page
+        // that is not the selected one.
+        if let Some(tab) = self.model.control(id).and_then(|control| control.parent) {
+            if self
+                .model
+                .control(tab)
+                .map(|control| control.kind)
+                == Some(ControlKind::Tab)
+            {
+                self.apply_tab_visibility(tab);
+            }
+        }
+        ctx.set_error(0, 0);
+        Value::Int(id)
+    }
+
+    /// The tab page new controls belong to, when one is current.
+    fn current_page(&self, window: i64) -> Option<i64> {
+        let page = self.current_tabitem?;
+        let control = self.model.control(page)?;
+        (control.window == window).then_some(page)
+    }
+
+    /// The tab control of `window`: AutoIt's GUI holds at most one.
+    fn current_tab(&self, window: i64) -> Option<i64> {
+        self.model
+            .window(window)?
+            .controls
+            .iter()
+            .filter_map(|id| self.model.control(*id))
+            .find(|control| control.kind == ControlKind::Tab)
+            .map(|control| control.id)
+    }
+
+    /// The `TreeView` a new item goes under when the script did not name one:
+    /// the one made last.
+    fn last_tree_view(&self, window: i64) -> Option<i64> {
+        self.model
+            .window(window)?
+            .controls
+            .iter()
+            .rev()
+            .filter_map(|id| self.model.control(*id))
+            .find(|control| control.kind == ControlKind::TreeView)
+            .map(|control| control.id)
+    }
+
+    /// Where a menu entry goes: the menu it names, else the one made last.
+    fn menu_parent(&self, window: i64, named: Option<i64>) -> Option<i64> {
+        if let Some(id) = named.and_then(|id| self.model.control_id(id)) {
+            return Some(id);
+        }
+        self.model
+            .window(window)?
+            .controls
+            .iter()
+            .rev()
+            .filter_map(|id| self.model.control(*id))
+            .find(|control| {
+                matches!(
+                    control.kind,
+                    ControlKind::Menu | ControlKind::ContextMenu | ControlKind::MenuItem
+                )
+            })
+            .map(|control| control.id)
+    }
+
+    /// Make `page` the selected page of `tab`.
+    fn select_tab(&mut self, tab: i64, page: i64) {
+        let row = self.model.control(page).and_then(|control| control.row);
+        if let (Some(row), Some(tab_control)) = (row, self.model.control_mut(tab)) {
+            tab_control.selection = Some(row);
+        }
+        self.apply_tab_visibility(tab);
+    }
+
+    /// Reveal the controls of the selected `Tab` page and hide the rest.
+    ///
+    /// A page that is not selected hides its controls with
+    /// [`GUI_PAGE_HIDDEN`](autoitv3_gui_model::GUI_PAGE_HIDDEN), which keeps a
+    /// script's own `$GUI_HIDE` on a control on the visible page intact.
+    fn apply_tab_visibility(&mut self, tab: i64) {
+        let Some(selected) = self.model.control(tab).and_then(|control| control.selection) else {
+            return;
+        };
+        for page in self.model.children_of(tab) {
+            let row = self.model.control(page).and_then(|control| control.row);
+            let hidden = row != Some(selected);
+            for child in self.model.children_of(page) {
+                if let Some(control) = self.model.control_mut(child) {
+                    if hidden {
+                        control.state |= GUI_PAGE_HIDDEN;
+                    } else {
+                        control.state &= !GUI_PAGE_HIDDEN;
+                    }
+                }
+                self.notify_control(child);
+            }
+        }
+    }
+
+    /// `GUICtrlRead`: the state or data of a control.
+    ///
+    /// The second argument selects AutoIt's "advanced" value, which is a
+    /// different thing for almost every control: an item's own text where the
+    /// default read gives the state bits, or the selected item's identifier
+    /// where the default read gives its text.
     fn read_control(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
-        let id = arg_int(args, 0);
+        let Some(id) = self.resolve_control(args, 0) else {
+            ctx.set_error(1, 0);
+            return Value::Int(0);
+        };
+        let advanced = arg_int(args, 1) != 0;
         let Some(control) = self.model.control(id) else {
             ctx.set_error(1, 0);
             return Value::Int(0);
         };
         ctx.set_error(0, 0);
+        let selected = control.selection.unwrap_or(0);
         match control.kind {
             ControlKind::Checkbox | ControlKind::Radio => {
-                Value::Int(if control.is_checked() { 1 } else { 4 })
+                if advanced {
+                    Value::Str(control.text.clone())
+                } else if control.state & 0x02 != 0 {
+                    Value::Int(0x02)
+                } else if control.is_checked() {
+                    Value::Int(GUI_CHECKED)
+                } else {
+                    Value::Int(0x04)
+                }
             }
             ControlKind::Progress | ControlKind::Slider | ControlKind::Updown => {
                 Value::Int(control.text.trim().parse().unwrap_or(0))
             }
-            ControlKind::List | ControlKind::Combo | ControlKind::ListView | ControlKind::TreeView => {
-                let index = control.selection.unwrap_or(0);
-                Value::Str(control.data.get(index).cloned().unwrap_or_default())
+            ControlKind::List | ControlKind::Combo => match control.data.get(selected) {
+                Some(text) => Value::Str(text.clone()),
+                None => Value::Int(0),
+            },
+            // AutoIt answers these with the *identifier* of the selected item,
+            // which is how a script turns a click into the item it selects.
+            ControlKind::ListView => match control.selection {
+                Some(row) => Value::Int(self.model.part_at(id, row).unwrap_or(0)),
+                None => Value::Int(0),
+            },
+            ControlKind::TreeView => match control.selection {
+                Some(row) => match self.model.part_at(id, row) {
+                    Some(item) => {
+                        if advanced {
+                            Value::Str(control.data.get(row).cloned().unwrap_or_default())
+                        } else {
+                            Value::Int(item)
+                        }
+                    }
+                    None => Value::Int(0),
+                },
+                None => Value::Int(0),
+            },
+            ControlKind::ListViewItem => {
+                if advanced {
+                    Value::Int(if control.is_checked() { 1 } else { 4 })
+                } else {
+                    Value::Str(self.item_text(id, control))
+                }
+            }
+            ControlKind::TreeViewItem => {
+                if advanced {
+                    Value::Str(self.item_text(id, control))
+                } else {
+                    Value::Int(control.public_state())
+                }
+            }
+            ControlKind::Tab => {
+                let tab = id;
+                match control.selection {
+                    Some(index) if advanced => Value::Int(
+                        self.model
+                            .part_at(tab, index)
+                            .unwrap_or(0),
+                    ),
+                    Some(index) => Value::Int(index as i64),
+                    None => Value::Int(-1),
+                }
+            }
+            ControlKind::Menu | ControlKind::MenuItem => {
+                if advanced {
+                    Value::Str(control.text.clone())
+                } else {
+                    Value::Int(control.public_state())
+                }
             }
             _ => Value::Str(control.text.clone()),
         }
     }
 
+    /// The text of an item control: its owner's row, which is where the text
+    /// lives once the item was created.
+    fn item_text(&self, id: i64, control: &Control) -> String {
+        let Some(row) = control.row else {
+            return control.text.clone();
+        };
+        self.model
+            .part_owner(id)
+            .and_then(|owner| self.model.control(owner))
+            .and_then(|owner| owner.data.get(row))
+            .cloned()
+            .unwrap_or_else(|| control.text.clone())
+    }
+
     /// `GUICtrlSetData`.
     fn set_control_data(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
-        let id = arg_int(args, 0);
-        let data = arg_str(args, 1);
-        let default = if args.len() > 2 {
-            Some(arg_str(args, 2))
-        } else {
-            None
+        let Some(id) = self.resolve_control(args, 0) else {
+            ctx.set_error(1, 0);
+            return Value::Int(0);
         };
+        let data = arg_str(args, 1);
+        let default = (args.len() > 2).then(|| arg_str(args, 2));
         let Some(kind) = self.model.control(id).map(|c| c.kind) else {
             ctx.set_error(1, 0);
             return Value::Int(0);
         };
         match kind {
-            ControlKind::List | ControlKind::Combo | ControlKind::TreeView => {
-                let items: Vec<String> = if data.is_empty() {
-                    Vec::new()
-                } else {
-                    data.split('|').map(|s| s.to_string()).collect()
+            // `data` is the items to add; a leading separator (or nothing at
+            // all) throws the old list away first.
+            ControlKind::List | ControlKind::Combo => {
+                let items: Vec<String> = data
+                    .split('|')
+                    .filter(|item| !(item.is_empty() && data.ends_with('|')))
+                    .map(|item| item.to_string())
+                    .collect();
+                let Some(control) = self.model.control_mut(id) else {
+                    ctx.set_error(1, 0);
+                    return Value::Int(0);
                 };
+                if data.is_empty() || data.starts_with('|') {
+                    control.data.clear();
+                    control.selection = None;
+                }
+                let added: Vec<String> = items.into_iter().filter(|item| !item.is_empty()).collect();
+                control.data.extend(added);
+                if let Some(default) = default.filter(|value| !value.is_empty()) {
+                    if let Some(index) = control.data.iter().position(|item| *item == default) {
+                        control.selection = Some(index);
+                    }
+                }
+            }
+            // An item's text *is* its row, and `data` is that row's columns:
+            // the separator positions name the columns, a cell that is present
+            // but empty is erased, and the columns after the last separator keep
+            // what they had. A `ListView` control given data this way appends a
+            // row — the documented way to add rows is
+            // `GUICtrlCreateListViewItem`, and a test probe against the official
+            // interpreter is what settles what this form does there.
+            ControlKind::ListView if !data.is_empty() => {
                 if let Some(control) = self.model.control_mut(id) {
-                    control.data = items;
+                    control.data.push(data);
+                }
+            }
+            ControlKind::ListView => {
+                if let Some(control) = self.model.control_mut(id) {
+                    control.data.clear();
                     control.selection = None;
                 }
             }
-            ControlKind::ListView | ControlKind::ListViewItem | ControlKind::TreeViewItem => {
-                if let Some(control) = self.model.control_mut(id) {
-                    match default {
-                        Some(index) if !index.is_empty() => {
-                            if let Ok(pos) = index.parse::<usize>() {
-                                if pos >= 1 && pos <= control.data.len() {
-                                    control.data[pos - 1] = data;
+            ControlKind::ListViewItem => {
+                let cells: Vec<&str> = data.split('|').collect();
+                let owner = self.model.part_owner(id);
+                let row = self.model.control(id).and_then(|control| control.row);
+                if let (Some(owner), Some(row)) = (owner, row) {
+                    let updated = match self.model.control(owner).and_then(|o| o.data.get(row)) {
+                        Some(existing) => {
+                            let mut cells_now: Vec<String> =
+                                existing.split('|').map(|s| s.to_string()).collect();
+                            for (index, cell) in cells.iter().enumerate() {
+                                if index >= cells_now.len() {
+                                    cells_now.push((*cell).to_string());
+                                } else if !cell.is_empty() {
+                                    cells_now[index] = (*cell).to_string();
+                                } else {
+                                    cells_now[index] = String::new();
                                 }
                             }
+                            cells_now.join("|")
                         }
-                        _ => control.data.push(data),
+                        None => data.clone(),
+                    };
+                    if let Some(owner_control) = self.model.control_mut(owner) {
+                        if row < owner_control.data.len() {
+                            owner_control.data[row] = updated.clone();
+                        }
+                    }
+                    if let Some(control) = self.model.control_mut(id) {
+                        control.text = updated;
                     }
                 }
             }
@@ -1493,9 +1990,12 @@ impl GuiState {
                 }
             }
             _ => {
+                // For a part — a tree node, a tab page, a menu entry — the text
+                // lives in the owner's item list as well.
                 if let Some(control) = self.model.control_mut(id) {
-                    control.text = data;
+                    control.text = data.clone();
                 }
+                self.set_part_text(id, &data);
             }
         }
         self.notify_control(id);
@@ -1503,14 +2003,27 @@ impl GuiState {
         Value::Int(1)
     }
 
+    /// Write a part's new text through to its owner's item list.
+    fn set_part_text(&mut self, id: i64, text: &str) {
+        let Some(owner) = self.model.part_owner(id) else {
+            return;
+        };
+        let Some(row) = self.model.control(id).and_then(|control| control.row) else {
+            return;
+        };
+        if let Some(owner_control) = self.model.control_mut(owner) {
+            if row < owner_control.data.len() {
+                owner_control.data[row] = text.to_string();
+            }
+        }
+    }
+
     /// `GUICtrlSetGraphic`: record a drawing command.
     fn set_graphic(&mut self, args: &[Value], ctx: &mut dyn HostContext) -> Value {
-        let id = arg_int(args, 0);
+        let Some(id) = self.resolve_control(args, 0) else {
+            return Self::no_such_control(ctx);
+        };
         let kind = arg_int(args, 1);
-        if self.model.control(id).is_none() {
-            ctx.set_error(1, 0);
-            return Value::Int(0);
-        }
         let (pen_x, pen_y) = self.draw_pen;
         let cmd = match kind {
             0 => {
@@ -1570,6 +2083,18 @@ impl GuiState {
     }
 
     /// Resolve the `(window, control text)` pair `Control*` functions take.
+    /// Resolve a `controlID` argument the way AutoIt's functions do: `-1` is
+    /// the control created last, anything else must exist.
+    fn resolve_control(&self, args: &[Value], index: usize) -> Option<i64> {
+        self.model.control_id(arg_int(args, index))
+    }
+
+    /// The error path shared by every function that takes a `controlID`.
+    fn no_such_control(ctx: &mut dyn HostContext) -> Value {
+        ctx.set_error(1, 0);
+        Value::Int(0)
+    }
+
     fn control_arg(&self, args: &[Value]) -> Option<&Control> {
         let window = self.window_arg(args, 0)?;
         let text = args.get(1).map(|v| v.to_autoit_string()).unwrap_or_default();

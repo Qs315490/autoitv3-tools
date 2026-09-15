@@ -1012,6 +1012,176 @@ Return $before & ":" & $after & ":" & $pos[0] & "," & $pos[2] & ":" & $pos2[2] &
 }
 
 #[test]
+fn listview_items_are_rows_of_their_listview() {
+    // `GUICtrlCreateListViewItem` is how AutoIt adds a row, so the row has to
+    // reach the ListView: its item count, the identifier `GUICtrlRead` answers
+    // with and the text an item reads back are all the same row.
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $list = GUICtrlCreateListView("name|age", 0, 0, 200, 100)
+Local $bob = GUICtrlCreateListViewItem("bob|30", $list)
+Local $sue = GUICtrlCreateListViewItem("sue|25", $list)
+Local $count = GUICtrlSendMsg($list, 0x1004, 0, 0)
+Local $none = GUICtrlRead($list)
+GUICtrlSetState($bob, 256)
+Local $selected = GUICtrlRead($list)
+Local $text = GUICtrlRead($bob)
+Local $advanced = GUICtrlRead($bob, 1)
+Local $other = GUICtrlRead($sue)
+Return $count & ":" & $none & ":" & $selected & ":" & $bob & ":" & $text & ":" & $advanced & ":" & $other
+"#;
+    let value = text(win10(), body);
+    let fields: Vec<&str> = value.split(':').collect();
+    assert_eq!(fields[0], "2", "both items are rows: {value}");
+    assert_eq!(fields[1], "0", "nothing is selected yet: {value}");
+    assert_eq!(fields[2], fields[3], "selecting the item selects its row: {value}");
+    assert_eq!(fields[4], "bob|30", "the item reads back its own row: {value}");
+    assert_eq!(fields[5], "4", "an item's advanced read is its state: {value}");
+    assert_eq!(fields[6], "sue|25", "the other row is untouched: {value}");
+}
+
+#[test]
+fn deleting_an_item_removes_its_row() {
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $list = GUICtrlCreateListView("name", 0, 0, 200, 100)
+Local $bob = GUICtrlCreateListViewItem("bob", $list)
+Local $sue = GUICtrlCreateListViewItem("sue", $list)
+GUICtrlDelete($bob)
+Local $count = GUICtrlSendMsg($list, 0x1004, 0, 0)
+Local $sue_row = GUICtrlRead($sue)
+GUICtrlSetState($sue, 256)
+Local $selected = GUICtrlRead($list)
+Return $count & ":" & $sue_row & ":" & $selected & ":" & $sue
+"#;
+    let value = text(win10(), body);
+    let fields: Vec<&str> = value.split(':').collect();
+    assert_eq!(fields[0], "1", "the deleted row is gone: {value}");
+    assert_eq!(fields[1], "sue", "the row that is left kept its text: {value}");
+    assert_eq!(fields[2], fields[3], "the row was re-numbered: {value}");
+}
+
+#[test]
+fn an_item_update_touches_only_the_columns_it_names() {
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $list = GUICtrlCreateListView("a|b|c", 0, 0, 200, 100)
+Local $item = GUICtrlCreateListViewItem("1|2|3", $list)
+GUICtrlSetData($item, "||9")
+Local $third = GUICtrlRead($item)
+GUICtrlSetData($item, "x")
+Local $first = GUICtrlRead($item)
+Return $third & ":" & $first
+"#;
+    // A cell that is named but empty is erased, which is what the help file
+    // documents: `"||9"` leaves only the third column.
+    assert_eq!(text(win10(), body), "||9:x||9");
+}
+
+#[test]
+fn a_minus_one_control_id_is_the_last_created_control() {
+    let body = r#"
+GUICreate("T", 200, 150)
+Local $label = GUICtrlCreateLabel("first", 0, 0)
+GUICtrlSetData(-1, "second")
+GUICtrlSetState(-1, 32)
+Return GUICtrlRead($label) & ":" & GUICtrlGetState($label)
+"#;
+    assert_eq!(text(win10(), body), "second:32");
+}
+
+#[test]
+fn treeview_items_nest_under_the_item_they_name() {
+    let body = r#"
+GUICreate("T", 200, 150)
+Local $tree = GUICtrlCreateTreeView(0, 0, 100, 100)
+Local $root = GUICtrlCreateTreeViewItem("root", $tree)
+Local $child = GUICtrlCreateTreeViewItem("child", $root)
+Local $other = GUICtrlCreateTreeViewItem("other", $tree)
+GUICtrlSetState($child, 256)
+Local $selected = GUICtrlRead($tree)
+Local $child_text = GUICtrlRead($child, 1)
+Local $other_text = GUICtrlRead($other, 1)
+Local $focused = GUICtrlRead($child)
+GUICtrlSetState($child, 512)
+Local $bold = GUICtrlRead($child)
+GUICtrlSetState($child, 0)
+Local $plain = GUICtrlRead($child)
+Return $selected & ":" & $child & ":" & $child_text & ":" & $other_text & ":" & $focused & ":" & $bold & ":" & $plain
+"#;
+    let value = text(win10(), body);
+    let fields: Vec<&str> = value.split(':').collect();
+    assert_eq!(fields[0], fields[1], "focusing an item selects it: {value}");
+    assert_eq!(fields[2], "child");
+    assert_eq!(fields[3], "other");
+    assert_eq!(fields[4], "256", "the focused item keeps its focus bit: {value}");
+    assert_eq!(fields[5], "768", "bold is added on top: {value}");
+    assert_eq!(fields[6], "256", "setting the state to 0 clears bold: {value}");
+}
+
+#[test]
+fn tabitems_are_pages_of_their_tab() {
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $tab = GUICtrlCreateTab(0, 0, 200, 150)
+Local $one = GUICtrlCreateTabItem("one")
+Local $first = GUICtrlCreateLabel("first page", 10, 30)
+Local $two = GUICtrlCreateTabItem("two")
+Local $second = GUICtrlCreateLabel("second page", 10, 30)
+GUICtrlCreateTabItem("")
+Local $outside = GUICtrlCreateLabel("outside", 0, 0)
+Local $index = GUICtrlRead($tab)
+Local $advanced = GUICtrlRead($tab, 1)
+Local $hidden_second = GUICtrlGetState($second)
+GUICtrlSetState($two, 16)
+Local $index2 = GUICtrlRead($tab)
+Local $shown_second = GUICtrlGetState($second)
+Local $hidden_first = GUICtrlGetState($first)
+Local $outside_state = GUICtrlGetState($outside)
+Return $index & ":" & $advanced & ":" & $one & ":" & $hidden_second & ":" & $index2 & ":" & $shown_second & ":" & $hidden_first & ":" & $outside_state
+"#;
+    let value = text(win10(), body);
+    let fields: Vec<&str> = value.split(':').collect();
+    assert_eq!(fields[0], "0", "the first page is the selected one: {value}");
+    assert_eq!(fields[1], fields[2], "the advanced read is the page's id: {value}");
+    assert_eq!(fields[3], "32", "the other page's control is hidden: {value}");
+    assert_eq!(fields[4], "1", "showing the second page selects it: {value}");
+    assert_eq!(fields[5], "0", "its control is visible now: {value}");
+    assert_eq!(fields[6], "32", "the first page's control is not: {value}");
+    assert_eq!(fields[7], "0", "a control created after the structure closed is not on a page: {value}");
+}
+
+#[test]
+fn a_list_or_combo_appends_until_it_is_told_to_start_over() {
+    let body = r#"
+GUICreate("T", 200, 150)
+Local $combo = GUICtrlCreateCombo("", 0, 0)
+GUICtrlSetData($combo, "a|b", "b")
+Local $selected = GUICtrlRead($combo)
+GUICtrlSetData($combo, "|c")
+Local $after_reset = GUICtrlRead($combo)
+Return $selected & ":" & $after_reset
+"#;
+    assert_eq!(text(win10(), body), "b:c");
+}
+
+#[test]
+fn a_checkbox_reads_back_its_three_states() {
+    let body = r#"
+GUICreate("T", 200, 150)
+Local $check = GUICtrlCreateCheckbox("c", 0, 0)
+Local $unchecked = GUICtrlRead($check)
+GUICtrlSetState($check, 1)
+Local $checked = GUICtrlRead($check)
+GUICtrlSetState($check, 2)
+Local $indeterminate = GUICtrlRead($check)
+Local $advanced = GUICtrlRead($check, 1)
+Return $unchecked & ":" & $checked & ":" & $indeterminate & ":" & $advanced
+"#;
+    assert_eq!(text(win10(), body), "4:1:2:c");
+}
+
+#[test]
 fn gui_control_messages_answer_edit_and_listview() {
     let body = r#"
 GUICreate("T", 100, 100)

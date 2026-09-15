@@ -546,8 +546,15 @@ impl Win32Backend {
                     .insert(control.id, Self::placeholder(control, win_id));
                 return;
             }
-            // No window of their own; the model still tracks them.
-            ControlKind::Dummy | ControlKind::Avi | ControlKind::Obj => {
+            // Parts of another control — a `ListView` row, a tree node, a tab
+            // page — are drawn by the control that owns them, and the rest have
+            // no window of their own; the model still tracks them all.
+            ControlKind::ListViewItem
+            | ControlKind::TreeViewItem
+            | ControlKind::TabItem
+            | ControlKind::Dummy
+            | ControlKind::Avi
+            | ControlKind::Obj => {
                 self.controls
                     .insert(control.id, Self::placeholder(control, 0));
                 return;
