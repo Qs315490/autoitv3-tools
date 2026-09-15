@@ -2291,14 +2291,29 @@ fn the_script_macros_describe_the_script_in_windows_form() {
     // The interpreter never tells the platform which file it is running; the
     // CLI hands it over, and the emulation reports it the way the script's own
     // path arithmetic expects.
-    let script = "/tmp/demo dir/run.au3";
+    //
+    // The fixture is built from the emulated drive's root, not from `temp_dir`:
+    // the drive stands for the host root, and a host whose temporary files live
+    // on another drive (`D:\tmp`) would put the fixture outside the mapping and
+    // legitimately get the host spelling back.
+    let root = autoitv3_platform::PathMap::host_root();
+    let script = root
+        .root()
+        .join("tmp")
+        .join("demo dir")
+        .join("run.au3")
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
-        run_mapped(win10().with_script_path(script), "Return @ScriptDir").to_autoit_string(),
+        run_mapped(win10().with_script_path(&script), "Return @ScriptDir").to_autoit_string(),
         r"C:\tmp\demo dir\"
     );
-    assert_eq!(text(win10().with_script_path(script), "Return @ScriptName"), "run.au3");
     assert_eq!(
-        run_mapped(win10().with_script_path(script), "Return @ScriptFullPath").to_autoit_string(),
+        text(win10().with_script_path(&script), "Return @ScriptName"),
+        "run.au3"
+    );
+    assert_eq!(
+        run_mapped(win10().with_script_path(&script), "Return @ScriptFullPath").to_autoit_string(),
         r"C:\tmp\demo dir\run.au3"
     );
 }
