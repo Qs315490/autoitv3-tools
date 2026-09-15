@@ -12,6 +12,7 @@
         main.rs     入口：Cli::parse() → dispatch → 把 CliError 转成退出码
         cli.rs      顶层 Cli / Command 定义（子命令、别名、缩写开关）
         args.rs     共用参数类型（-o 输出、-I 搜索路径）、CliError、输入加载
+        elevate.rs   #RequireAdmin：判断指令、起提权副本、说明为什么不提权
         output.rs   输出目标：文件或 stdout（`-` 表示 stdout）
         commands/
           mod.rs        子命令模块与 dispatch 表
@@ -28,6 +29,7 @@
         steps.rs     --max-steps / --no-progress 的端到端校验
         input.rs     FILE 走源码路径 / 编译产物路径 / 两者都不是
         includes.rs  #include 的端到端行为（引号/尖括号搜索顺序、缺失、--no-includes）
+        require_admin.rs  #RequireAdmin 的判断、--no-elevate/--deny spawn、无提权机制的主机
         unit/args.rs 输入加载器的构建识别（`#[path]` 回挂进 src/args.rs）
         unit/debug_completion.rs Tab 补全的候选集与分词（`#[path]` 回挂进 commands/debug.rs）
 ```
@@ -138,6 +140,29 @@ AU3_INCLUDE_PATH='D:\Programs\autoitv3\Include' au3 run script.au3
 嵌套包含、`#include-once`、UTF-8（带/不带 BOM）与 UTF-16 BOM 的包含文件都支持；
 找不到的文件只报警告（列出搜过的目录）并继续，解析不了的包含文件才是错误，
 编译过的 `.a3x` 只报警告。`--no-includes` 完全不展开，脚本按"指令不存在"运行。
+
+### `#RequireAdmin`（仅 Windows）
+
+脚本里写 `#RequireAdmin` 就是要求管理员权限。Windows 没法给一个已经在跑的进程提权，
+解释器的做法是**再起一个自己**（shell 的 `runas` 动词，会弹 UAC），由那个进程跑脚本。
+`au3 run` 照做，区别只在两处：
+
+* 原进程**等到**提权副本结束再退出，并把它的退出码写进提示行——AutoIt 会立刻退出，
+  在批处理里等一等更有用；
+* 提权副本拿到同一条命令行外加 `--no-elevate`，所以它不会再次提权。
+
+```bash
+au3 run setup.au3                  # 脚本里有 #RequireAdmin 且当前不是管理员 → 弹 UAC
+au3 run setup.au3 --no-elevate     # 就在当前进程里跑，stderr 说明原因
+au3 run setup.au3 --deny spawn     # 同上：显式禁掉 spawn 也算不想要提权
+```
+
+已经是管理员（从提权后的 shell 启动）时不会再起副本；预设 profile（确定性/`--faithful`）
+不参与这个判断——那是"脚本自己能做什么"，提权是"脚本以什么身份跑"，两者无关。
+
+非 Windows 主机没有提权机制：读到指令、打印一行说明，脚本照常在本进程里跑。
+`au3 debug` 与 `au3 run --gui window` 也不提权——前者提权后拿不到这个 shell 的 stdin，
+后者窗口与脚本同进程——两者都只打印一行提示。
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
 `deobfuscate --evaluate`、`run` 与 `debug`；省略时读环境变量，再回落到默认值：

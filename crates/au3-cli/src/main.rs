@@ -21,6 +21,7 @@
 mod args;
 mod cli;
 mod commands;
+mod elevate;
 mod output;
 mod progress;
 

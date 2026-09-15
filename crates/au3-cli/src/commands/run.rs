@@ -19,6 +19,7 @@
 
 use autoitv3_platform::winemu::HeadlessBackend;
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
+use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::{Flow, Runtime, Value};
 use clap::Args;
 
@@ -85,6 +86,15 @@ pub struct RunArgs {
     #[command(flatten)]
     pub compiled: CompiledArgs,
 
+    /// Ignore `#RequireAdmin`: run the script in this, unelevated, process
+    ///
+    /// The default is to honour it the way the interpreter does — start an
+    /// elevated copy through the shell's `runas` verb and let that copy run the
+    /// script. Pass this to analyse a script that asks for rights it does not
+    /// get, or to avoid the UAC prompt in an unattended run.
+    #[arg(long)]
+    pub no_elevate: bool,
+
     /// `#include` search path (see `IncludeArgs`).
     #[command(flatten)]
     pub includes: IncludeArgs,
@@ -139,6 +149,34 @@ fn execute(
 ) -> CliResult<()> {
     let input = load_input_included(&args.input, &args.includes)?;
     let prog = input.program;
+    // Probing a script wants reproducibility and no side effects; `--faithful`
+    // switches to AutoIt's own semantics instead. `--allow`/`--deny` then
+    // fine-tune individual effects on top of either preset.
+    let profile = args.effects.apply(args.profile.profile())?;
+    // `#RequireAdmin` is about the *process*, not the script: an unelevated run
+    // starts an elevated copy of this program and stops here, before the first
+    // statement (see `crate::elevate`). The preset profiles do not enter into
+    // it — refusing the script's own `Run()` calls is a different question from
+    // which token it runs with — but a user who said `--deny spawn` does, as
+    // does `--no-elevate`.
+    //
+    // `--gui window` is the exception: the window lives in this process, so
+    // there is nothing to hand over, and the directive is only reported.
+    let spawn_denied = args
+        .effects
+        .deny
+        .iter()
+        .any(|kind| EffectKind::from_name(kind) == Some(EffectKind::Spawn));
+    if args.gui == GuiMode::Window {
+        if crate::elevate::is_required(&prog) {
+            eprintln!(
+                "note: #RequireAdmin: --gui window keeps this process, \
+                 so the script runs without administrator rights"
+            );
+        }
+    } else if crate::elevate::relaunch_if_required(&prog, args.no_elevate, spawn_denied)? {
+        return Ok(());
+    }
     // Install the platform layer for this OS so OS-specific builtins can be
     // reached (see `autoitv3-platform`); off Windows the Windows emulation
     // layer answers first, with the version these arguments select.
@@ -153,10 +191,7 @@ fn execute(
     // `--no-compiled` override that when comparing a source against a build.
     rt.set_compiled(args.compiled.resolve(input.resource_module.is_some()));
     rt.set_max_steps(args.steps.max_steps);
-    // Probing a script wants reproducibility and no side effects; `--faithful`
-    // switches to AutoIt's own semantics instead. `--allow`/`--deny` then
-    // fine-tune individual effects on top of either preset.
-    rt.set_profile(args.effects.apply(args.profile.profile())?);
+    rt.set_profile(profile);
 
     if args.trace {
         rt.set_debugger(Box::new(TracePrinter::new()));

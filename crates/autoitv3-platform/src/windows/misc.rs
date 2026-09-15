@@ -76,7 +76,7 @@ pub(crate) fn mem_get_stats(ctx: &mut dyn HostContext) -> Value {
 }
 
 /// `IsAdmin()` — membership in the BUILTIN\Administrators group.
-pub(crate) fn is_admin() -> Value {
+pub(crate) fn is_admin() -> bool {
     let authority = SID_IDENTIFIER_AUTHORITY { Value: [0, 0, 0, 0, 0, 5] };
     let mut sid: PSID = std::ptr::null_mut();
     let allocated = unsafe {
@@ -95,12 +95,12 @@ pub(crate) fn is_admin() -> Value {
         )
     };
     if allocated == 0 {
-        return Value::Int(0);
+        return false;
     }
     let mut member = 0;
     let ok = unsafe { CheckTokenMembership(std::ptr::null_mut(), sid, &mut member) } != 0;
     unsafe { FreeSid(sid) };
-    Value::Int(i64::from(ok && member != 0))
+    ok && member != 0
 }
 
 // ---------------------------------------------------------------------------
