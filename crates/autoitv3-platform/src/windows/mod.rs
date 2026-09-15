@@ -24,6 +24,10 @@
 //!   `@OSVersion`, `@ComputerName`, …), answered before the common layer so
 //!   its portable approximations do not win.
 //!
+//! * **elevation** — [`elevate`]: the `runas` relaunch behind `#RequireAdmin`,
+//!   which is about the interpreter's own process rather than the script's
+//!   library functions.
+//!
 //! * **registry** — the `Reg*` family against the real registry (64-bit view,
 //!   AutoIt's type codes, profile-gated writes).
 //! * **COM** — `ObjCreate`/`IsObj`/`ObjName` plus `.$member` / `.Method()`
@@ -61,6 +65,7 @@ pub(crate) mod com;
 pub(crate) mod dialogs;
 pub(crate) mod dll;
 mod drive;
+pub mod elevate;
 mod files;
 pub(crate) mod gui;
 pub(crate) mod misc;
@@ -480,7 +485,7 @@ impl Platform for WindowsPlatform {
             "drivesetlabel" => drive::drive_set_label(&args, ctx),
             // ---------------- system / shell ----------------
             "memgetstats" => misc::mem_get_stats(ctx),
-            "isadmin" => misc::is_admin(),
+            "isadmin" => Value::Int(i64::from(misc::is_admin())),
             "shellexecute" => misc::shell_execute(&args, ctx),
             "shellexecutewait" => misc::shell_execute_wait(&args, ctx),
             "runas" => misc::run_as(&args, ctx, false),

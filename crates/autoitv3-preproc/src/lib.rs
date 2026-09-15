@@ -368,9 +368,40 @@ fn include_argument(argument: &str) -> Option<(String, bool)> {
     Some((rest[1..end].to_string(), close == '"'))
 }
 
+/// Every directive a program carries, in source order, as `(name, argument)`
+/// pairs — `#include <x.au3>` is `("include", "<x.au3>")` and a bare
+/// `#RequireAdmin` is `("RequireAdmin", "")`.
+///
+/// A `#region` is a container, so a directive inside one belongs to the
+/// program; a directive in a function body does not, because AutoIt's
+/// preprocessor only ever looks at the top level (which is where
+/// [`expand`] looks too).
+pub fn directives<'a>(program: &'a Program) -> Vec<(&'a str, &'a str)> {
+    fn collect<'a>(items: &'a [Item], out: &mut Vec<(&'a str, &'a str)>) {
+        for item in items {
+            match &item.kind {
+                ItemKind::Directive(text) => out.push(split_directive(text)),
+                ItemKind::Region(region) => collect(&region.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(&program.items, &mut out);
+    out
+}
+
+/// Whether the program says `#name` anywhere at the top level. The comparison
+/// ignores case, the way the interpreter reads its own directives.
+pub fn has_directive(program: &Program, name: &str) -> bool {
+    directives(program)
+        .iter()
+        .any(|(directive, _)| directive.eq_ignore_ascii_case(name))
+}
+
 /// A directive line as `(name, argument)`: `include <x.au3>` → `("include",
 /// "<x.au3>")`, `include-once` → `("include-once", "")`.
-fn split_directive(text: &str) -> (&str, &str) {
+pub fn split_directive(text: &str) -> (&str, &str) {
     let text = text.trim();
     match text.find(char::is_whitespace) {
         Some(at) => (&text[..at], text[at..].trim_start()),
@@ -595,6 +626,44 @@ mod tests {
         assert_eq!(decode(&[0xFF, 0xFE, b'a', 0]).as_deref(), Some("a"));
         assert_eq!(decode(&[0xFE, 0xFF, 0, b'a']).as_deref(), Some("a"));
         assert!(decode(&[0x00, 0x9F, 0xFF]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod directive_tests {
+    use super::*;
+
+    fn program(source: &str) -> Program {
+        parse(source).unwrap()
+    }
+
+    #[test]
+    fn directives_are_read_with_their_arguments_and_their_case() {
+        let prog = program(
+            "#RequireAdmin\n#include <Constants.au3>\n; a comment\nGlobal $g = 1\n",
+        );
+        assert_eq!(
+            directives(&prog),
+            vec![("RequireAdmin", ""), ("include", "<Constants.au3>")]
+        );
+        assert!(has_directive(&prog, "requireadmin"));
+        assert!(has_directive(&prog, "REQUIREADMIN"));
+        assert!(!has_directive(&prog, "NoTrayIcon"));
+    }
+
+    #[test]
+    fn a_directive_inside_a_region_belongs_to_the_program() {
+        let prog = program("#region Setup\n#RequireAdmin\n#endregion\nGlobal $g = 1\n");
+        assert!(has_directive(&prog, "RequireAdmin"));
+    }
+
+    #[test]
+    fn a_directive_in_a_function_body_is_not_the_program_s() {
+        // AutoIt's preprocessor sees the top level only, so a `#RequireAdmin`
+        // written inside a function is just a statement the interpreter steps
+        // over.
+        let prog = program("Func F()\n    #RequireAdmin\nEndFunc\n");
+        assert!(!has_directive(&prog, "RequireAdmin"));
     }
 }
 

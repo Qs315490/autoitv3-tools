@@ -211,6 +211,17 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
     let prog = input.program;
     let resource_module = input.resource_module;
 
+    // A debug session is interactive, and an elevated copy would be a second
+    // process without this shell's stdin — the session would end at the first
+    // prompt. Say what was not done instead of silently stepping through a
+    // script that asked for rights.
+    if crate::elevate::is_required(&prog) {
+        eprintln!(
+            "note: #RequireAdmin: this script wants administrator rights; \
+             the debugger does not elevate — run it from an elevated shell to match"
+        );
+    }
+
     let mut file_commands = Vec::new();
     for path in &args.command_files {
         let text = std::fs::read_to_string(path)

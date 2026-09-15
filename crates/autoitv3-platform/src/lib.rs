@@ -16,6 +16,10 @@
 //! by [`CompositePlatform`], so the common functions are available on Windows
 //! too and a system layer only has to add what is actually system-specific.
 //!
+//! [`elevate`] is outside those layers: it is about *this process*, not about
+//! the script's library functions — the interpreter uses it to honour
+//! `#RequireAdmin` by starting an elevated copy of itself.
+//!
 //! On non-Windows targets the stack is **emulation → common → linux**: the
 //! [`WindowsEmulation`] layer answers first (it deliberately shadows the
 //! common directory macros), and anything it does not know falls through to
@@ -46,6 +50,7 @@
 //! [`Host`](autoitv3_runtime::host::Host) can always override a
 //! platform-provided function.
 
+pub mod elevate;
 pub mod linux;
 pub mod common;
 pub mod pathmap;
