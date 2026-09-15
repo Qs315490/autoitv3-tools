@@ -208,6 +208,12 @@ pub const GUI_CHECKED: i64 = 0x01;
 pub const GUI_BKCOLOR_TRANSPARENT: i64 = -2;
 /// `$GUI_BKCOLOR_LV_ALTERNATE`: a ListView paints its rows in two colours.
 pub const GUI_BKCOLOR_LV_ALTERNATE: i64 = 0x8000_0000;
+/// `$GUI_WS_EX_PARENTDRAG`: dragging this control moves the window it is on.
+///
+/// Only a renderer that can drag a window with a child has anything to do with
+/// it (`autoitv3-platform`'s Win32 backend subclasses the control); the value is
+/// shared with a real `WS_EX_...`, so a backend must not pass it on as one.
+pub const GUI_WS_EX_PARENTDRAG: i64 = 0x0010_0000;
 /// `$TIP_BALLOON` from `GUICtrlSetTip`'s options word.
 pub const TIP_BALLOON: i64 = 1;
 /// `$TIP_CENTER` from `GUICtrlSetTip`'s options word.

@@ -49,9 +49,10 @@
 //!   icon and small-icon views and the click-to-sort are not there; the check
 //!   boxes of `$LVS_EX_CHECKBOXES` are, because the common control draws them
 //!   itself and this backend only mirrors their state;
-//! * `$GUI_WS_EX_PARENTDRAG` (dragging a window by a label or a picture) is not
-//!   implemented; `$GUI_BKCOLOR_LV_ALTERNATE` is, through the `ListView`'s own
-//!   custom draw, which is also how `$GUI_BKCOLOR_TRANSPARENT` reaches a label;
+//! * a `ListView`'s `$GUI_BKCOLOR_LV_ALTERNATE` goes through the list's own
+//!   custom draw and a label's `$GUI_BKCOLOR_TRANSPARENT` through the parent's
+//!   brush, but `$GUI_WS_EX_PARENTDRAG` drags the window with
+//!   `WM_NCLBUTTONDOWN`, which moves the window only while the button is held;
 //! * a control's `GUICtrlSetTip` bubble needs the tooltip to be given a handle
 //!   before it is shown, which the control's own `tooltips_class32` does; a
 //!   *balloon* tip (`$TIP_BALLOON`) gets a balloon tooltip of its own together
@@ -69,7 +70,7 @@ use std::ffi::c_void;
 
 use autoitv3_gui_model::{
     Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Progress,
-    Splash, Window, WindowState, TIP_CENTER,
+    Splash, Window, WindowState, GUI_WS_EX_PARENTDRAG, TIP_CENTER,
 };
 
 use super::dialogs;
@@ -99,7 +100,7 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics,
-    GetWindowRect, SetWindowLongW,
+    GetParent, GetWindowRect, SetWindowLongW,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsIconic, IsWindow, IsZoomed,
     LoadCursorW, LoadImageW, MoveWindow, PeekMessageW, RegisterClassExW, SendMessageW, SetCursor,
     SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
@@ -137,9 +138,15 @@ const SW_MINIMIZE: i32 = 6;
 // Window messages (`winuser.h`).
 const WM_COMMAND: u32 = 0x0111;
 const WM_NOTIFY: u32 = 0x004E;
+const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_CLOSE: u32 = 0x0010;
 const WM_SETFONT: u32 = 0x0030;
 const WM_SYSCOMMAND: u32 = 0x0112;
+
+/// `WM_NCHITTEST`'s "the caption", which a non-client left-button press turns
+/// into a window move.
+const HTCAPTION: usize = 2;
 
 // `WM_SYSCOMMAND` requests.
 const SC_MINIMIZE: usize = 0xF020;
@@ -350,6 +357,9 @@ struct Shared {
     drawings: HashMap<usize, Drawing>,
     /// Control `HWND` → the cursor identifier a script set.
     cursors: HashMap<usize, i64>,
+    /// Control `HWND`s whose `exstyle` carries `$GUI_WS_EX_PARENTDRAG`: a press
+    /// inside one moves the window it sits on.
+    dragging: BTreeSet<usize>,
     /// Alternating `ListView` control id → one colour per row, resolved from
     /// `$GUI_BKCOLOR_LV_ALTERNATE`: the window procedure cannot reach the model,
     /// and a `NM_CUSTOMDRAW` has to answer with a row's colour on the spot.
@@ -1741,28 +1751,46 @@ impl Win32Backend {
         self.icon_path.insert(window.handle, wanted);
     }
 
-    /// Keep the drawing commands of a graphic control where its paint procedure
-    /// can reach them.
+    /// Put a control under the child procedure that draws a graphic and lets a
+    /// `$GUI_WS_EX_PARENTDRAG` control drag its window.
+    ///
+    /// A graphic's command list and colours live in the thread's table, because
+    /// a window procedure has no other way back to the backend that made the
+    /// window; so does the "this control drags its parent" flag.
     fn apply_subclass(&mut self, state: &mut ControlState, control: &Control) {
-        if state.hwnd.is_null() || control.kind != ControlKind::Graphic {
+        if state.hwnd.is_null() {
+            return;
+        }
+        let graphic = control.kind == ControlKind::Graphic;
+        let dragging = control.exstyle & GUI_WS_EX_PARENTDRAG != 0;
+        if !graphic && !dragging {
             return;
         }
         let hwnd = state.hwnd;
         let _ = with_shared(|shared| {
-            shared.drawings.insert(
-                hwnd_key(hwnd),
-                Drawing {
-                    commands: control.draw.clone(),
-                    color: control.color,
-                    background: control.bk_color,
-                },
-            );
+            if graphic {
+                shared.drawings.insert(
+                    hwnd_key(hwnd),
+                    Drawing {
+                        commands: control.draw.clone(),
+                        color: control.color,
+                        background: control.bk_color,
+                    },
+                );
+            }
+            if dragging {
+                shared.dragging.insert(hwnd_key(hwnd));
+            } else {
+                shared.dragging.remove(&hwnd_key(hwnd));
+            }
         });
         if !state.subclassed {
-            unsafe { SetWindowSubclass(hwnd, Some(graphic_proc), 1, 0) };
+            unsafe { SetWindowSubclass(hwnd, Some(child_proc), 1, 0) };
             state.subclassed = true;
         }
-        unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+        if graphic {
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+        }
     }
 
     fn take_win_id(&mut self) -> i32 {
@@ -2333,7 +2361,9 @@ fn control_style(control: &Control) -> u32 {
 /// A control's extended style: the per-kind default unless the script named one.
 fn control_exstyle(control: &Control) -> u32 {
     if control.exstyle > 0 {
-        return control.exstyle as u32;
+        // `$GUI_WS_EX_PARENTDRAG` shares its value with a real extended style but
+        // is not one: it asks for the subclass, not for `WS_EX_...`.
+        return (control.exstyle as u32) & !(GUI_WS_EX_PARENTDRAG as u32);
     }
     match control.kind {
         ControlKind::Button => WS_EX_WINDOWEDGE,
@@ -2528,14 +2558,14 @@ fn image_size(handle: HBITMAP) -> (i32, i32) {
     }
 }
 
-/// The procedure that paints a graphic control.
+/// The procedure every subclassed control runs.
 ///
 /// AutoIt draws `GUICtrlSetGraphic` itself, and so does this: the static control
 /// created for a `GUICtrlCreateGraphic` gets a subclass procedure that replays
-/// the command list on every paint. The list and the colours live in the
-/// thread's table because a window procedure has no other way back to the
-/// backend that made the window.
-unsafe extern "system" fn graphic_proc(
+/// the command list on every paint. The same procedure is what makes
+/// `$GUI_WS_EX_PARENTDRAG` work — the label reports its press to its parent as a
+/// caption press, and the parent starts moving the window.
+unsafe extern "system" fn child_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
@@ -2544,6 +2574,17 @@ unsafe extern "system" fn graphic_proc(
     _data: usize,
 ) -> LRESULT {
     match message {
+        // `$GUI_WS_EX_PARENTDRAG`: hand the press to the parent as if the user
+        // had grabbed the title bar, which is how a child moves a window.
+        WM_LBUTTONDOWN => {
+            let dragging =
+                with_shared(|shared| shared.dragging.contains(&hwnd_key(hwnd))).unwrap_or(false);
+            let parent = unsafe { GetParent(hwnd) };
+            if dragging && !parent.is_null() {
+                unsafe { SendMessageW(parent, WM_NCLBUTTONDOWN, HTCAPTION, lparam) };
+                return 0;
+            }
+        }
         WM_ERASEBKGND => {
             let filled = with_shared(|shared| {
                 let drawing = shared.drawings.get(&hwnd_key(hwnd))?;
