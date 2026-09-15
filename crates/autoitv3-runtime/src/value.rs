@@ -189,23 +189,20 @@ impl Value {
         matches!(self, Value::Int(_) | Value::Float(_) | Value::Bool(_))
     }
 
-    /// AutoIt truthiness: `0`, `""` and `Null` are false.
+    /// AutoIt truthiness: `0`, `0.0`, `""` and `Null` are false.
+    ///
+    /// A **string** is judged by whether it is empty, not by whether it looks
+    /// like a number: `"0"` and `"abc"` are both true, `""` is false. That is
+    /// what makes `If Not $path Then` mean "the path is empty" in AutoIt, and
+    /// code written that way silently takes the wrong branch if strings are
+    /// parsed as numbers here.
     pub fn is_truthy(&self) -> bool {
         match self {
             Value::Null | Value::Default => false,
             Value::Bool(b) => *b,
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
-            Value::Str(s) => {
-                let t = s.trim();
-                if t.is_empty() {
-                    return false;
-                }
-                match parse_number(t) {
-                    Some(n) => n != 0.0,
-                    None => false,
-                }
-            }
+            Value::Str(s) => !s.is_empty(),
             Value::Array(_) | Value::Map(_) | Value::Binary(_) | Value::FuncRef(_)
             | Value::Obj(_) => true,
         }

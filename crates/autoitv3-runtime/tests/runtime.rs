@@ -1842,3 +1842,55 @@ fn breakpoint_actions_and_flags_round_trip_through_the_host() {
     assert_eq!(rt.function_entry_line("target"), Some(2));
     assert_eq!(rt.function_entry_line("nope"), None);
 }
+
+// ---------------------------------------------------------------------------
+// Truthiness of strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_non_empty_string_is_true_in_a_boolean_context() {
+    // AutoIt judges a string by whether it is empty, not by whether it looks
+    // like a number: `"0"` and `"abc"` are both true. The guard
+    // `If Not $path Then` therefore means "the path is empty", which is how
+    // AutoIt code tests for a missing argument.
+    let v = call(
+        r#"
+Func T($p)
+    If (Not $p Or ($p = ".")) Then Return "BASE"
+    Return "PATH"
+EndFunc
+"#,
+        "T",
+        vec![Value::str("/home/user/data.dat")],
+    );
+    assert_eq!(v.to_autoit_string(), "PATH");
+
+    let v = call(
+        r#"
+Func T($p)
+    If (Not $p Or ($p = ".")) Then Return "BASE"
+    Return "PATH"
+EndFunc
+"#,
+        "T",
+        vec![Value::str("")],
+    );
+    assert_eq!(v.to_autoit_string(), "BASE");
+}
+
+#[test]
+fn the_string_zero_is_true() {
+    let v = call(
+        "Func F($s)\n    If $s Then Return 1\n    Return 0\nEndFunc\n",
+        "F",
+        vec![Value::str("0")],
+    );
+    assert!(matches!(v, Value::Int(1)), "got {v:?}");
+
+    let v = call(
+        "Func F($s)\n    If $s Then Return 1\n    Return 0\nEndFunc\n",
+        "F",
+        vec![Value::str("")],
+    );
+    assert!(matches!(v, Value::Int(0)), "got {v:?}");
+}
