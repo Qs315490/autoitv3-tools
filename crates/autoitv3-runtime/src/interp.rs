@@ -41,6 +41,15 @@ use crate::value::{FuncRefName, MapKey, Value};
 /// use this value, so there is one default to reason about. `0` disables the
 /// check; callers override it with [`Runtime::set_max_steps`].
 pub const DEFAULT_MAX_STEPS: u64 = 20_000_000;
+/// The most elements one array may hold — AutoIt's own ceiling.
+///
+/// From the help's *Appendix → Limits / Defaults* table: `VAR_SUBSCRIPT_ELEMENTS`
+/// is "16,777,216: Maximum number of elements for an array", counted across all
+/// the dimensions. A script that asks for more is stopped here; the official
+/// interpreter refuses it too, and an obfuscated `$n + 4294967295` (four billion
+/// elements) would otherwise take the process down inside the allocator.
+const MAX_ARRAY_ELEMENTS: i64 = 16_777_216;
+
 /// Default recursion guard.
 pub const DEFAULT_MAX_DEPTH: usize = 256;
 /// The instant the deterministic profile reports: 2024-01-01T00:00:00Z.
@@ -1842,6 +1851,24 @@ impl Runtime {
     /// `$a[3]` is a flat array, `$a[3][4]` is three arrays of four — AutoIt
     /// nests the extra dimensions, and scripts index them with `$a[$i][$j]`.
     fn array_with_dims(&mut self, dims: &[Expr], span: Span) -> Result<Value, RuntimeError> {
+        self.array_with_dims_total(dims, span, 1)
+    }
+
+    /// [`array_with_dims`](Self::array_with_dims) with the element count the
+    /// outer dimensions have already asked for.
+    ///
+    /// AutoIt's own limit is `VAR_SUBSCRIPT_ELEMENTS` — "16,777,216: maximum
+    /// number of elements for an array" (the help's *Appendix → Limits /
+    /// Defaults* table) — counted across every dimension. A declaration past it
+    /// is refused here instead of being handed to the allocator: an obfuscated
+    /// expression such as `$n + 4294967295` asks for four billion elements, and
+    /// the process would die inside the allocator with nothing said about where.
+    fn array_with_dims_total(
+        &mut self,
+        dims: &[Expr],
+        span: Span,
+        outer: i64,
+    ) -> Result<Value, RuntimeError> {
         let Some(first) = dims.first() else {
             return Ok(Value::array_sized(0));
         };
@@ -1856,14 +1883,23 @@ impl Runtime {
                     span: Some(span),
                 });
             }
-            n as usize
+            n
         };
+        let total = outer.saturating_mul(n);
+        if total > MAX_ARRAY_ELEMENTS {
+            return Err(RuntimeError::ArrayTooLarge {
+                elements: total,
+                limit: MAX_ARRAY_ELEMENTS,
+                span: Some(span),
+            });
+        }
+        let n = n as usize;
         if dims.len() == 1 {
             return Ok(Value::array_sized(n));
         }
         let mut rows = Vec::with_capacity(n);
         for _ in 0..n {
-            rows.push(self.array_with_dims(&dims[1..], span)?);
+            rows.push(self.array_with_dims_total(&dims[1..], span, total)?);
         }
         Ok(Value::array(rows))
     }
