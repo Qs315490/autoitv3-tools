@@ -154,9 +154,14 @@ enum Access {
 struct FileEntry {
     access: Access,
     file: File,
+    /// `$FO_BINARY`: `FileRead` hands back bytes, not text.
+    binary: bool,
     /// Whole-file text, loaded on demand for character/line reads.
     text: Option<String>,
-    /// Character cursor used by `FileRead`.
+    /// Whole-file bytes, for a binary handle. Separate from `text` because a
+    /// binary file is routinely not valid UTF-8.
+    bytes: Option<Vec<u8>>,
+    /// Character (or byte) cursor used by `FileRead`.
     cursor: usize,
 }
 
@@ -252,10 +257,23 @@ impl CommonPlatform {
         e.text = Some(s);
     }
 
+    /// Load the whole file into `bytes` if it has not been read yet.
+    fn ensure_bytes(&mut self, handle: i64) {
+        let Some(e) = self.entry_mut(handle) else { return };
+        if e.bytes.is_some() {
+            return;
+        }
+        let mut buf = Vec::new();
+        let _ = e.file.seek(SeekFrom::Start(0));
+        let _ = e.file.read_to_end(&mut buf);
+        e.bytes = Some(buf);
+    }
+
     /// Drop the cached text after a write so later reads see the new content.
     fn invalidate_text(&mut self, handle: i64) {
         if let Some(e) = self.entry_mut(handle) {
             e.text = None;
+            e.bytes = None;
         }
     }
 
@@ -294,6 +312,8 @@ impl CommonPlatform {
             _ => Access::Read,
         };
         let create_path = mode & 8 != 0;
+        // `$FO_BINARY` (16): the handle reads bytes rather than characters.
+        let binary = mode & 16 != 0;
 
         // Opening for write creates or truncates the file: a state change.
         if access != Access::Read && !ctx.effect_allowed(EffectKind::FileWrite) {
@@ -330,7 +350,9 @@ impl CommonPlatform {
                 self.handles.push(Some(Handle::File(FileEntry {
                     access,
                     file,
+                    binary,
                     text: None,
+                    bytes: None,
                     cursor: 0,
                 })));
                 ctx.set_error(0, 0);
@@ -349,6 +371,26 @@ impl CommonPlatform {
         if self.entry(handle).is_none() {
             ctx.set_error(1, 0);
             return Value::str("");
+        }
+        // A `$FO_BINARY` handle hands back raw bytes: the crypto UDFs read a
+        // key file this way, and a UTF-8 pass would either mangle it or (for a
+        // file with a stray byte) drop it entirely.
+        if self.entry(handle).is_some_and(|e| e.binary) {
+            self.ensure_bytes(handle);
+            let Some(e) = self.entry_mut(handle) else {
+                return Value::str("");
+            };
+            let bytes = e.bytes.as_deref().unwrap_or(&[]);
+            let start = e.cursor.min(bytes.len());
+            // A non-positive count means "to the end of the file".
+            let end = if count <= 0 {
+                bytes.len()
+            } else {
+                (start + count.max(0) as usize).min(bytes.len())
+            };
+            e.cursor = end;
+            ctx.set_error(0, 0);
+            return Value::Binary(std::rc::Rc::new(bytes[start..end].to_vec()));
         }
         self.ensure_text(handle);
         let Some(e) = self.entry_mut(handle) else {
@@ -1449,9 +1491,35 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 // ---------------------------------------------------------------------------
 
 fn ini_lines(path: &str) -> Vec<String> {
-    fs::read_to_string(path)
+    read_text_auto(path)
         .map(|t| t.lines().map(|l| l.to_string()).collect())
         .unwrap_or_default()
+}
+
+/// Read a text file the way AutoIt does: honour a UTF-16 or UTF-8 byte-order
+/// mark, otherwise treat the bytes as UTF-8.
+///
+/// AutoIt writes `.ini` files next to a build, and its own files are UTF-16
+/// with a BOM; reading those as UTF-8 yields nothing at all, so every setting
+/// they carry would come back missing.
+fn read_text_auto(path: &str) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return Some(String::from_utf16_lossy(&units));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return Some(String::from_utf16_lossy(&units));
+    }
+    let rest = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    Some(String::from_utf8_lossy(rest).into_owned())
 }
 
 fn ini_save(path: &str, lines: &[String]) -> bool {

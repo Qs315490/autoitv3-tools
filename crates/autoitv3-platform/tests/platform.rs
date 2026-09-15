@@ -645,6 +645,41 @@ fn ini_write_read_section_and_delete() {
 }
 
 #[test]
+fn ini_reads_a_utf16_file() {
+    // AutoIt writes `.ini` files as UTF-16 with a BOM; reading those as UTF-8
+    // yields nothing, so every setting they carry would come back missing.
+    let dir = scratch("iniutf16");
+    let path = dir.join("u.ini");
+    let mut bytes: Vec<u8> = vec![0xFF, 0xFE];
+    for unit in "[Sec]\r\nkey = value\r\n".encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    std::fs::write(&path, bytes).unwrap();
+    let body = format!(
+        r#"Return IniRead("{p}", "Sec", "key", "missing") & "|" & IniRead("{p}", "Sec", "nope", "d")"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "value|d");
+}
+
+#[test]
+fn a_binary_file_read_hands_back_bytes() {
+    // `FileOpen(..., $FO_BINARY)` must return a Binary: a key file read this
+    // way is not valid text, and a UTF-8 pass would drop it.
+    let dir = scratch("filebinary");
+    let path = dir.join("k.bin");
+    std::fs::write(&path, [0x00u8, 0xFF, 0x10, 0x80]).unwrap();
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 16)
+    Local $d = FileRead($h)
+    FileClose($h)
+    Return IsBinary($d) & "|" & BinaryLen($d) & "|" & String($d)"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "True|4|0x00FF1080");
+}
+
+#[test]
 fn ini_write_section_and_rename() {
     let dir = scratch("inirename");
     let path = dir.join("b.ini");

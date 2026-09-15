@@ -187,6 +187,16 @@ fn dllstruct_layout_and_typed_access() {
 }
 
 #[test]
+fn dllstruct_type_keywords_are_case_insensitive() {
+    // AutoIt accepts `byte`, `BYTE`, `Byte` and `ULONG` alike, and generated
+    // scripts use the upper-case spelling throughout.
+    let body = r#"Local $t = DllStructCreate("struct;BYTE data[4];ULONG flag;ENDSTRUCT")
+    Local $u = DllStructCreate("byte [8]")
+    Return DllStructGetSize($t) & "|" & DllStructGetSize($u) & "|" & @error"#;
+    assert_eq!(text(win10(), body), "8|8|0");
+}
+
+#[test]
 fn dllstruct_wide_strings_and_index_access() {
     let body = r#"Local $t = DllStructCreate("struct;wchar text[16];dword flag;endstruct")
     DllStructSetData($t, "text", "wide")

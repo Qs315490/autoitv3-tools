@@ -463,8 +463,10 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
             None => (String::new(), type_count),
         };
         let count = count.max(1);
+        // AutoIt's type keywords are case-insensitive: scripts write `BYTE`,
+        // `BYTE [38]`, `ulong` and `ULong` interchangeably.
         let (elem_size, is_char, is_binary, is_wchar, is_float, signed) =
-            type_info(&type_name, arch).ok_or_else(|| {
+            type_info(&type_name.to_ascii_lowercase(), arch).ok_or_else(|| {
                 format!("DllStruct: unknown type {type_name:?} in {definition:?}")
             })?;
 
