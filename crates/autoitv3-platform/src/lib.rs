@@ -48,6 +48,7 @@
 
 pub mod linux;
 pub mod common;
+pub mod pathmap;
 pub mod winemu;
 
 /// Pure Windows file-format / binary-layout machinery (DllStruct layouts,
@@ -58,6 +59,7 @@ pub mod winfmt;
 pub mod windows;
 
 pub use linux::LinuxPlatform;
+pub use pathmap::PathMap;
 pub use common::CommonPlatform;
 pub use winemu::{
     find_resource_module, has_staged_resources, resource_search_dirs, CipherAlg, FileRegistry,
@@ -73,6 +75,29 @@ use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::value::Value;
 use autoitv3_runtime::Runtime;
+
+/// The common layer, wired to the emulation's drive map and script path.
+///
+/// The two travel together: the emulation answers `C:\...` paths and reports
+/// script macros in the same spelling, and this is the layer that actually
+/// touches the host filesystem, so it needs the map to translate them back. On
+/// Windows the common layer sits *above* the emulation, so it is also the one
+/// that answers `@ScriptDir` there.
+fn common_layer(emulation: &WindowsEmulation) -> CommonPlatform {
+    let mut common = CommonPlatform::new();
+    // A disabled emulation means "plain host semantics", which includes plain
+    // host paths: `AU3_WIN_EMU=0` must not leave a `C:\` translation behind.
+    if !emulation.is_enabled() {
+        return common;
+    }
+    if let Some(map) = emulation.path_map() {
+        common = common.with_path_map(map.clone());
+    }
+    if let Some(script) = emulation.script_path() {
+        common = common.with_script_path(script);
+    }
+    common
+}
 
 /// Several platforms tried in order.
 ///
@@ -232,6 +257,10 @@ pub fn host_platform() -> Box<dyn Platform> {
 /// layer's real paths win.
 pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
     let emulated = emulation.is_enabled();
+    // The drive map is shared with the common layer: the emulation hands the
+    // script `C:\` paths and the layer that touches the filesystem has to turn
+    // them back into host paths (see [`pathmap`]).
+    let common = common_layer(&emulation);
     #[cfg(windows)]
     {
         let mut native = windows::WindowsPlatform::new();
@@ -240,8 +269,7 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
             // the host `au3` process, or the script's own resources vanish.
             native = native.with_resource_module(path);
         }
-        let mut layers: Vec<Box<dyn Platform>> =
-            vec![Box::new(native), Box::new(CommonPlatform::new())];
+        let mut layers: Vec<Box<dyn Platform>> = vec![Box::new(native), Box::new(common)];
         if emulated {
             layers.push(Box::new(emulation));
         }
@@ -258,7 +286,7 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
         if emulated {
             layers.push(Box::new(emulation));
         }
-        layers.push(Box::new(CommonPlatform::new()));
+        layers.push(Box::new(common));
         layers.push(Box::new(LinuxPlatform::new()));
         let name = if emulated {
             "winemu+common+linux"
@@ -378,6 +406,7 @@ pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform>
         force_emulated,
     } = options;
     let emulated = emulation.is_enabled();
+    let common = common_layer(&emulation);
     let declined: std::rc::Rc<[String]> = force_emulated
         .into_iter()
         .map(|n| n.to_ascii_lowercase())
@@ -398,7 +427,7 @@ pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform>
                 declined: declined.clone(),
             })
         };
-        let mut layers: Vec<Box<dyn Platform>> = vec![native, Box::new(CommonPlatform::new())];
+        let mut layers: Vec<Box<dyn Platform>> = vec![native, Box::new(common)];
         if emulated {
             layers.push(Box::new(emulation));
         }
@@ -416,7 +445,7 @@ pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform>
         if emulated {
             layers.push(Box::new(emulation));
         }
-        layers.push(Box::new(CommonPlatform::new()));
+        layers.push(Box::new(common));
         layers.push(Box::new(LinuxPlatform::new()));
         let name = if emulated {
             "winemu+common+linux"

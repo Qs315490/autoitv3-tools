@@ -13,9 +13,11 @@
                       host_platform_with() / host_platform_with_options()（PlatformOptions：
                       force_emulated 经 FilteredPlatform 把指定函数路由到仿真层）工厂、
                       runtime_with_platform() 便捷构造
+        pathmap.rs    PathMap：仿真 `C:` ↔ 宿主目录的双向翻译（默认 C:\ = 宿主根）
         common/       通用层：文件/目录 I/O、INI、环境变量、数学、计时器、控制台
                       + 进程执行与网络 —— Linux 与 Windows 都安装
-          mod.rs        CommonPlatform：直接分发 + 委托给下面两个服务
+          mod.rs        CommonPlatform：直接分发 + 委托给下面两个服务；带
+                        path_map/script_path 时翻译路径参数并在宏里报脚本自身
           proc.rs       Run 家族统一接口（std::process 机制）；平台差异的探测点
                         （进程表/存活/内存）在各系统模块实现，这里按平台调用
           net.rs        Inet*/TCP*/UDP*/Ping/代理设置（std::net）
@@ -181,7 +183,7 @@
 | 数学 | `Round`（半数远离零）、`Sqrt`、`Sin`/`Cos`/`Tan`/`ASin`/`ACos`/`ATan`（**弧度**）、`Log`、`Exp`、`Floor`、`Ceiling`、`Random`、`RandomSeed` |
 | 计时 | `TimerInit`、`TimerDiff` |
 | 控制台 | `ConsoleWrite`、`ConsoleWriteError`、`ConsoleRead` |
-| 宏 | `@TempDir`、`@AutoItPID`、`@AutoItEXE`、`@WorkingDir`/`@ScriptDir`、`@UserName`、`@ComputerName`、`@HomePath`/`@UserProfileDir`、`@AppDataDir`/`@LocalAppDataDir`（XDG）、`@DesktopDir`、`@MyDocumentsDir` |
+| 宏 | `@TempDir`、`@AutoItPID`、`@AutoItEXE`、`@WorkingDir`/`@ScriptDir`/`@ScriptName`/`@ScriptFullPath`（后三个由平台栈按被分析的脚本填入，不给就退回工作目录）、`@UserName`、`@ComputerName`、`@HomePath`/`@UserProfileDir`、`@AppDataDir`/`@LocalAppDataDir`（XDG）、`@DesktopDir`、`@MyDocumentsDir` |
 
 ### 通用层的进程与网络（`common/proc.rs` + `common/net.rs`）
 
@@ -216,6 +218,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 区域 | 行为 |
 | ---- | ---- |
 | OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`、`@AutoItX64` |
+| 路径 | 宏与文件参数是两个方向：`@ScriptDir`/`@ScriptName`/`@ScriptFullPath` 描述被分析的脚本，路径宏与文件函数之间按 `C:` ↔ 宿主根翻译（见下文「盘符映射」；`AU3_WIN_DRIVE_MAP`/`--win-drive-map`/`without_path_map()` 可关） |
 | 目录 | `WindowsPaths` 给出传统 `C:` 布局：`@WindowsDir`、`@SystemDir`、`@ProgramFilesDir`、`@HomeDrive`、`@TempDir`、`@AppDataDir`、`@LocalAppDataDir`、`@UserProfileDir`、`@StartMenuDir`、`@StartupDir`…… |
 | 原生结构 | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`/`IsDllStruct`——定义解析器支持 `struct;…;endstruct`、常见整型/浮点/指针、`char`/`wchar` 数组、无名段、`align N`；句柄指向一块本层持有的字节缓冲 |
 | 原生调用 | `DllCall(dll, rettype, func, type, arg…)`：版本/系统信息（`GetVersionExW/A`、`RtlGetVersion`、`GetSystemInfo`）、资源链（`GetModuleHandle*`/`FindResource*`/`SizeofResource`/`LoadResource`/`LockResource`/`RtlMoveMemory`）、模块与内存（`LoadLibrary*`/`GetProcAddress`/`GetModuleFileName*`、`VirtualAlloc`/`HeapAlloc` 等）、**内存沙箱文件**（`CreateFile*`/`ReadFile`/`WriteFile`/`GetFileSize`/`CloseHandle`，`with_file()` 注入）、CRT 字符串（`lstrlen*`/`lstrcpy*`/`lstrcat*`）、脚本化 `EnumWindows` 家族、CryptoAPI、**bcrypt.dll（CNG）** 与 LZNT1 解压。返回 **AutoIt 风格的数组**（`[0]` = 返回值，其余为 by-ref 参数）——脚本普遍写 `$r = DllCall(...)` / `If @error Or Not $r[0]`，返回标量会让它们全部报类型错误；调用失败时按 AutoIt 语义返回 `0` 并置 `@error = 1` |
@@ -244,6 +247,41 @@ rt.set_platform(autoitv3_platform::host_platform_with(emu));
 （`x86`/`x64`/`arm64`，影响指针宽度与结构体布局），以及
 `AU3_RESOURCE_MODULE`/`--resource-module`（`FindResourceW` 从哪个 PE 镜像取资源，
 不给就自动查找，见上文）。
+
+#### 盘符映射：`C:` → 宿主根（默认开启）
+
+脚本不只是**打印**路径，它会把路径**拆开**：`@ScriptDir & "\data.dat"` 是最简单的
+一种，更常见的是手写的规范化函数——按 `\` 切分、看头两个字符是不是盘符或 `\\server`、
+折叠 `.`/`..`。给这种代码一个 POSIX 路径，它会算出垃圾（`/home/me/x` 没有盘符，
+于是 `/h` 被当成盘符）。所以仿真层交给脚本的路径是 Windows 形状的，回到宿主文件系统
+边界时再翻回去：
+
+| 方向 | 规则 |
+| --- | --- |
+| 交给脚本 | `@ScriptDir`/`@WorkingDir`/`@TempDir` 等路径宏报 `C:\...`；`@ScriptName`/`@ScriptFullPath` 报脚本自身的文件名/全路径 |
+| 进入宿主 | 文件/目录/INI 函数的路径参数里，`C:\x` → `<root>/x`；相对路径的 `\` 也按宿主分隔符归一 |
+| 回到脚本 | `FileGetLongName`/`FileGetShortName` 之类返回路径的函数翻回 `C:\...` |
+
+默认 `C:\` 就是宿主根：`C:\home\me\a.dat` 打开 `/home/me/a.dat`
+（`PathMap::host_root()`；在 Windows 上这是恒等映射）。开关：
+
+```rust
+use autoitv3_platform::winemu::WindowsEmulation;
+
+let emu = WindowsEmulation::new().with_drive_root("/srv/sandbox"); // C:\ → 该目录
+let emu = WindowsEmulation::new().without_path_map();              // 完全关掉
+let emu = WindowsEmulation::new().with_script_path("build/run.au3"); // @ScriptDir 等
+```
+
+CLI 是 `--win-drive-map <ROOT>`（`--win-drive-map ""` 或 `--no-win-drive-map` 关掉），
+环境变量 `AU3_WIN_DRIVE_MAP`（`0`/`off` 关掉，其它值当根目录）。`au3 run`/`debug` 会
+自动把被分析的脚本路径通过 `with_script_path()` 传进来，所以 `@ScriptDir`/`@ScriptName`/
+`@ScriptFullPath` 描述的是脚本本身，而不是工作目录。
+
+几点边界：**只有路径参数**会被翻译（`FileWrite` 的内容是数据，不动）；映射不覆盖的
+目录（自定义根之外的路径）按宿主写法返回；`with_host_paths()`（保留可用宿主路径）
+会一并关掉映射，因为把宿主路径渲染成 `C:\tmp` 正好和它相反。要模拟脚本里的
+`C:\Windows\...` 仍需宿主上真有这个目录树——映射不凭空造文件。
 
 #### 注册表落盘（`FileRegistry`）
 

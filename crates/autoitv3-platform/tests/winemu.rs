@@ -40,6 +40,25 @@ fn text(emu: WindowsEmulation, body: &str) -> String {
     run(emu, body).to_autoit_string()
 }
 
+/// As [`run`], but with the emulation's drive map wired into the common layer
+/// the way `host_platform_with` does it — so `C:\...` arguments reach the host
+/// as host paths.
+fn run_mapped(emu: WindowsEmulation, body: &str) -> Value {
+    let src = format!("Func F()\n{body}\nEndFunc\n");
+    let prog = autoitv3_ast::parse(&src).expect("parses");
+    let mut rt = Runtime::with_program(&prog);
+    let common = match emu.path_map() {
+        Some(map) => CommonPlatform::new().with_path_map(map.clone()),
+        None => CommonPlatform::new(),
+    };
+    rt.set_platform(Box::new(CompositePlatform::new(
+        "winemu+common",
+        vec![Box::new(emu), Box::new(common)],
+    )));
+    rt.set_profile(ExecutionProfile::faithful());
+    rt.call_function("F", vec![]).expect("no runtime error")
+}
+
 /// The default machine: Windows 10 x64.
 fn win10() -> WindowsEmulation {
     WindowsEmulation::new()
@@ -1698,4 +1717,94 @@ Local $o = ObjCreate("NoSuch.ProgID.Here")
 Return @error
 "#;
     assert_eq!(run(win10(), body).to_int(), 1);
+}
+
+
+// ---------------------------------------------------------------------------
+// The drive map (`C:` -> the host filesystem)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_script_macros_describe_the_script_in_windows_form() {
+    // The interpreter never tells the platform which file it is running; the
+    // CLI hands it over, and the emulation reports it the way the script's own
+    // path arithmetic expects.
+    let script = "/tmp/demo dir/run.au3";
+    assert_eq!(
+        run_mapped(win10().with_script_path(script), "Return @ScriptDir").to_autoit_string(),
+        r"C:\tmp\demo dir\"
+    );
+    assert_eq!(text(win10().with_script_path(script), "Return @ScriptName"), "run.au3");
+    assert_eq!(
+        run_mapped(win10().with_script_path(script), "Return @ScriptFullPath").to_autoit_string(),
+        r"C:\tmp\demo dir\run.au3"
+    );
+}
+
+#[test]
+fn a_relative_script_path_is_resolved_before_it_is_reported() {
+    // `./run.au3` must not report `C:\.`: every join the script does with
+    // `@ScriptDir` would land in the drive root.
+    let dir = run_mapped(win10().with_script_path("run.au3"), "Return @ScriptDir")
+        .to_autoit_string();
+    assert!(!dir.starts_with(r"C:\."), "got {dir}");
+    assert!(dir.ends_with('\\'), "got {dir}");
+    assert_eq!(text(win10().with_script_path("run.au3"), "Return @ScriptName"), "run.au3");
+}
+
+#[test]
+fn the_drive_map_reads_host_files_through_c_paths() {
+    let dir = scratch("drive-map");
+    let host = dir.join("data.txt");
+    std::fs::write(&host, b"payload").expect("write fixture");
+    let win = autoitv3_platform::PathMap::host_root().to_windows(&host);
+
+    let body = format!(
+        r#"
+Local $p = "{win}"
+If Not FileExists($p) Then Return "no-file"
+Local $h = FileOpen($p, 16)
+If $h = -1 Then Return "no-open"
+Local $b = FileRead($h)
+FileClose($h)
+Return BinaryToString($b)
+"#
+    );
+    assert_eq!(run_mapped(win10(), &body).to_autoit_string(), "payload");
+}
+
+#[test]
+fn the_drive_map_is_on_by_default_and_can_be_turned_off() {
+    assert!(win10().path_map().is_some(), "the map defaults to on");
+
+    let dir = text(
+        win10().with_script_path("/tmp/demo.au3").without_path_map(),
+        "Return @ScriptDir",
+    );
+    assert!(!dir.starts_with("C:"), "got {dir}");
+    // ... and a drive path is just a filename.
+    #[cfg(not(windows))]
+    assert_eq!(
+        run_mapped(
+            win10().without_path_map(),
+            r#"Return FileExists("C:\etc\hostname")"#
+        )
+        .to_int(),
+        0
+    );
+}
+
+#[test]
+fn a_custom_drive_root_is_honoured() {
+    let dir = scratch("drive-root");
+    std::fs::write(dir.join("payload.txt"), b"42").expect("write fixture");
+    let emu = win10().with_drive_root(&dir);
+    let body = r#"
+Local $h = FileOpen("C:\payload.txt", 16)
+If $h = -1 Then Return "no-open"
+Local $b = FileRead($h)
+FileClose($h)
+Return BinaryToString($b)
+"#;
+    assert_eq!(run_mapped(emu, body).to_autoit_string(), "42");
 }

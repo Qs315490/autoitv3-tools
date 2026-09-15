@@ -185,6 +185,14 @@ enum Handle {
 pub struct CommonPlatform {
     /// Handle `n` lives at index `n - 1`; `None` is a closed slot.
     handles: Vec<Option<Handle>>,
+    /// How emulated `C:\` paths map onto the host filesystem, when the
+    /// platform stack asked for it (see [`crate::pathmap`]). `None` means every
+    /// path is a host path already.
+    path_map: Option<crate::pathmap::PathMap>,
+    /// The file being run, when the caller knows it. Reported by `@ScriptDir`,
+    /// `@ScriptName` and `@ScriptFullPath`; without it those macros describe the
+    /// working directory.
+    script_path: Option<PathBuf>,
     /// xorshift64 state. `None` until first use, so the seed can come from the
     /// execution profile (deterministic or entropy) or from `RandomSeed`.
     rng: Option<u64>,
@@ -204,11 +212,44 @@ impl CommonPlatform {
     pub fn new() -> Self {
         Self {
             handles: Vec::new(),
+            path_map: None,
+            script_path: None,
             rng: None,
             origin: Instant::now(),
             proc: ProcessService::new(),
             net: NetworkService::new(),
         }
+    }
+
+    /// Translate emulated (`C:\...`) paths to host paths on the way in.
+    ///
+    /// The emulation layer installs this when its drive map is active; without
+    /// it every path argument is passed to the host untouched.
+    pub fn with_path_map(mut self, map: crate::pathmap::PathMap) -> Self {
+        self.path_map = Some(map);
+        self
+    }
+
+    /// The drive map in force, if any.
+    pub fn path_map(&self) -> Option<&crate::pathmap::PathMap> {
+        self.path_map.as_ref()
+    }
+
+    /// Tell the layer which file is running, so the script macros describe it
+    /// rather than the working directory.
+    pub fn with_script_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.script_path = Some(path.into());
+        self
+    }
+
+    /// The directory the running script lives in, as the host sees it.
+    fn script_dir(&self) -> Option<PathBuf> {
+        if let Some(dir) = self.script_path.as_deref().and_then(|p| p.parent()) {
+            if !dir.as_os_str().is_empty() {
+                return Some(dir.to_path_buf());
+            }
+        }
+        std::env::current_dir().ok()
     }
 
     // ----- helpers -----
@@ -1200,23 +1241,47 @@ impl Platform for CommonPlatform {
 
     /// Macros whose meaning is the same on every operating system.
     ///
-    /// `@ScriptDir`/`@ScriptName` describe the running script, which the
-    /// interpreter is not told; the working directory is the closest portable
-    /// answer and is documented as such.
+    /// `@ScriptDir`/`@ScriptName` describe the running script. The interpreter
+    /// does not tell the platform which file is running, so without
+    /// [`with_script_path`](Self::with_script_path) the working directory is
+    /// the closest portable answer — which is what the emulation layer used to
+    /// report for every one of them.
     fn macro_value(&self, name: &str) -> Option<Value> {
         let dir_with_sep = |p: std::path::PathBuf| {
-            let mut s = p.to_string_lossy().into_owned();
-            if !s.ends_with(std::path::MAIN_SEPARATOR) {
-                s.push(std::path::MAIN_SEPARATOR);
+            // A drive map is in force, so the directories the script sees are
+            // emulated ones — report them in the same `C:\` spelling the file
+            // functions accept. A directory the map does not cover (a custom
+            // root, say) stays a host path.
+            let (mut s, sep) = match self.path_map.as_ref().filter(|m| m.covers(&p)) {
+                Some(map) => (map.to_windows(&p), '\\'),
+                None => (p.to_string_lossy().into_owned(), std::path::MAIN_SEPARATOR),
+            };
+            if !s.ends_with(sep) {
+                s.push(sep);
             }
             Value::Str(s)
         };
         let home = || std::env::var("HOME").ok().filter(|h| !h.is_empty());
         let value = match name {
             "tempdir" => dir_with_sep(std::env::temp_dir()),
-            "workingdir" | "scriptdir" => match std::env::current_dir() {
+            "workingdir" => match std::env::current_dir() {
                 Ok(d) => dir_with_sep(d),
                 Err(_) => Value::Str(String::new()),
+            },
+            "scriptdir" => match self.script_dir() {
+                Some(d) => dir_with_sep(d),
+                None => Value::Str(String::new()),
+            },
+            "scriptname" => match self.script_path.as_deref().and_then(|p| p.file_name()) {
+                Some(name) => Value::Str(name.to_string_lossy().into_owned()),
+                None => return None,
+            },
+            "scriptfullpath" => match &self.script_path {
+                Some(path) => match self.path_map.as_ref().filter(|m| m.covers(path)) {
+                    Some(map) => Value::Str(map.to_windows(path)),
+                    None => Value::Str(path.to_string_lossy().into_owned()),
+                },
+                None => return None,
             },
             "autoitpid" => Value::Int(std::process::id() as i64),
             "autoitexe" => std::env::current_exe()
@@ -1273,7 +1338,59 @@ impl Platform for CommonPlatform {
         ctx: &mut dyn HostContext,
     ) -> Result<Option<Value>, RuntimeError> {
         let key = name.to_ascii_lowercase();
-        Ok(self.call_inner(&key, &args, ctx))
+        // Path arguments arrive in the emulation's `C:\` spelling when a drive
+        // map is installed; the host wants its own. Only the argument slots
+        // that really are paths are touched — a `FileWrite` payload that
+        // happens to start with `C:\` is data, not a path.
+        let args = match &self.path_map {
+            Some(map) => rewrite_path_args(&key, args, map),
+            None => args,
+        };
+        let result = self.call_inner(&key, &args, ctx);
+        Ok(match (result, &self.path_map) {
+            (Some(value), Some(map)) if returns_path(&key) => Some(map_value_back(value, map)),
+            (value, _) => value,
+        })
+    }
+}
+
+/// The argument positions that name a file or directory, per function.
+fn path_arg_indices(key: &str) -> &'static [usize] {
+    match key {
+        "fileopen" | "fileexists" | "filegetsize" | "filegettime" | "filegetattrib"
+        | "filegetlongname" | "filegetshortname" | "filegetencoding" | "filereadtoarray"
+        | "filefindfirstfile" | "filesettime" | "filesetattrib" | "filechangedir"
+        | "filedelete" | "dircreate" | "dirremove" | "dirgetsize" | "iniread" | "iniwrite"
+        | "inidelete" | "inireadsection" | "inireadsectionnames" | "inirenamesection"
+        | "iniwritesection" | "run" | "runwait" => &[0],
+        "filecopy" | "filemove" | "dircopy" | "dirmove" => &[0, 1],
+        // `InetGet(url, filename, ...)` — the local name is the second argument.
+        "inetget" => &[1],
+        _ => &[],
+    }
+}
+
+/// Functions whose string result is a path the script will keep using.
+fn returns_path(key: &str) -> bool {
+    matches!(key, "filegetlongname" | "filegetshortname")
+}
+
+fn rewrite_path_args(key: &str, mut args: Vec<Value>, map: &crate::pathmap::PathMap) -> Vec<Value> {
+    for &index in path_arg_indices(key) {
+        if let Some(Value::Str(s)) = args.get(index) {
+            let rewritten = map.rewrite(s);
+            if rewritten != *s {
+                args[index] = Value::Str(rewritten);
+            }
+        }
+    }
+    args
+}
+
+fn map_value_back(value: Value, map: &crate::pathmap::PathMap) -> Value {
+    match value {
+        Value::Str(s) => Value::Str(map.to_windows(std::path::Path::new(&s))),
+        other => other,
     }
 }
 
