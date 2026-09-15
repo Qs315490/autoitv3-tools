@@ -33,7 +33,7 @@
 //! | callbacks | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` hand out synthetic pointers; `DllCallAddress` has no routine behind it and fails predictably |
 //! | system info | `MemGetStats` (a fixed machine profile, so runs are reproducible) and `IsAdmin` |
 //! | shell | `ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` launch host processes; `Shutdown` only records the request |
-//! | COM | no real runtime: `ObjCreate` answers `Scripting.Dictionary`, `WScript.Shell` and `Scripting.FileSystemObject` as plain objects over a member table ([`com`]); every other ProgID and `ObjGet`/`ObjCreateInterface`/`ObjEvent` fail with `@error = 1` rather than inventing objects |
+//! | COM | no real runtime: `ObjCreate` answers `Scripting.Dictionary`, `WScript.Shell` and `Scripting.FileSystemObject` as plain objects over a member table ([`com`]); `IsObj` is `1` and `ObjName` echoes the ProgID for those; every other ProgID and `ObjGet`/`ObjCreateInterface`/`ObjEvent` fail with `@error = 1` rather than inventing objects |
 //! | GUI | `GUICreate`/`GUICtrlCreate*`/`GUICtrlSet*`/`GUIGetMsg`/`Win*`/`Control*`/dialogs/tray/input over an in-memory widget model ([`gui`]); rendering and events come from a pluggable [`GuiBackend`], headless by default |
 //!
 //! # Choosing the emulated system
@@ -1571,11 +1571,14 @@ impl Platform for WindowsEmulation {
                 ctx.set_error(1, 0);
                 Value::Int(0)
             }
-            "objname" => {
-                ctx.set_error(1, 0);
-                Value::str("")
-            }
-            "isobj" => Value::Int(0),
+            "objname" => match args.first() {
+                Some(Value::Obj(o)) => Value::str(o.name.clone()),
+                _ => {
+                    ctx.set_error(1, 0);
+                    Value::str("")
+                }
+            },
+            "isobj" => Value::Int(i64::from(matches!(args.first(), Some(Value::Obj(_))))),
 
             // ---------------- system information ----------------
             // A fixed machine profile, so a run is reproducible.
