@@ -767,3 +767,38 @@ Main()
     assert!(out.contains("running until GUICreate is called"), "got:\n{out}");
     assert!(out.contains("Stopped at line 3"), "got:\n{out}");
 }
+
+// ---------------------------------------------------------------------------
+// GUI backend selection
+// ---------------------------------------------------------------------------
+
+/// `--gui window` needs the eframe-backed build; without the feature the shell
+/// has to say how to get one rather than failing obscurely.
+#[cfg(not(feature = "gui-window"))]
+#[test]
+fn gui_window_without_the_feature_says_how_to_build_it() {
+    let path = script("gui-window-off", SCRIPT);
+    let out = shell_with(&path, &["--gui", "window"], &["quit"]);
+    assert!(out.contains("gui-window"), "got:\n{out}");
+    assert!(out.contains("--features gui-window"), "got:\n{out}");
+}
+
+#[test]
+fn gui_rejects_an_unknown_mode() {
+    let path = script("gui-bad", SCRIPT);
+    let out = shell_with(&path, &["--gui", "bogus"], &["quit"]);
+    assert!(
+        out.contains("invalid value") && out.contains("bogus"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn gui_headless_is_the_default_and_keeps_the_session_working() {
+    let path = script(
+        "gui-headless",
+        "Global $h = GUICreate(\"T\", 100, 50)\n",
+    );
+    let out = shell_with(&path, &["--gui", "headless"], &["next", "quit"]);
+    assert!(out.contains("Stopped at line 1"), "got:\n{out}");
+}

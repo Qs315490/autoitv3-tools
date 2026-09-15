@@ -34,6 +34,23 @@ pub struct OutputArgs {
 /// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`, `AU3_RESOURCE_MODULE`,
 /// `AU3_WIN_DRIVE_MAP`),
 /// and then the default — **Windows 10 x64**.
+/// How the emulated GUI is presented while the script runs.
+///
+/// The GUI *semantics* (165 functions) are answered by the emulation layer on
+/// every host; the backend only decides whether anything is drawn. `Headless`
+/// is the default and works without a display server; `Window` hands the
+/// emulation the eframe-backed `LiveBackend`, which needs a build with the
+/// `gui-window` feature.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GuiMode {
+    /// The in-memory model: GUI calls return their real results and nothing is
+    /// drawn (the default, and the only mode that works without a display).
+    #[default]
+    Headless,
+    /// A real window driven by `autoitv3_gui_egui::LiveBackend`.
+    Window,
+}
+
 #[derive(Args, Debug, Clone, Default)]
 pub struct WinEmuArgs {
     /// Emulated Windows version: xp, vista, 7, 8, 81, 10, 11

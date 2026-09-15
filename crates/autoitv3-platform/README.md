@@ -334,7 +334,8 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
   **可判定失败**（返回 `0`/`""` + `@error = 1`），不编造对象；
 - GUI 已由 `winemu/gui/` 的**无头语义**回答（不再是 `undefined function`），默认后端
   **不渲染**——所以"GUI 函数有返回值、屏幕上却没有窗口"是默认行为，不是缺函数。
-  要看真窗口：CLI 用 `au3 run --gui window`（构建时加 `--features gui-window`），
+  要看真窗口：CLI 用 `au3 run --gui window` / `au3 debug --gui window`（构建时加
+  `--features gui-window`），
   或直接用 `autoitv3-gui-egui` 的 `LiveBackend`（feature `window`：窗口归主线程、
   脚本跑在工作线程，点击/输入回灌 `GUIGetMsg`/`GUICtrlRead`）；只在离屏画布上出
   PNG 截图则用 feature `gui-egui`。两种后端共用同一套控件绘制；
