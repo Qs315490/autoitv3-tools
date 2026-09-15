@@ -77,14 +77,48 @@ impl ControlKind {
 }
 
 /// A drawing command recorded by `GUICtrlSetGraphic`.
+///
+/// The variants mirror the `$GUI_GR_*` types the official constants define
+/// (`GUIConstantsEx.au3`): a line, a bezier with two control points, a straight
+/// move, a rectangle, an ellipse, a pie wedge, a dot and a text. The colours and
+/// the pen width are commands of their own because they apply to whatever is
+/// drawn after them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DrawCmd {
+    /// `$GUI_GR_LINE`: from the pen position to `(x2, y2)`.
     Line { x1: i32, y1: i32, x2: i32, y2: i32 },
+    /// `$GUI_GR_BEZIER`: from `(x1, y1)` to `(x4, y4)` with two control points.
+    Bezier {
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        x3: i32,
+        y3: i32,
+        x4: i32,
+        y4: i32,
+    },
+    /// `$GUI_GR_RECT`.
     Rect { x: i32, y: i32, w: i32, h: i32 },
+    /// `$GUI_GR_ELLIPSE`.
     Ellipse { x: i32, y: i32, w: i32, h: i32 },
+    /// `$GUI_GR_PIE`: `(x, y)` is the centre, `r` the radius, and the angles are
+    /// in degrees.
+    Pie {
+        x: i32,
+        y: i32,
+        r: i32,
+        start: i32,
+        sweep: i32,
+    },
+    /// `$GUI_GR_DOT`/`$GUI_GR_PIXEL`.
+    Dot { x: i32, y: i32 },
     Text { x: i32, y: i32, text: String },
+    /// `$GUI_GR_COLOR`'s first argument.
     SetColor(i64),
+    /// `$GUI_GR_COLOR`'s second argument, or `$GUI_GR_NOBKCOLOR` for "no fill".
     SetBkColor(i64),
+    /// `$GUI_GR_PENSIZE`.
     SetWidth(i32),
     SetStyle(i64),
     Clear,

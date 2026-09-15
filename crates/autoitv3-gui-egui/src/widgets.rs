@@ -1220,42 +1220,124 @@ fn draw_graphic(ui: &mut egui::Ui, control: &Control) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(24));
-    let mut color = ui.visuals().text_color();
-    let mut width = 1.0f32;
-    for command in &control.draw {
-        match command {
-            DrawCmd::SetColor(value) => color = autoit_color(*value),
-            DrawCmd::SetWidth(value) => width = (*value).max(1) as f32,
-            DrawCmd::SetBkColor(_) | DrawCmd::SetStyle(_) | DrawCmd::Clear => {}
-            DrawCmd::Line { x1, y1, x2, y2 } => {
-                painter.line_segment(
-                    [point(rect, *x1, *y1), point(rect, *x2, *y2)],
-                    Stroke::new(width, color),
-                );
-            }
-            DrawCmd::Rect { x, y, w, h } => {
-                painter.rect_stroke(
-                    Rect::from_min_size(point(rect, *x, *y), vec2(*w as f32, *h as f32)),
-                    CornerRadius::ZERO,
-                    Stroke::new(width, color),
-                    StrokeKind::Inside,
-                );
-            }
-            DrawCmd::Ellipse { x, y, w, h } => {
-                painter.circle_stroke(
-                    point(rect, *x + *w / 2, *y + *h / 2),
-                    (*w).min(*h).max(0) as f32 / 2.0,
-                    Stroke::new(width, color),
-                );
-            }
-            DrawCmd::Text { x, y, text } => {
-                painter.text(
-                    point(rect, *x, *y),
-                    Align2::LEFT_TOP,
-                    text,
-                    FontId::proportional(12.0),
-                    color,
-                );
+    // The help page is explicit about the order: "Due to design constraints RECT,
+    // ELLIPSE and PIE graphics are drawn first", so the closed shapes get a pass
+    // of their own and the colours are replayed in both.
+    for closed_pass in [true, false] {
+        let mut color = ui.visuals().text_color();
+        let mut background: Option<Color32> = None;
+        let mut width = 1.0f32;
+        for command in &control.draw {
+            match command {
+                DrawCmd::SetColor(value) => color = autoit_color(*value),
+                // `$GUI_GR_NOBKCOLOR` is negative, which is "do not fill".
+                DrawCmd::SetBkColor(value) => {
+                    background = (*value >= 0).then(|| autoit_color(*value));
+                }
+                DrawCmd::SetWidth(value) => width = (*value).max(1) as f32,
+                DrawCmd::SetStyle(_) | DrawCmd::Clear => {}
+                DrawCmd::Rect { x, y, w, h } if closed_pass => {
+                    let shape = Rect::from_min_size(point(rect, *x, *y), vec2(*w as f32, *h as f32));
+                    match background {
+                        Some(fill) => {
+                            painter.rect_filled(shape, CornerRadius::ZERO, fill);
+                        }
+                        None => {
+                            painter.rect_stroke(
+                                shape,
+                                CornerRadius::ZERO,
+                                Stroke::new(width, color),
+                                StrokeKind::Inside,
+                            );
+                        }
+                    }
+                }
+                DrawCmd::Ellipse { x, y, w, h } if closed_pass => {
+                    let centre = point(rect, *x + *w / 2, *y + *h / 2);
+                    let radius = (*w).min(*h).max(0) as f32 / 2.0;
+                    match background {
+                        Some(fill) => {
+                            painter.circle_filled(centre, radius, fill);
+                        }
+                        None => {
+                            painter.circle_stroke(centre, radius, Stroke::new(width, color));
+                        }
+                    }
+                }
+                DrawCmd::Pie {
+                    x,
+                    y,
+                    r,
+                    start,
+                    sweep,
+                } if closed_pass => {
+                    let centre = point(rect, *x, *y);
+                    let steps = ((*sweep).unsigned_abs() / 6).clamp(2, 90) as usize;
+                    let mut points = Vec::with_capacity(steps + 2);
+                    points.push(centre);
+                    for step in 0..=steps {
+                        let angle = (*start as f32
+                            + *sweep as f32 * step as f32 / steps as f32)
+                            .to_radians();
+                        // Screen `y` grows downwards, and `$GUI_GR_PIE`'s angles
+                        // count upwards from the positive x axis.
+                        points.push(egui::pos2(
+                            centre.x + *r as f32 * angle.cos(),
+                            centre.y - *r as f32 * angle.sin(),
+                        ));
+                    }
+                    painter.add(egui::epaint::PathShape::convex_polygon(
+                        points,
+                        background.unwrap_or(Color32::TRANSPARENT),
+                        Stroke::new(if background.is_some() { 0.0 } else { width }, color),
+                    ));
+                }
+                DrawCmd::Line { x1, y1, x2, y2 } if !closed_pass => {
+                    painter.line_segment(
+                        [point(rect, *x1, *y1), point(rect, *x2, *y2)],
+                        Stroke::new(width, color),
+                    );
+                }
+                DrawCmd::Bezier {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    x3,
+                    y3,
+                    x4,
+                    y4,
+                } if !closed_pass => {
+                    painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                        [
+                            point(rect, *x1, *y1),
+                            point(rect, *x2, *y2),
+                            point(rect, *x3, *y3),
+                            point(rect, *x4, *y4),
+                        ],
+                        false,
+                        Color32::TRANSPARENT,
+                        Stroke::new(width, color),
+                    ));
+                }
+                DrawCmd::Dot { x, y } if !closed_pass => {
+                    let size = vec2(width.max(1.0), width.max(1.0));
+                    painter.rect_filled(
+                        Rect::from_min_size(point(rect, *x, *y), size),
+                        CornerRadius::ZERO,
+                        color,
+                    );
+                }
+                DrawCmd::Text { x, y, text } if !closed_pass => {
+                    painter.text(
+                        point(rect, *x, *y),
+                        Align2::LEFT_TOP,
+                        text,
+                        FontId::proportional(12.0),
+                        color,
+                    );
+                }
+                _ => {}
             }
         }
     }

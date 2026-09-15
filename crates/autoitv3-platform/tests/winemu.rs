@@ -10,7 +10,8 @@ use std::rc::Rc;
 
 use autoitv3_platform::{CommonPlatform, CompositePlatform};
 use autoitv3_platform::winemu::{
-    Control, FileRegistry, GuiBackend, GuiEvent, GuiUpdate, HeadlessBackend, MemoryRegistry,
+    Control, ControlKind, FileRegistry, GuiBackend, GuiEvent, GuiUpdate, HeadlessBackend,
+    MemoryRegistry,
     Progress, RegistryData, RegistryStore, Splash, Window, WindowsArch, WindowsEmulation,
     WindowsPaths, WindowsVersion,
 };
@@ -1313,6 +1314,79 @@ Local $erase = GUICtrlRead($item)
 Return $seps & ":" & $sparse & ":" & $erase
 "#;
     assert_eq!(text(win10(), body), "1|2|3|:x|2|z|:x||z|");
+}
+
+/// A backend that records the drawing commands a graphic control collects.
+#[derive(Clone, Default)]
+struct DrawBackend {
+    log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl GuiBackend for DrawBackend {
+    fn on_control(&mut self, control: &Control) {
+        if control.kind == ControlKind::Graphic {
+            self.log.borrow_mut().push(format!("{:?}", control.draw));
+        }
+    }
+}
+
+#[test]
+fn graphic_types_are_the_official_ones() {
+    // The type numbers are `GUIConstantsEx.au3`'s: even, in the order the help
+    // page lists them. `$GUI_GR_BEZIER` really is 4, not 3 or 5.
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let body = r#"
+GUICreate("T", 200, 200)
+Local $g = GUICtrlCreateGraphic(0, 0, 100, 100)
+GUICtrlSetGraphic($g, 8, 0xFF0000, 0x00FF00)
+GUICtrlSetGraphic($g, 10, 5, 5, 20, 30)
+GUICtrlSetGraphic($g, 6, 50, 50)
+GUICtrlSetGraphic($g, 2, 60, 60)
+GUICtrlSetGraphic($g, 4, 70, 70, 72, 72, 74, 74)
+GUICtrlSetGraphic($g, 14, 40, 40, 10, 0, 90)
+GUICtrlSetGraphic($g, 16, 1, 2)
+GUICtrlSetGraphic($g, 24, 3)
+Return "done"
+"#;
+    let emu = win10().with_gui_backend(Box::new(DrawBackend { log: log.clone() }));
+    assert_eq!(text(emu, body), "done");
+    let seen = log.borrow().join("|");
+    assert!(seen.contains("SetColor(16711680)"), "{seen}");
+    assert!(seen.contains("SetBkColor(65280)"), "{seen}");
+    assert!(seen.contains("Rect { x: 5, y: 5, w: 20, h: 30 }"), "{seen}");
+    assert!(seen.contains("Line { x1: 50, y1: 50, x2: 60, y2: 60 }"), "{seen}");
+    assert!(
+        seen.contains(
+            "Bezier { x1: 60, y1: 60, x2: 72, y2: 72, x3: 74, y3: 74, x4: 70, y4: 70 }"
+        ),
+        "{seen}"
+    );
+    assert!(
+        seen.contains("Pie { x: 40, y: 40, r: 10, start: 0, sweep: 90 }"),
+        "{seen}"
+    );
+    assert!(seen.contains("Dot { x: 1, y: 2 }"), "{seen}");
+    assert!(seen.contains("SetWidth(3)"), "{seen}");
+}
+
+#[test]
+fn controls_follow_a_window_resize_the_way_their_docking_asks() {
+    // `$GUI_DOCKAUTO` scales with the window, `$GUI_DOCKRIGHT` keeps the
+    // control's right edge where it was, and a control nobody touched keeps
+    // both its place and its size.
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $stay = GUICtrlCreateLabel("stays", 10, 10, 50, 20)
+Local $right = GUICtrlCreateLabel("right", 10, 50, 50, 20)
+GUICtrlSetResizing($right, 4)
+Local $bar = GUICtrlCreateProgress(10, 100, 100, 20)
+WinMove("T", "", -1, -1, 500, 300)
+Local $a = ControlGetPos("T", "", $stay)
+Local $b = ControlGetPos("T", "", $right)
+Local $c = ControlGetPos("T", "", $bar)
+Return $a[0] & "," & $a[1] & "," & $a[2] & "," & $a[3] & ":" & $b[0] & "," & $b[1] & ":" & $c[0] & "," & $c[1] & "," & $c[2] & "," & $c[3]
+"#;
+    assert_eq!(text(win10(), body), "10,10,50,20:210,50:17,150,167,30");
 }
 
 #[test]
