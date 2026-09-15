@@ -89,6 +89,30 @@ pub trait GuiBackend {
     fn snapshot(&mut self) -> Option<GuiImage> {
         None
     }
+    /// Send a control message to a real control, when the backend has one.
+    ///
+    /// `None` means "there is no real control to ask" — the headless backend,
+    /// and every control that has no window of its own — which is what lets the
+    /// semantics layer answer from the model instead of guessing.
+    fn send_message(
+        &mut self,
+        _id: i64,
+        _message: u32,
+        _wparam: usize,
+        _lparam: isize,
+    ) -> Option<i64> {
+        None
+    }
+
+    /// How much larger a window's frame is than its client area.
+    ///
+    /// A renderer that owns real windows knows this by asking the OS; the
+    /// headless model does not, and answering `(0, 0)` is what makes `WinGetPos`
+    /// and `WinGetClientSize` agree where there is no frame to count.
+    fn frame_size(&self, _window: &Window) -> (i32, i32) {
+        (0, 0)
+    }
+
     /// The size of the desktop this backend provides, in pixels.
     ///
     /// A live window's viewport and an offscreen canvas are both desktops for

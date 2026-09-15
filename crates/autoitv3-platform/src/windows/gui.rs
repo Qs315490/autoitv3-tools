@@ -89,7 +89,7 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics,
-    GetWindowRect,
+    GetWindowRect, SetWindowLongW,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsIconic, IsWindow, IsZoomed,
     LoadCursorW, LoadImageW, MoveWindow, PeekMessageW, RegisterClassExW, SendMessageW, SetCursor,
     SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
@@ -267,6 +267,10 @@ const HWND_NOTOPMOST: isize = -2;
 const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
+const SWP_NOZORDER: u32 = 0x0004;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+/// `GetWindowLongW`/`SetWindowLongW`: the window's style word.
+const GWL_STYLE: i32 = -16;
 
 // `LoadImage` flags and types.
 const LR_LOADFROMFILE: u32 = 0x0010;
@@ -899,6 +903,22 @@ impl Win32Backend {
                     // A text the model changed has to reach the control —
                     // except where the control is the text the user types into
                     // or the items it shows.
+                    // A style the script changed after creation is applied to
+                    // the real control, which is how `GUICtrlSetStyle` and
+                    // `ControlListView(... "ViewChange")` take effect.
+                    let wanted_style = control_style(control);
+                    if state.control.style != control.style {
+                        SetWindowLongW(hwnd, GWL_STYLE, wanted_style as i32);
+                        SetWindowPos(
+                            hwnd,
+                            std::ptr::null_mut(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                        );
+                    }
                     if state.text != control.text
                         && !matches!(
                             control.kind,
@@ -1720,6 +1740,31 @@ impl GuiBackend for Win32Backend {
             }
         }
         updates
+    }
+
+    /// Ask the real control, which knows what the model only approximates.
+    ///
+    /// A message whose `lParam` is a pointer is *not* forwarded: the pointer a
+    /// script holds addresses the emulation's own memory, not the real control's,
+    /// so the model answers those instead.
+    fn send_message(
+        &mut self,
+        id: i64,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> Option<i64> {
+        let state = self.controls.get(&id)?;
+        if state.hwnd.is_null() {
+            return None;
+        }
+        let result = unsafe { SendMessageW(state.hwnd, message, wparam, lparam) };
+        Some(result as i64)
+    }
+
+    fn frame_size(&self, window: &Window) -> (i32, i32) {
+        let style = window_style(window) | if window.visible { WS_VISIBLE } else { 0 };
+        frame_size(style, window.exstyle.max(0) as u32)
     }
 
     fn snapshot(&mut self) -> Option<GuiImage> {
