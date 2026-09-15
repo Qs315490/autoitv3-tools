@@ -123,6 +123,36 @@ fn parse_assign_expr_is_binary_assign() {
 }
 
 #[test]
+fn a_hex_literal_is_a_32_bit_pattern() {
+    // AutoIt reads a hex literal that fits in 32 bits into an *Int32*: on
+    // 3.3.16 `VarGetType(0xffffffff)` is Int32 and its value is -1, while
+    // `0x100000000` is an ordinary Int64. Reading it as an unsigned 64-bit
+    // number makes `$n + 0xffffffff` ("minus one") ask for four billion.
+    let int_of = |src: &str| match parse(src) {
+        Ok(prog) => match &prog.items[0].kind {
+            ItemKind::Stmt(s) => match &s.kind {
+                StmtKind::Expr(e) => match &e.kind {
+                    ExprKind::Lit(l) => match l.kind {
+                        LitKind::Int(v) => v,
+                        ref other => panic!("expected an int literal, got {other:?}"),
+                    },
+                    other => panic!("expected a literal, got {other:?}"),
+                },
+                other => panic!("expected an expr stmt, got {other:?}"),
+            },
+            other => panic!("expected a stmt, got {other:?}"),
+        },
+        Err(e) => panic!("{src:?} did not parse: {e}"),
+    };
+    assert_eq!(int_of("0x7fffffff\n"), 2_147_483_647);
+    assert_eq!(int_of("0x80000000\n"), -2_147_483_648);
+    assert_eq!(int_of("0xffffffff\n"), -1);
+    assert_eq!(int_of("0x00ffffffff\n"), -1, "leading zeros do not widen it");
+    assert_eq!(int_of("0x100000000\n"), 4_294_967_296);
+    assert_eq!(int_of("4294967295\n"), 4_294_967_295, "decimal stays Int64");
+}
+
+#[test]
 fn parse_compound_assign_op() {
     let prog = parse("$counter += 3\n").unwrap();
     let ItemKind::Stmt(s) = &prog.items[0].kind else {

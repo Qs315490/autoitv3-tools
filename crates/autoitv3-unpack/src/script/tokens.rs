@@ -106,6 +106,10 @@ impl<'a> Tokens<'a> {
         Ok(self.u32()? as i32)
     }
 
+    fn i64(&mut self) -> Result<i64, TokenError> {
+        Ok(self.u64()? as i64)
+    }
+
     fn u64(&mut self) -> Result<u64, TokenError> {
         let b = self.take(8)?;
         Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
@@ -165,8 +169,13 @@ impl<'a> Tokens<'a> {
                     .ok_or_else(|| TokenError::new("a function index is out of range"))?;
                 FUNCTIONS[index].to_string()
             }
-            0x05 => self.u32()?.to_string(),
-            0x10 => self.u64()?.to_string(),
+            // The integer literals are *signed*: `-1` in the source is an
+            // Int32 token holding 0xffff_ffff, and printing the raw word turns
+            // it into 4294967295 — a number the script never wrote, and one
+            // that makes whatever re-parses the text read something else (a
+            // real sample's `$n + 0xffff_ffff` became "four billion elements").
+            0x05 => self.i32()?.to_string(),
+            0x10 => self.i64()?.to_string(),
             0x20 => python_float_repr(self.f64()?),
             // Keyword by name.
             0x30 => {

@@ -1184,8 +1184,19 @@ impl Parser {
     fn lit_from_number(&self, raw: &str, span: Span) -> (LitKind, Span) {
         let lower = raw.to_ascii_lowercase();
         if lower.starts_with("0x") {
-            match i64::from_str_radix(&lower[2..], 16) {
-                Ok(v) => (LitKind::Int(v), span),
+            match u64::from_str_radix(&lower[2..], 16) {
+                // A hex literal that fits in 32 bits *is* a 32-bit pattern:
+                // AutoIt reads it into an Int32, so `0xffffffff` is -1 — its
+                // type is Int32 and its value -1 (measured on 3.3.16). A wider
+                // one is an ordinary Int64, the same as the decimal form
+                // (`0x100000000` is 4294967296).
+                Ok(v) if v <= u64::from(u32::MAX) => {
+                    (LitKind::Int(i64::from(v as u32 as i32)), span)
+                }
+                Ok(v) => match i64::try_from(v) {
+                    Ok(v) => (LitKind::Int(v), span),
+                    Err(_) => (LitKind::Str(raw.to_string()), span),
+                },
                 Err(_) => (LitKind::Str(raw.to_string()), span),
             }
         } else if raw.contains('.') {

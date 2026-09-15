@@ -27,6 +27,16 @@ impl Encoder {
         self
     }
 
+    fn i32(&mut self, value: i32) -> &mut Self {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+        self
+    }
+
+    fn i64(&mut self, value: i64) -> &mut Self {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+        self
+    }
+
     /// A length-prefixed XOR-obfuscated UTF-16 string.
     fn string(&mut self, text: &str) -> &mut Self {
         let units: Vec<u16> = text.encode_utf16().collect();
@@ -66,6 +76,27 @@ fn a_call_and_a_string_come_back_out() {
     // Tokens are joined with single spaces; this is not cosmetic but the
     // reference's output, so it is what a recovered script looks like.
     assert_eq!(deassemble(&e.done()).unwrap(), "$x = MsgBox ( \"hi \"\"there\"\"\" , 7 )\r\n");
+}
+
+#[test]
+fn a_negative_literal_keeps_its_sign() {
+    // AutoIt's integer tokens are signed. `-1` is an Int32 token holding
+    // 0xffff_ffff; printing the raw word turns it into 4294967295, which is a
+    // number the script never wrote — and one that made a real sample (whose
+    // object code says `$n + 0xffff_ffff`, meaning "minus one") ask for four
+    // billion array elements.
+    let mut e = Encoder::new(1);
+    e.op(0x05).i32(-1);
+    e.end_line();
+    assert_eq!(deassemble(&e.done()).unwrap(), "-1\r\n");
+}
+
+#[test]
+fn a_negative_int64_literal_keeps_its_sign_too() {
+    let mut e = Encoder::new(1);
+    e.op(0x10).i64(-2);
+    e.end_line();
+    assert_eq!(deassemble(&e.done()).unwrap(), "-2\r\n");
 }
 
 #[test]
