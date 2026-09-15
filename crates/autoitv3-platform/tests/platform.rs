@@ -678,6 +678,34 @@ fn file_set_pos_honours_the_origin() {
 }
 
 #[test]
+fn a_write_after_a_seek_lands_at_the_cursor() {
+    let dir = scratch("seek-write");
+    let path = dir.join("s.txt");
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 2)
+    FileWrite($h, "abcdef")
+    Local $moved = FileSetPos($h, 2, 0)
+    FileWrite($h, "X")
+    Local $at = FileGetPos($h)
+    FileClose($h)
+    Local $h2 = FileOpen("{p}", 1)
+    FileSetPos($h2, 0, 0)
+    FileWrite($h2, "Z")
+    FileClose($h2)
+    Local $h3 = FileOpen("{p}", 0)
+    Local $all = FileRead($h3)
+    FileClose($h3)
+    Return $all & ":" & $moved & ":" & $at"#,
+        p = path.display()
+    );
+    // `fputs` writes where `fseek` left the position and the position then sits
+    // past what was written; an append handle ignores the position, exactly as
+    // C's `"a+b"` does.
+    assert_eq!(text(&body), "abXdefZ:True:3");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "abXdefZ");
+}
+
+#[test]
 fn file_set_end_truncates_at_the_cursor() {
     let dir = scratch("setend");
     let path = dir.join("b.txt");
