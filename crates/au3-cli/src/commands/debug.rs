@@ -34,11 +34,13 @@
 //!
 //! ## Watching a GUI script
 //!
-//! The emulated GUI answers its 165 functions headlessly by default, so a
-//! script that builds a window runs but nothing is drawn. `--gui window` (build
-//! with `--features gui-window`) puts the session under a real window instead:
-//! winit takes the main thread, so the shell, the interpreter and the prompt
-//! all move to `LiveBackend`'s worker, and stdin keeps working there.
+//! The emulated GUI answers its 165 functions on every host; what draws them is
+//! the backend, and by default that is the platform's own — real Win32 controls
+//! on Windows, nothing at all elsewhere. `--gui headless` forces the in-memory
+//! model for a session that only has to be stepped through, and `--gui window`
+//! (build with `--features gui-window`) puts the session under an eframe window
+//! instead: winit takes the main thread, so the shell, the interpreter and the
+//! prompt all move to `LiveBackend`'s worker, and stdin keeps working there.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -122,10 +124,11 @@ pub struct DebugArgs {
     #[command(flatten)]
     pub compiled: CompiledArgs,
 
-    /// GUI backend: `headless` answers the GUI functions without drawing
-    /// anything; `window` runs the session under a real window (needs a build
-    /// with the `gui-window` feature)
-    #[arg(long = "gui", value_name = "MODE", default_value = "headless")]
+    /// GUI backend: `auto` (the default) is the platform's own — real Win32
+    /// controls on Windows, nothing drawn elsewhere; `headless` answers the GUI
+    /// functions without drawing anything on any host; `window` runs the session
+    /// under an eframe window (needs a build with the `gui-window` feature)
+    #[arg(long = "gui", value_name = "MODE", default_value = "auto")]
     pub gui: GuiMode,
 
     /// `#include` search path (see `IncludeArgs`).
