@@ -158,8 +158,10 @@ fn deterministic_profile_refuses_to_write() {
     Return $h & ":" & $w & ":" & $e & ":" & FileExists("{p}")"#,
         p = path.display()
     );
-    // The open itself is refused, so nothing is created.
-    assert_eq!(text_with(ExecutionProfile::deterministic(), &body), "-1:0:1:0");
+    // The open itself is refused — the *refusal* is what carries `@error = 1`
+    // — so nothing is created; the `FileWrite` on the resulting bad handle is
+    // a plain 0 with `@error` 0, the way the help page has it.
+    assert_eq!(text_with(ExecutionProfile::deterministic(), &body), "-1:0:0:0");
     assert!(!path.exists(), "deterministic profile must not create files");
 }
 

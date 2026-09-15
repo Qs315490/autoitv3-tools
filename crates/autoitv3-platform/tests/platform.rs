@@ -243,39 +243,60 @@ fn file_open_failure_returns_minus_one() {
 }
 
 #[test]
-fn file_query_failures_report_the_documented_error() {
-    let dir = scratch("failures");
-    // A Windows-style name, so the path that comes back from the name queries
-    // is the one the script wrote — the emulation maps `C:` to the host root in
-    // both directions, and what is being checked is the *@error*, not the path.
-    let missing = r"C:\au3-no-such-file-7f3a.txt";
+fn the_measured_file_family_failure_shapes_are_reproduced() {
+    // Every line below mirrors one from `docs/file-error-probe.au3` run under the
+    // official 3.3.16 x64 interpreter. The *value*, `@error` and `@extended` are
+    // all part of the contract: the functions whose help page documents no
+    // `@error` leave it at 0 (the reset every builtin gets on entry), `FileOpen`
+    // still hands the OS error over through `@extended`, the ones that fail with
+    // a boolean say `True`/`False`, and the two array-returning queries answer a
+    // *scalar* 0 when they have nothing.
+    let dir = scratch("shapes");
+    let missing = r"C:\au3-no-such-file-9e21.txt";
     let empty = dir.join("empty.txt");
     std::fs::write(&empty, "").unwrap();
     let body = format!(
         r#"Local $size = FileGetSize("{m}")
     Local $size_err = @error
+    Local $dsize = FileGetSize("{d}")
+    Local $dsize_err = @error
     Local $h = FileOpen("{m}", 0)
     Local $open_err = @error
+    Local $open_ext = @extended
+    Local $enc = FileGetEncoding("{m}")
+    Local $enc_err = @error
     Local $long = FileGetLongName("{m}")
     Local $long_err = @error
     Local $short = FileGetShortName("{m}")
     Local $short_err = @error
+    Local $find = FileFindFirstFile("{m}")
+    Local $find_err = @error
+    Local $close = FileClose(9999)
+    Local $close_err = @error
+    Local $flush = FileFlush(9999)
+    Local $flush_err = @error
+    Local $set = FileSetPos(9999, 0, 0)
+    Local $set_err = @error
+    Local $write = FileWrite(9999, "x")
+    Local $write_err = @error
     Local $pos = FileGetPos(9999)
     Local $pos_err = @error
-    Local $d = DirGetSize("{m}")
-    Local $dir_err = @error
-    Local $a = FileReadToArray("{e}")
-    Local $arr_err = @error
-    Return $size & ":" & $size_err & ":" & $h & ":" & $open_err & ":" & ($long = "{m}") & ":" & $long_err & ":" & ($short = "{m}") & ":" & $short_err & ":" & $pos & ":" & $pos_err & ":" & $d & ":" & $dir_err & ":" & $a[0] & ":" & $arr_err"#,
+    Local $dirsize = DirGetSize("{m}")
+    Local $dirsize_err = @error
+    Local $array = DirGetSize("{m}", 1)
+    Local $array_err = @error
+    Local $empty = FileReadToArray("{e}")
+    Local $empty_err = @error
+    Local $gone = FileReadToArray("{m}")
+    Local $gone_err = @error
+    Return $size & ":" & $size_err & ":" & $dsize & ":" & $dsize_err & ":" & $h & ":" & $open_err & ":" & $open_ext & ":" & $enc & ":" & $enc_err & ":" & ($long = "{m}") & ":" & $long_err & ":" & ($short = "{m}") & ":" & $short_err & ":" & $find & ":" & $find_err & ":" & $close & ":" & $close_err & ":" & $flush & ":" & $flush_err & ":" & $set & ":" & $set_err & ":" & $write & ":" & $write_err & ":" & $pos & ":" & $pos_err & ":" & $dirsize & ":" & $dirsize_err & ":" & $array & ":" & $array_err & ":" & $empty & ":" & $empty_err & ":" & $gone & ":" & $gone_err"#,
         m = missing,
+        d = dir.display(),
         e = empty.display()
     );
-    // size 0/@error 1, open -1/@error 0, the parameter back with @error 1 for
-    // both name forms, 0/@error 1 for a bad handle, -1/@error 1 for a missing
-    // directory, and an empty array with @error 2 for an empty file.
     assert_eq!(
         text(&body),
-        "0:1:-1:0:True:1:True:1:0:1:-1:1:0:2"
+        "0:1:0:0:-1:0:2:-1:0:True:1:True:1:-1:0:0:0:False:0:False:0:0:0:0:1:-1:1:-1:1:0:2:0:1"
     );
 }
 
@@ -651,8 +672,9 @@ fn file_set_pos_honours_the_origin() {
     );
     // $FILE_END (0 from the end), $FILE_CURRENT (backwards 2), $FILE_BEGIN, and
     // a position before the start, which `fseek` refuses and the help page calls
-    // a failure — without moving the cursor.
-    assert_eq!(text(&body), "1:6:1:4:1:2:0:2");
+    // a failure — without moving the cursor. True/False, not 1/0 (the help page,
+    // and the official's own output).
+    assert_eq!(text(&body), "True:6:True:4:True:2:False:2");
 }
 
 #[test]
