@@ -802,8 +802,22 @@ impl Runtime {
         // builtins, so a stale code cannot leak through one either.
         self.error = 0;
         self.extended = 0;
-        if let Some(dbg) = self.debugger.as_mut() {
-            dbg.on_builtin_call(display);
+        let call_action = match self.debugger.as_mut() {
+            Some(dbg) => dbg.on_builtin_call(display, &args),
+            None => DebugAction::Continue,
+        };
+        match call_action {
+            // A `stopat`-style stop: suspend *before* the call, so the debugger
+            // can show the arguments and the call site. `notify_stop` takes the
+            // debugger out and back, and ignores a stop asked for from inside
+            // the prompt itself.
+            DebugAction::Pause => {
+                let reason = StopReason::Builtin { name: display.to_string() };
+                self.paused = Some(reason.clone());
+                self.notify_stop(reason);
+            }
+            DebugAction::Abort => return Err(RuntimeError::Aborted),
+            DebugAction::Continue => {}
         }
         if let Some(v) = builtins::call(self, key, &args, span)? {
             return Ok(v);

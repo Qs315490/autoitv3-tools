@@ -352,9 +352,14 @@ impl Debugger for SharedShell {
         }
     }
 
-    fn on_builtin_call(&mut self, name: &str) {
-        if let Ok(mut shell) = self.0.try_borrow_mut() {
-            shell.on_builtin_call(name);
+    fn on_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[autoitv3_runtime::Value],
+    ) -> DebugAction {
+        match self.0.try_borrow_mut() {
+            Ok(mut shell) => shell.on_builtin_call(name, args),
+            Err(_) => DebugAction::Continue,
         }
     }
 }
@@ -365,7 +370,8 @@ impl Debugger for SharedShell {
 /// completion matches what can actually be typed.
 const COMMAND_WORDS: &[&str] = &[
     "run", "restart", "continue", "c", "step", "s", "next", "n", "finish", "fin", "until", "u",
-    "untilcall", "untilc", "untilgui", "gui", "break", "b", "tbreak", "tb", "jmp", "j",
+    "untilcall", "untilc", "untilgui", "gui", "stopat", "sa", "break", "b", "tbreak", "tb",
+    "jmp", "j",
     "delete", "d", "del", "enable", "disable", "print", "p", "set", "info", "i", "backtrace",
     "bt", "where", "w", "list", "l", "eval", "watch", "unwatch", "ignore", "commands",
     "nostop", "stop", "catch", "source", "trace", "help", "h", "?", "quit", "q", "exit",
@@ -427,7 +433,7 @@ impl CompletionData {
                 "break" | "b" | "tbreak" | "tb" | "until" | "u" | "jmp" | "j" => {
                     pool.extend(self.functions.iter().cloned())
                 }
-                "untilcall" | "untilc" => {
+                "untilcall" | "untilc" | "stopat" | "sa" => {
                     pool.extend(self.builtins.iter().cloned());
                     pool.extend(self.functions.iter().cloned());
                 }
@@ -587,6 +593,12 @@ struct Shell {
     /// `untilcall <name>`: stop at the next call to this builtin/function
     /// (lower-case).
     until_call: Option<String>,
+    /// `stopat <name>`: stop *before* every call to this builtin/function
+    /// (lower-case), so its arguments — a dialog's text — can be read without
+    /// it opening.
+    stop_at: Option<String>,
+    /// The call a catchpoint is stopping on, formatted for the banner.
+    caught_call: Option<String>,
     /// The `untilcall` target has been seen; stop at the next statement.
     until_hit: bool,
     /// Line editor with completion. Present only when stdin is a terminal;
@@ -651,6 +663,8 @@ impl Shell {
             trace_skip: Vec::new(),
             call_stack: Vec::new(),
             until_call: None,
+            stop_at: None,
+            caught_call: None,
             until_hit: false,
             editor,
             catching: !args.no_catch,
@@ -877,6 +891,7 @@ impl Shell {
             // `untilcall` is the builtin counterpart: builtins have no entry
             // line, so it watches the resolved call instead.
             "untilcall" | "untilc" => self.until_call_command(rest.trim()),
+            "stopat" | "sa" => self.stop_at_command(rest.trim()),
             "untilgui" | "gui" => self.until_call_command("GUICreate"),
             "b" | "break" => self.break_command(rest.trim(), host),
             "jmp" | "j" => self.jmp_command(rest.trim(), host),
@@ -1150,6 +1165,33 @@ impl Shell {
         self.step = StepMode::Run;
         println!("running until {name} is called");
         Outcome::Resume
+    }
+
+    /// `stopat <func>` — stop *before* a call to that function, builtins
+    /// included, so what the call is about to do can be read first. The point
+    /// of it is a dialog: `stopat MsgBox` shows the message (and the line it
+    /// came from) without the dialog opening, and `continue` then lets it run.
+    /// `stopat off` clears it, `stopat` alone shows it.
+    fn stop_at_command(&mut self, name: &str) -> Outcome {
+        if name.is_empty() {
+            match &self.stop_at {
+                Some(func) => println!("stopping before every {func} call"),
+                None => {
+                    println!("no stop-at set (usage: stopat <function>, e.g. `stopat MsgBox`)")
+                }
+            }
+            return Outcome::Stay;
+        }
+        if name.eq_ignore_ascii_case("off") || name.eq_ignore_ascii_case("clear") {
+            match self.stop_at.take() {
+                Some(func) => println!("stop-at cleared (was {func})"),
+                None => println!("no stop-at was set"),
+            }
+            return Outcome::Stay;
+        }
+        self.stop_at = Some(name.to_ascii_lowercase());
+        println!("stopping before every {name} call");
+        Outcome::Stay
     }
 
     /// `eval <stmt>` — run AutoIt source as a *statement* in the current
@@ -1756,6 +1798,9 @@ Commands (`help <cmd>` describes one)
   until <line-expr>      alias of `tbreak <line-expr>`
   untilcall <func>       run until <func> is called (builtins too)
   untilgui, gui          untilcall GUICreate
+  stopat <func>, sa      stop *before* every <func> call (builtins too) —
+                         `stopat MsgBox` shows a dialog's text without opening it
+  stopat                 report what is set; `stopat off` clears it
   break <line-expr> [if E]   set a breakpoint, optionally conditional
   jmp <line-expr>        skip statements up to the target line
   delete [id]            remove one breakpoint, or all of them
@@ -1832,7 +1877,7 @@ impl Debugger for Shell {
         self.call_stack.pop();
     }
 
-    fn on_builtin_call(&mut self, name: &str) {
+    fn on_builtin_call(&mut self, name: &str, args: &[autoitv3_runtime::Value]) -> DebugAction {
         // A builtin has no entry line, so `untilcall GUICreate` watches the
         // resolved call instead (`GUICreate` still goes through the table and
         // reaches here as a function value).
@@ -1843,6 +1888,19 @@ impl Debugger for Shell {
         {
             self.until_hit = true;
         }
+        // `stopat`: hand control back *before* the call, with the arguments in
+        // hand so the banner can show them. Stops asked for from inside a stop
+        // (evaluating an expression for `print` runs builtins too) are ignored.
+        if !self.paused
+            && self
+                .stop_at
+                .as_deref()
+                .is_some_and(|target| target.eq_ignore_ascii_case(name))
+        {
+            self.caught_call = Some(format_call(name, args));
+            return DebugAction::Pause;
+        }
+        DebugAction::Continue
     }
 
     fn on_statement(&mut self, span: Span, depth: usize, host: &mut dyn DebugHost) -> DebugAction {
@@ -1909,6 +1967,16 @@ impl Debugger for Shell {
                     println!("run-to target reached, line {line}");
                 } else {
                     println!("Breakpoint {id}, line {line}");
+                }
+                self.show_current_line();
+                self.prompt_loop(host);
+                self.paused = false;
+            }
+            StopReason::Builtin { name } => {
+                self.paused = true;
+                match self.caught_call.take() {
+                    Some(call) => println!("Catchpoint: {call}"),
+                    None => println!("Catchpoint: {name}"),
                 }
                 self.show_current_line();
                 self.prompt_loop(host);
@@ -2127,6 +2195,16 @@ fn split_command(line: &str) -> (String, String) {
     }
 }
 
+/// A call as the catchpoint banner shows it: the spelling the script used and
+/// the arguments it is about to be given, quoted the way AutoIt source is.
+fn format_call(name: &str, args: &[autoitv3_runtime::Value]) -> String {
+    if args.is_empty() {
+        return format!("{name}()");
+    }
+    let rendered: Vec<String> = args.iter().map(format_value).collect();
+    format!("{name}({})", rendered.join(", "))
+}
+
 /// One-line help for a single command.
 fn help_for(topic: &str) -> String {
     match topic {
@@ -2144,6 +2222,11 @@ fn help_for(topic: &str) -> String {
             "untilcall <func> — run until <func> is called, builtins included".to_string()
         }
         "untilgui" | "gui" => "untilgui — run until GUICreate is called".to_string(),
+        "stopat" | "sa" => {
+            "stopat <func> — stop before <func> is called (builtins included), so e.g. a \
+             dialog's text can be read without it opening; `stopat off` clears it"
+                .to_string()
+        }
         "break" | "b" => {
             "break <line-expr> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit".to_string()
         }

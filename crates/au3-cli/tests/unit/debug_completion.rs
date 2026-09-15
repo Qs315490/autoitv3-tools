@@ -27,6 +27,24 @@ fn the_first_word_completes_commands() {
 }
 
 #[test]
+fn stopat_completes_functions_and_builtins() {
+    let data = CompletionData {
+        builtins: vec!["MsgBox".into(), "Sleep".into()],
+        functions: vec!["Main".into()],
+        ..CompletionData::default()
+    };
+    assert_eq!(
+        replacements(data.candidates(Some("stopat"), "Ms")),
+        vec!["MsgBox".to_string()]
+    );
+    // The short alias works the same way, and functions are offered too.
+    assert_eq!(
+        replacements(data.candidates(Some("sa"), "")),
+        vec!["Main".to_string(), "MsgBox".to_string(), "Sleep".to_string()]
+    );
+}
+
+#[test]
 fn arguments_complete_from_the_command_word() {
     let data = CompletionData {
         functions: vec!["Main".into()],

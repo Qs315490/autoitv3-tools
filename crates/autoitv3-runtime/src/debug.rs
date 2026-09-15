@@ -248,6 +248,11 @@ impl Breakpoints {
 pub enum StopReason {
     /// A breakpoint was hit.
     Breakpoint { id: u32, line: u32 },
+    /// A builtin or host function was about to run and the debugger asked to
+    /// stop first (the shell's `stopat <func>`). The call has *not* happened
+    /// yet, so the debugger can show its arguments — a dialog's text — without
+    /// the dialog opening.
+    Builtin { name: String },
     /// A single step completed.
     Step,
     /// The user paused execution.
@@ -306,9 +311,16 @@ pub trait Debugger {
     /// Script-defined functions go through [`Debugger::on_call_enter`]; this is
     /// the counterpart for the calls the interpreter resolves itself
     /// (`GUICreate`, `String`, `DllCall`, ...), which have no script body and
-    /// therefore no entry line. `name` is the spelling the script used.
-    fn on_builtin_call(&mut self, name: &str) {
-        let _ = name;
+    /// therefore no entry line. `name` is the spelling the script used, `args`
+    /// the arguments it is about to be given.
+    ///
+    /// Returning [`DebugAction::Pause`] suspends the interpreter *before* the
+    /// call: it is then offered to [`Debugger::on_stop`] as
+    /// [`StopReason::Builtin`], and the call runs as usual once that returns
+    /// (unless the debugger aborts).
+    fn on_builtin_call(&mut self, name: &str, args: &[Value]) -> DebugAction {
+        let _ = (name, args);
+        DebugAction::Continue
     }
 
     /// Called after a variable is written.

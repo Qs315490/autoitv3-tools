@@ -289,6 +289,8 @@ Breakpoint 1, line 69
 | `until <行表达式>` / `u` | `tbreak <行表达式>` 的别名（跑到某一行） |
 | `untilcall <函数>` / `untilc` | 跑到下一次调用该函数（**内置函数也行**，`tbreak` 对内置函数无效）；停在调用后的那条语句 |
 | `untilgui` / `gui` | `untilcall GUICreate` 的简写，直接跑到建窗口 |
+| `stopat <函数>` / `sa` | **在调用之前**停下（内置函数也行）：`stopat MsgBox` 把要弹的对话框内容连同它所在的行先打出来，对话框不会弹；`continue` 之后它照常执行。`stopat` 单独用是查看，`stopat off` 是取消 |
+| | 与 `untilcall` 的区别：`untilcall` 停在调用**之后**（对话框会先弹出来），`stopat` 停在调用**之前**（先看内容，再决定要不要让它跑） |
 | `break <行表达式> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
 | `jmp <行表达式>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |
 | `tbreak <行表达式>` / `tb` | 一次性断点：继续执行直到命中（命中自删）；`run` 前可用 |
@@ -344,6 +346,7 @@ stdin 是终端时，提示符走 `rustyline`：**Tab 补全**、**上/下键翻
 | 第一个词 | 所有调试命令（含简写，如 `b`/`c`/`p`） |
 | `break` / `tbreak` / `until` / `jmp` 的参数 | 脚本函数名 |
 | `untilcall` 的参数 | **内置函数** + 脚本函数名（`untilcall GUI<Tab>` → `GUICreate`） |
+| `stopat` 的参数 | 同上（`stopat Ms<Tab>` → `MsgBox`） |
 | `print` / `set` / `eval` / `watch` 的参数 | 当前全局变量 `$x` + `@宏` |
 | `info` 的参数 | `breakpoints` / `locals` / `globals` / `functions` / `frame` |
 | `delete` / `enable` / `disable` / `ignore` / `commands` 等 | 断点 id |

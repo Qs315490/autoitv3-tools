@@ -90,6 +90,38 @@ fn run_full(path: &Path, flags: &[&str], commands: &[&str], input: &str) -> Stri
     )
 }
 
+/// `stopat` suspends *before* the call, so what a dialog is about to say can be
+/// read without the dialog opening; the call then runs on `continue`.
+#[test]
+fn stopat_holds_a_call_before_it_runs() {
+    let path = script(
+        "stopat",
+        "MsgBox(16, \"title here\", \"body here\")\nConsoleWrite(\"after\" & @CRLF)\n",
+    );
+    let out = shell(
+        &path,
+        &["stopat MsgBox", "run", "backtrace", "continue", "quit"],
+    );
+    assert!(
+        out.contains("Catchpoint: MsgBox(16, \"title here\", \"body here\")"),
+        "the arguments are shown before the call:\n{out}"
+    );
+    // The stop is at the call itself, so the frame is the line that made it.
+    assert!(out.contains("#0  <script> at 1:1"), "got:\n{out}");
+    // ... and the dialog still runs, answered by the headless backend.
+    assert!(out.contains("after"), "the call ran on continue:\n{out}");
+}
+
+/// `stopat off` clears it, and a plain `stopat` reports what is set.
+#[test]
+fn stopat_can_be_read_and_cleared() {
+    let path = script("stopat-off", "MsgBox(0, \"t\", \"b\")\n");
+    let out = shell(&path, &["stopat MsgBox", "stopat", "stopat off", "stopat", "quit"]);
+    assert!(out.contains("stopping before every MsgBox call"), "got:\n{out}");
+    assert!(out.contains("stop-at cleared (was msgbox)"), "got:\n{out}");
+    assert!(out.contains("no stop-at set"), "got:\n{out}");
+}
+
 #[test]
 fn a_breakpoint_stops_and_the_prompt_sees_the_frame() {
     let path = script("break", SCRIPT);

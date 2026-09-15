@@ -718,8 +718,9 @@ fn a_debugger_sees_builtin_calls() {
     // way to know they ran (`untilcall GUICreate` relies on it).
     struct Recorder(Rc<RefCell<Vec<String>>>);
     impl Debugger for Recorder {
-        fn on_builtin_call(&mut self, name: &str) {
+        fn on_builtin_call(&mut self, name: &str, _args: &[Value]) -> DebugAction {
             self.0.borrow_mut().push(name.to_string());
+            DebugAction::Continue
         }
     }
 
@@ -735,6 +736,59 @@ fn a_debugger_sees_builtin_calls() {
         seen.iter().any(|c| c.eq_ignore_ascii_case("String")),
         "got {seen:?}"
     );
+}
+
+#[test]
+fn a_debugger_can_stop_a_builtin_before_it_runs() {
+    // The `stopat` seam: returning `Pause` from the builtin hook suspends the
+    // interpreter *before* the call — which is what lets a dialog's arguments
+    // be read without the dialog opening — and the call still happens once the
+    // debugger is done with it.
+    /// `(name, arguments)` for every call the debugger was offered.
+    type Seen = Rc<RefCell<Vec<(String, Vec<Value>)>>>;
+
+    struct Catcher {
+        stopped: Rc<RefCell<Vec<String>>>,
+        seen: Seen,
+    }
+    impl Debugger for Catcher {
+        fn on_builtin_call(&mut self, name: &str, args: &[Value]) -> DebugAction {
+            self.seen
+                .borrow_mut()
+                .push((name.to_string(), args.to_vec()));
+            if name.eq_ignore_ascii_case("MsgBox") {
+                DebugAction::Pause
+            } else {
+                DebugAction::Continue
+            }
+        }
+
+        fn on_stop(&mut self, reason: &StopReason, _host: &mut dyn DebugHost) {
+            if let StopReason::Builtin { name } = reason {
+                self.stopped.borrow_mut().push(name.clone());
+            }
+        }
+    }
+
+    let stopped = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut rt = rt(
+        "Func F()\n    Local $r = MsgBox(16, \"title\", \"body\")\n    Return $r + StringLen(\"abc\")\nEndFunc\n",
+    );
+    rt.set_debugger(Box::new(Catcher { stopped: stopped.clone(), seen: seen.clone() }));
+    // The dialog itself is answered by the host (no backend here: `MsgBox`
+    // returns through the undefined-function path), so what is checked is that
+    // the call was offered *with its arguments* and still went ahead.
+    let _ = rt.call_function("F", vec![]);
+    assert_eq!(stopped.borrow().as_slice(), ["MsgBox".to_string()]);
+    let seen = seen.borrow();
+    let (_, args) = seen
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("MsgBox"))
+        .expect("MsgBox was offered");
+    assert_eq!(args.len(), 3, "got {args:?}");
+    assert_eq!(args[1].to_autoit_string(), "title");
+    assert_eq!(args[2].to_autoit_string(), "body");
 }
 
 // ---------------------------------------------------------------------------
