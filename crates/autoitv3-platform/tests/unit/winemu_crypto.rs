@@ -127,3 +127,18 @@ fn a_short_hash_still_fills_rc4_and_sha2_keys_directly() {
     let (key, _) = CipherAlg::Aes256.derive_key(HashAlg::Sha256, &sha);
     assert_eq!(key, sha);
 }
+
+#[test]
+fn crc32_matches_the_published_check_value() {
+    // CRC-32/ISO-HDLC of "123456789".
+    assert_eq!(crc32(0, b"123456789"), 0xCBF4_3926);
+    assert_eq!(crc32(0, b""), 0);
+}
+
+#[test]
+fn crc32_continues_from_a_previous_result() {
+    // `RtlComputeCrc32` is chained by feeding the last result back in.
+    let first = crc32(0, b"1234");
+    assert_eq!(crc32(first, b"56789"), crc32(0, b"123456789"));
+    assert_ne!(crc32(0x1234_5678, b"123456789"), crc32(0, b"123456789"));
+}

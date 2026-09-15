@@ -263,6 +263,42 @@ pub fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// `RtlComputeCrc32(initial, data, len)` — the reflected CRC-32 (`0xEDB88320`,
+/// the one zlib and Ethernet use), continued from `initial`.
+///
+/// ntdll seeds the register with `!initial` and returns `!register`, which is
+/// what makes the calls chainable: feeding a previous result back in as
+/// `initial` continues the same checksum over the next buffer. Scripts use it
+/// to fold a digest down to the short check value a data file advertises.
+pub(crate) fn crc32(initial: u32, data: &[u8]) -> u32 {
+    let mut crc = !initial;
+    for &byte in data {
+        crc = CRC32_TABLE[((crc ^ u32::from(byte)) & 0xff) as usize] ^ (crc >> 8);
+    }
+    !crc
+}
+
+/// The CRC-32 lookup table, built at compile time.
+static CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+            bit += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
+
 // Unit tests live in `tests/unit/` so this file reads as implementation;
 // `#[path]` pulls them back in as a test module, which is what keeps their
 // access to the private state below.

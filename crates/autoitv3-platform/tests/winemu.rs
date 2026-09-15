@@ -1808,3 +1808,18 @@ Return BinaryToString($b)
 "#;
     assert_eq!(run_mapped(emu, body).to_autoit_string(), "42");
 }
+
+#[test]
+fn rtl_compute_crc32_matches_the_check_value() {
+    // A digest is folded through `ntdll`'s CRC-32 and compared with the short
+    // check value a data file advertises; a missing
+    // implementation used to make that call fail and the load report an error.
+    let body = r#"
+Local $t = DllStructCreate("byte[9]")
+DllStructSetData($t, 1, "123456789")
+Local $r = DllCall("ntdll.dll", "dword", "RtlComputeCrc32", "dword", 0, "ptr", DllStructGetPtr($t), "dword", 9)
+If @error Then Return "call-failed"
+Return Hex($r[0], 8)
+"#;
+    assert_eq!(run(win10(), body).to_autoit_string(), "CBF43926");
+}
