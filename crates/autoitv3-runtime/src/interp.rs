@@ -618,6 +618,18 @@ impl Runtime {
     /// Call a function value (as produced by evaluating a bare identifier),
     /// falling back to a builtin when no user function matches.
     pub fn call_value(&mut self, callee: &Value, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
+        self.call_value_targets(callee, args, None, span)
+    }
+
+    /// [`Runtime::call_value`] with the argument expressions of the call site,
+    /// which name the caller variables `ByRef` parameters copy back into.
+    fn call_value_targets(
+        &mut self,
+        callee: &Value,
+        args: Vec<Value>,
+        call_args: Option<&[Expr]>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         let Value::FuncRef(name) = callee else {
             return Err(RuntimeError::Type {
                 expected: "function reference",
@@ -627,13 +639,13 @@ impl Runtime {
         };
         // The reference is shared and carries its own lookup key, so neither
         // the name nor the key has to be copied here.
-        self.call_named_key(name.key(), name.display(), args, span)
+        self.call_named_key(name.key(), name.display(), args, call_args, span)
     }
 
     /// Call `name` — user function first, then builtin, then host.
     pub fn call_named(&mut self, name: &str, args: Vec<Value>, span: Span) -> Result<Value, RuntimeError> {
         let key = var_key(name);
-        self.call_named_key(&key, name, args, span)
+        self.call_named_key(&key, name, args, None, span)
     }
 
     /// [`Runtime::call_named`] for callers that already hold the lookup key
@@ -642,15 +654,22 @@ impl Runtime {
     /// `display` is the name as the script wrote it, used for error messages and
     /// the debugger hook; `key` drives the lookups, so no call has to lower-case
     /// a name or allocate one.
+    ///
+    /// `call_args` are the argument *expressions* of the call site, when there
+    /// is one: the callee's `ByRef` parameters need them to find the caller's
+    /// variable to copy their final value back into (the value handed over was
+    /// a copy). `None` — a callback, the public `call_*` API — has no call site
+    /// to read, and falls back to the parameter name.
     fn call_named_key(
         &mut self,
         key: &str,
         display: &str,
         args: Vec<Value>,
+        call_args: Option<&[Expr]>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         if self.funcs.contains_key(key) {
-            return self.call_user_key(key, display, args, Some(span));
+            return self.call_user_key(key, display, args, call_args, Some(span));
         }
         self.call_external(key, display, args, span)
     }
@@ -726,7 +745,7 @@ impl Runtime {
         span: Option<Span>,
     ) -> Result<Value, RuntimeError> {
         let key = var_key(name);
-        self.call_user_key(&key, name, args, span)
+        self.call_user_key(&key, name, args, None, span)
     }
 
     /// [`Runtime::call_user`] for callers that already hold the lookup key.
@@ -735,6 +754,7 @@ impl Runtime {
         key: &str,
         display: &str,
         args: Vec<Value>,
+        call_args: Option<&[Expr]>,
         span: Option<Span>,
     ) -> Result<Value, RuntimeError> {
         let Some(def) = self.funcs.get(key).cloned() else {
@@ -748,9 +768,10 @@ impl Runtime {
             return Err(RuntimeError::CallDepthExceeded { limit: self.max_depth });
         }
 
-        // Set up the frame with parameters bound.
+        // Set up the frame with parameters bound. `ByRef` parameters remember
+        // where their final value goes (see [`ByRefTarget`]).
         let mut vars: HashMap<String, Value> = HashMap::new();
-        let mut by_ref: Vec<(String, Value)> = Vec::new();
+        let mut by_ref: Vec<(String, ByRefTarget<'_>, Value)> = Vec::new();
         for (i, p) in def.params.iter().enumerate() {
             let arg = args.get(i).cloned().unwrap_or_else(|| match &p.default {
                 Some(d) => self.eval_const_default(d),
@@ -759,7 +780,8 @@ impl Runtime {
             let k = var_key(&p.name.name);
             vars.insert(k.clone(), arg.clone());
             if p.by_ref {
-                by_ref.push((k, arg));
+                let target = byref_target(i, call_args);
+                by_ref.push((k, target, arg));
             }
         }
 
@@ -813,10 +835,15 @@ impl Runtime {
 
         let frame = self.frames.pop().expect("frame pushed above");
         // Copy-out `ByRef` parameters back into the caller's variable.
-        for (k, _) in &by_ref {
+        for (k, target, _) in &by_ref {
+            let name = match target {
+                ByRefTarget::Caller(name) => *name,
+                ByRefTarget::ParamName => k.as_str(),
+                ByRefTarget::Nothing => continue,
+            };
             if let Some(v) = frame.vars.get(k) {
                 let v = v.clone();
-                self.write_back_by_ref(k, v);
+                self.write_back_by_ref(name, v);
             }
         }
 
@@ -827,7 +854,13 @@ impl Runtime {
         result
     }
 
-    /// Copy a `ByRef` parameter back to the caller's variable of the same name.
+    /// Copy a `ByRef` parameter's final value back to the caller's variable
+    /// `key` (a lower-cased lookup key, as `read_var_key` wants).
+    ///
+    /// The binding follows the same precedence an ordinary write would: a
+    /// `Static`, then a local in the caller's frame, then a global. A name the
+    /// caller has bound to nothing yet is created in its own frame — that is
+    /// what `Bump($x)` does to an `$x` the caller had only read from.
     fn write_back_by_ref(&mut self, key: &str, value: Value) {
         // The caller may have passed one of its `Static` variables; that write
         // has to reach the function's storage, not a per-call slot.
@@ -837,14 +870,16 @@ impl Runtime {
         }
         if let Some(frame) = self.frames.last_mut() {
             if frame.vars.contains_key(key) {
-                frame.vars.insert(key.to_string(), value);
+                bind_var(&mut frame.vars, key, value);
                 return;
             }
         }
         // The caller passed a global.
         if self.globals.contains_key(key) {
-            self.globals.insert(key.to_string(), value);
+            bind_var(&mut self.globals, key, value);
+            return;
         }
+        bind_var(self.current_vars(), key, value);
     }
 
     /// Evaluate a parameter default (must not depend on frame state).
@@ -998,7 +1033,13 @@ impl Runtime {
                 for a in &c.args {
                     args.push(self.eval_expr(a)?);
                 }
-                self.call_named_key(c.callee.key(), &c.callee.name, args, e.span)
+                self.call_named_key(
+                    c.callee.key(),
+                    &c.callee.name,
+                    args,
+                    Some(&c.args),
+                    e.span,
+                )
             }
             ExprKind::IndexCall(v, args) => {
                 let callee = {
@@ -1009,7 +1050,7 @@ impl Runtime {
                 for a in args {
                     argv.push(self.eval_expr(a)?);
                 }
-                self.call_value(&callee, argv, e.span)
+                self.call_value_targets(&callee, argv, Some(args), e.span)
             }
             ExprKind::Subscript(base, indices) => {
                 let base = self.eval_expr(base)?;
@@ -2221,6 +2262,36 @@ fn bind_var(vars: &mut HashMap<String, Value>, key: &str, value: Value) {
 
 fn var_key(name: &str) -> String {
     name.trim_start_matches('$').to_ascii_lowercase()
+}
+
+/// Where a `ByRef` parameter copies its final value back to.
+///
+/// The callee is handed a *copy* of the argument, so the write has to be
+/// replayed at the call site. Borrowing the call-site expression is all this
+/// needs, which keeps the per-call cost at zero.
+enum ByRefTarget<'a> {
+    /// The caller's variable, as the call site named it.
+    Caller(&'a str),
+    /// No call site to read (a callback, the public `call_*` API): the
+    /// parameter name stands in, the best a positional caller can offer.
+    ParamName,
+    /// The argument was not a variable — a literal, an expression, an array
+    /// element — so there is nothing to copy back to. AutoIt rejects those.
+    Nothing,
+}
+
+/// [`ByRefTarget`] for the `ByRef` parameter `i`, given the argument
+/// expressions of the call site.
+///
+/// The name comes from [`Ident::key`](autoitv3_ast::ast::Ident::key), which
+/// caches the lower-cased form on the identifier, so not even a `ByRef` call
+/// allocates here.
+fn byref_target<'a>(i: usize, call_args: Option<&'a [Expr]>) -> ByRefTarget<'a> {
+    let Some(args) = call_args else { return ByRefTarget::ParamName };
+    match args.get(i).map(|a| &a.kind) {
+        Some(ExprKind::Var(v)) if v.indices.is_empty() => ByRefTarget::Caller(v.name.key()),
+        _ => ByRefTarget::Nothing,
+    }
 }
 
 /// A variable name is a non-empty identifier: ASCII letters, digits and `_`,

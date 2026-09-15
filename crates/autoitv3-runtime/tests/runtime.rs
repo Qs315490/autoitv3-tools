@@ -196,6 +196,118 @@ fn integer_division_stays_integral() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn byref_writes_back_to_the_caller_variable_whatever_its_name() {
+    // The callee is handed a copy, so the write has to be replayed at the call
+    // site — by *the caller's* name, which need not match the parameter's.
+    let src = r#"
+Func Bump(ByRef $v)
+    $v += 1
+EndFunc
+Func F()
+    Local $x = 1
+    Bump($x)
+    Return $x
+EndFunc
+Func SameName()
+    Local $v = 1
+    Bump($v)
+    Return $v
+EndFunc
+"#;
+    assert!(matches!(call(src, "F", vec![]), Value::Int(2)));
+    assert!(matches!(call(src, "SameName", vec![]), Value::Int(2)));
+}
+
+#[test]
+fn byref_writes_back_to_a_global() {
+    let mut runtime = rt(
+        "Func Bump(ByRef $v)\n\
+         \x20   $v += 1\n\
+         EndFunc\n\
+         Func F()\n\
+         \x20   Bump($g)\n\
+         EndFunc\n",
+    );
+    // The file-scope `Global $g` has not run: `call_function` only runs the
+    // function body, so set the global the way the script body would have.
+    runtime.assign_variable("$g", Value::Int(10), true, false);
+    runtime.call_function("F", vec![]).unwrap();
+    assert_eq!(runtime.variable_value("$g").unwrap().to_int(), 11);
+}
+
+#[test]
+fn byref_creates_a_variable_the_caller_only_passed() {
+    let src = r#"
+Func SetIt(ByRef $q)
+    $q = 42
+EndFunc
+Func F()
+    Local $y
+    SetIt($y)
+    Return IsDeclared("y") & ":" & $y
+EndFunc
+"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "1:42");
+}
+
+#[test]
+fn a_literal_argument_writes_back_to_nothing() {
+    // The caller happens to have a variable with the *parameter's* name; a
+    // literal argument must not be copied into it on the way out.
+    let src = r#"
+Func Bump(ByRef $v)
+    $v += 1
+EndFunc
+Func F()
+    Local $v = 1
+    Bump(7)
+    Return $v
+EndFunc
+"#;
+    assert!(matches!(call(src, "F", vec![]), Value::Int(1)));
+}
+
+#[test]
+fn byref_through_a_function_table_call() {
+    // `$t[0]($x)` reaches the callee through `call_value`, which has to carry
+    // the call site's names just like a direct call.
+    let src = r#"
+Func Bump(ByRef $v)
+    $v += 1
+EndFunc
+Func F()
+    Local $t[1]
+    $t[0] = Bump
+    Local $x = 5
+    $t[0]($x)
+    Return $x
+EndFunc
+"#;
+    assert!(matches!(call(src, "F", vec![]), Value::Int(6)));
+}
+
+#[test]
+fn byref_is_copied_out_through_a_chain_of_forwarders() {
+    // Each frame holds a copy and copies it out on return, so the chain of
+    // names resolves back to the variable the bottom-most caller passed.
+    let src = r#"
+Func Bump(ByRef $v)
+    $v += 1
+EndFunc
+Func Outer(ByRef $w)
+    Bump($w)
+    $w += 10
+EndFunc
+Func F()
+    Local $z = 100
+    Outer($z)
+    Return $z
+EndFunc
+"#;
+    assert!(matches!(call(src, "F", vec![]), Value::Int(111)));
+}
+
+#[test]
 fn merges_arrays_with_byref_and_redim() {
     let src = r#"
 Func MergeArrays(ByRef $targetArray, Const ByRef $sourceArray)
