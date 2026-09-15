@@ -112,6 +112,19 @@ fn stopat_holds_a_call_before_it_runs() {
     assert!(out.contains("after"), "the call ran on continue:\n{out}");
 }
 
+/// A script function stops at its entry, where the parameters are bound.
+#[test]
+fn stopat_stops_at_a_script_functions_entry() {
+    let path = script(
+        "stopat-func",
+        "Func Double($n)\n    Return $n * 2\nEndFunc\nConsoleWrite(Double(21) & @CRLF)\n",
+    );
+    let out = shell(&path, &["stopat Double", "run", "print $n", "continue", "quit"]);
+    assert!(out.contains("Catchpoint: Double(21)"), "got:\n{out}");
+    assert!(has_line(&out, "21"), "the parameter is readable:\n{out}");
+    assert!(out.contains("42"), "the call ran on continue:\n{out}");
+}
+
 /// `stopat off` clears it, and a plain `stopat` reports what is set.
 #[test]
 fn stopat_can_be_read_and_cleared() {

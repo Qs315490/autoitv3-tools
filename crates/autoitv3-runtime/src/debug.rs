@@ -248,11 +248,11 @@ impl Breakpoints {
 pub enum StopReason {
     /// A breakpoint was hit.
     Breakpoint { id: u32, line: u32 },
-    /// A builtin or host function was about to run and the debugger asked to
-    /// stop first (the shell's `stopat <func>`). The call has *not* happened
-    /// yet, so the debugger can show its arguments — a dialog's text — without
-    /// the dialog opening.
-    Builtin { name: String },
+    /// A call was about to happen and the debugger asked to stop first (the
+    /// shell's `stopat <func>`). The call has *not* run yet, so the debugger can
+    /// show its arguments — a dialog's text — without the dialog opening. A
+    /// script function has its frame live at the stop; a builtin does not.
+    Call { name: String },
     /// A single step completed.
     Step,
     /// The user paused execution.
@@ -295,9 +295,15 @@ pub trait Debugger {
         DebugAction::Continue
     }
 
-    /// Called when a function is entered.
-    fn on_call_enter(&mut self, name: &str, args: &[Value]) {
+    /// Called when a function is entered, with its frame already live.
+    ///
+    /// Returning [`DebugAction::Pause`] suspends the interpreter at the entry,
+    /// before the first statement of the body: the parameters are bound, so the
+    /// debugger can read them with [`DebugHost::evaluate`]. This is what
+    /// `stopat Func` stops on for a script function.
+    fn on_call_enter(&mut self, name: &str, args: &[Value]) -> DebugAction {
         let _ = (name, args);
+        DebugAction::Continue
     }
 
     /// Called when a function returns (including on the error path).
@@ -484,7 +490,8 @@ impl Debugger for TracingDebugger {
         DebugAction::Continue
     }
 
-    fn on_call_enter(&mut self, name: &str, _args: &[Value]) {
+    fn on_call_enter(&mut self, name: &str, _args: &[Value]) -> DebugAction {
         self.calls.push(name.to_string());
+        DebugAction::Continue
     }
 }

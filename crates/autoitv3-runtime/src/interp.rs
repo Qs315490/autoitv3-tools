@@ -812,7 +812,7 @@ impl Runtime {
             // debugger out and back, and ignores a stop asked for from inside
             // the prompt itself.
             DebugAction::Pause => {
-                let reason = StopReason::Builtin { name: display.to_string() };
+                let reason = StopReason::Call { name: display.to_string() };
                 self.paused = Some(reason.clone());
                 self.notify_stop(reason);
             }
@@ -936,9 +936,6 @@ impl Runtime {
         }
 
         let display = def.name.name.clone();
-        if let Some(dbg) = self.debugger.as_mut() {
-            dbg.on_call_enter(&display, &args);
-        }
 
         self.frames.push(Frame {
             vars,
@@ -949,6 +946,23 @@ impl Runtime {
             error_set: false,
             extended_set: false,
         });
+
+        // The hook runs with the frame live, so a `stopat` stop here can read
+        // the parameters, and `on_call_enter`'s action decides whether the body
+        // runs at all.
+        let call_action = match self.debugger.as_mut() {
+            Some(dbg) => dbg.on_call_enter(&display, &args),
+            None => DebugAction::Continue,
+        };
+        match call_action {
+            DebugAction::Pause => {
+                let reason = StopReason::Call { name: display.clone() };
+                self.paused = Some(reason.clone());
+                self.notify_stop(reason);
+            }
+            DebugAction::Abort => return Err(RuntimeError::Aborted),
+            DebugAction::Continue => {}
+        }
 
         // "When entering a user-written function @error macro is set to 0"
         // (SetError's help page; `Parser_UserFunctionCall` does the same for

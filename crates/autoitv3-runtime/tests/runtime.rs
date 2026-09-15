@@ -764,7 +764,7 @@ fn a_debugger_can_stop_a_builtin_before_it_runs() {
         }
 
         fn on_stop(&mut self, reason: &StopReason, _host: &mut dyn DebugHost) {
-            if let StopReason::Builtin { name } = reason {
+            if let StopReason::Call { name } = reason {
                 self.stopped.borrow_mut().push(name.clone());
             }
         }
@@ -789,6 +789,49 @@ fn a_debugger_can_stop_a_builtin_before_it_runs() {
     assert_eq!(args.len(), 3, "got {args:?}");
     assert_eq!(args[1].to_autoit_string(), "title");
     assert_eq!(args[2].to_autoit_string(), "body");
+}
+
+#[test]
+fn a_debugger_can_stop_at_a_script_functions_entry() {
+    // For a script function `stopat` stops where the frame is already live, so
+    // the parameters are readable — the builtin case can only show the argument
+    // list it was handed.
+    struct Entry {
+        stops: Rc<RefCell<Vec<String>>>,
+        arg: Rc<RefCell<Option<i64>>>,
+    }
+    impl Debugger for Entry {
+        fn on_call_enter(&mut self, name: &str, _args: &[Value]) -> DebugAction {
+            if name.eq_ignore_ascii_case("Double") {
+                DebugAction::Pause
+            } else {
+                DebugAction::Continue
+            }
+        }
+
+        fn on_stop(&mut self, reason: &StopReason, host: &mut dyn DebugHost) {
+            if let StopReason::Call { name } = reason {
+                self.stops.borrow_mut().push(name.clone());
+                if let Some(frame) = host.frames().last() {
+                    if let Some((_, v)) = frame.locals.iter().find(|(n, _)| n == "n") {
+                        *self.arg.borrow_mut() = Some(v.to_int());
+                    }
+                }
+            }
+        }
+    }
+
+    let stops = Rc::new(RefCell::new(Vec::new()));
+    let arg = Rc::new(RefCell::new(None));
+    let mut rt = rt("Func Double($n)\n    Return $n * 2\nEndFunc\n");
+    rt.set_debugger(Box::new(Entry { stops: stops.clone(), arg: arg.clone() }));
+    assert_eq!(
+        rt.call_function("Double", vec![Value::Int(21)]).unwrap().to_int(),
+        42,
+        "the call still ran"
+    );
+    assert_eq!(stops.borrow().as_slice(), ["Double".to_string()]);
+    assert_eq!(*arg.borrow(), Some(21), "the parameter is bound at the stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,8 +1223,8 @@ fn tracing_debugger_records_spans() {
         ) -> DebugAction {
             self.0.borrow_mut().on_statement(span, depth, host)
         }
-        fn on_call_enter(&mut self, name: &str, args: &[Value]) {
-            self.0.borrow_mut().on_call_enter(name, args);
+        fn on_call_enter(&mut self, name: &str, args: &[Value]) -> DebugAction {
+            self.0.borrow_mut().on_call_enter(name, args)
         }
     }
 

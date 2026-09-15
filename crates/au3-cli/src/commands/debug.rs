@@ -340,9 +340,14 @@ impl Debugger for SharedShell {
         }
     }
 
-    fn on_call_enter(&mut self, name: &str, args: &[autoitv3_runtime::Value]) {
-        if let Ok(mut shell) = self.0.try_borrow_mut() {
-            shell.on_call_enter(name, args);
+    fn on_call_enter(
+        &mut self,
+        name: &str,
+        args: &[autoitv3_runtime::Value],
+    ) -> DebugAction {
+        match self.0.try_borrow_mut() {
+            Ok(mut shell) => shell.on_call_enter(name, args),
+            Err(_) => DebugAction::Continue,
         }
     }
 
@@ -1798,8 +1803,9 @@ Commands (`help <cmd>` describes one)
   until <line-expr>      alias of `tbreak <line-expr>`
   untilcall <func>       run until <func> is called (builtins too)
   untilgui, gui          untilcall GUICreate
-  stopat <func>, sa      stop *before* every <func> call (builtins too) —
-                         `stopat MsgBox` shows a dialog's text without opening it
+  stopat <func>, sa      stop *before* every <func> call — a builtin before it
+                         runs (`stopat MsgBox` shows a dialog's text without
+                         opening it), a script function at its entry
   stopat                 report what is set; `stopat off` clears it
   break <line-expr> [if E]   set a breakpoint, optionally conditional
   jmp <line-expr>        skip statements up to the target line
@@ -1865,12 +1871,17 @@ impl Debugger for Shell {
         }
     }
 
-    fn on_call_enter(&mut self, name: &str, _args: &[autoitv3_runtime::Value]) {
+    fn on_call_enter(
+        &mut self,
+        name: &str,
+        args: &[autoitv3_runtime::Value],
+    ) -> DebugAction {
         let lower = name.to_ascii_lowercase();
         if self.until_call.as_deref() == Some(lower.as_str()) {
             self.until_hit = true;
         }
         self.call_stack.push(lower);
+        self.catch_action(name, args)
     }
 
     fn on_call_exit(&mut self, _name: &str, _result: Option<&autoitv3_runtime::Value>) {
@@ -1888,19 +1899,7 @@ impl Debugger for Shell {
         {
             self.until_hit = true;
         }
-        // `stopat`: hand control back *before* the call, with the arguments in
-        // hand so the banner can show them. Stops asked for from inside a stop
-        // (evaluating an expression for `print` runs builtins too) are ignored.
-        if !self.paused
-            && self
-                .stop_at
-                .as_deref()
-                .is_some_and(|target| target.eq_ignore_ascii_case(name))
-        {
-            self.caught_call = Some(format_call(name, args));
-            return DebugAction::Pause;
-        }
-        DebugAction::Continue
+        self.catch_action(name, args)
     }
 
     fn on_statement(&mut self, span: Span, depth: usize, host: &mut dyn DebugHost) -> DebugAction {
@@ -1972,7 +1971,7 @@ impl Debugger for Shell {
                 self.prompt_loop(host);
                 self.paused = false;
             }
-            StopReason::Builtin { name } => {
+            StopReason::Call { name } => {
                 self.paused = true;
                 match self.caught_call.take() {
                     Some(call) => println!("Catchpoint: {call}"),
@@ -1997,6 +1996,22 @@ impl Debugger for Shell {
 }
 
 impl Shell {
+    /// The `stopat` check both call hooks share: report the call and ask the
+    /// interpreter to suspend before it happens. Stops asked for from inside a
+    /// stop are ignored — evaluating an expression for `print` runs calls too.
+    fn catch_action(&mut self, name: &str, args: &[autoitv3_runtime::Value]) -> DebugAction {
+        if !self.paused
+            && self
+                .stop_at
+                .as_deref()
+                .is_some_and(|target| target.eq_ignore_ascii_case(name))
+        {
+            self.caught_call = Some(format_call(name, args));
+            return DebugAction::Pause;
+        }
+        DebugAction::Continue
+    }
+
     /// Re-observe every watch expression in the current frame; stop when one
     /// changed from its last observed value. The first observation after
     /// `watch` (or after a restart) only sets the baseline.
@@ -2223,8 +2238,9 @@ fn help_for(topic: &str) -> String {
         }
         "untilgui" | "gui" => "untilgui — run until GUICreate is called".to_string(),
         "stopat" | "sa" => {
-            "stopat <func> — stop before <func> is called (builtins included), so e.g. a \
-             dialog's text can be read without it opening; `stopat off` clears it"
+            "stopat <func> — stop before <func> is called: a builtin before it runs, a \
+             script function at its entry (parameters bound). `stopat MsgBox` reads a \
+             dialog's text without opening it; `stopat off` clears it"
                 .to_string()
         }
         "break" | "b" => {

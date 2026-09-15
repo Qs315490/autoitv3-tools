@@ -298,11 +298,12 @@ impl Debugger for TracePrinter {
         DebugAction::Continue
     }
 
-    fn on_call_enter(&mut self, name: &str, args: &[Value]) {
+    fn on_call_enter(&mut self, name: &str, args: &[Value]) -> DebugAction {
         self.calls.push(name.to_string());
         if self.calls.len() <= 40 {
             eprintln!("[trace] call {name}({} args)", args.len());
         }
+        DebugAction::Continue
     }
 
     fn on_stop(&mut self, reason: &StopReason, _host: &mut dyn DebugHost) {
