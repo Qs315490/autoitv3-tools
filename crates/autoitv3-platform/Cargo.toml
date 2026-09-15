@@ -47,6 +47,10 @@ default = []
 # Offscreen egui renderer for the GUI model. Off by default so the analysis
 # stack never depends on a windowing/font stack.
 gui-egui = ["dep:autoitv3-gui-egui", "autoitv3-gui-egui/egui"]
+# Real-window backend (`LiveBackend`): a run that hands it to the emulation
+# opens an actual window on the host desktop, so GUI calls can be *seen*
+# instead of only modelled. Pulls eframe (and winit) in, so it stays opt-in.
+gui-window = ["gui-egui", "autoitv3-gui-egui/window"]
 
 [dev-dependencies]
 autoitv3-deobf = { path = "../autoitv3-deobf" }

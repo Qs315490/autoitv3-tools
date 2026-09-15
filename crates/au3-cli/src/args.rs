@@ -73,7 +73,7 @@ pub struct WinEmuArgs {
 }
 
 /// The side-effect knobs shared by the commands that set a profile.
-#[derive(clap::Args, Debug, Default)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct EffectArgs {
     /// Allow one class of side effect in the deterministic profile. Repeatable.
     /// Kinds: file, env, registry, clipboard, spawn, shutdown, net, process.
@@ -223,6 +223,24 @@ impl WinEmuArgs {
         script: Option<&Path>,
         input_module: Option<&Path>,
     ) -> CliResult<Box<dyn Platform>> {
+        self.platform_with_gui(script, input_module, None)
+    }
+
+    /// As [`platform`](Self::platform), with a GUI backend installed on the
+    /// emulation layer.
+    ///
+    /// The headless default answers the 165 GUI functions without drawing
+    /// anything; `au3 run --gui window` passes a [`GuiBackend`] that owns a real
+    /// window, which is why it has to be handed in here rather than chosen by
+    /// the emulation itself.
+    ///
+    /// [`GuiBackend`]: autoitv3_platform::winemu::GuiBackend
+    pub fn platform_with_gui(
+        &self,
+        script: Option<&Path>,
+        input_module: Option<&Path>,
+        gui: Option<Box<dyn autoitv3_platform::winemu::GuiBackend>>,
+    ) -> CliResult<Box<dyn Platform>> {
         let mut emu = WindowsEmulation::from_env();
         if self.no_win_emu {
             emu = emu.disabled();
@@ -291,6 +309,9 @@ impl WinEmuArgs {
                 );
             }
             emu = emu.with_resource_dirs(dirs);
+        }
+        if let Some(backend) = gui {
+            emu = emu.with_gui_backend(backend);
         }
         // `--emulate` routes the named areas to the emulation layer even where
         // a native implementation exists; everything else keeps native

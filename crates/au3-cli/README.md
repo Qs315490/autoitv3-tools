@@ -87,6 +87,13 @@ au3 run some.au3 BuildFunctionTable --init   # --init 先跑脚本体建立全�
 # --trace 打印解释器执行的语句流
 au3 run some.au3 SomeFunc --trace
 
+# 带 GUI 的脚本：GUI 语义（165 个函数）由仿真层回答，默认是**无头**的——
+# 调用有返回值，但屏幕上什么都不画。要看真窗口就构建自带窗口后端的版本：
+#   cargo build --release -p au3-cli --features gui-window
+# 然后 --gui window：窗口归主线程（winit 要求），脚本跑在它的工作线程上，
+# 关闭窗口或脚本结束即退出。不带该 feature 构建时用 --gui window 会明确报错。
+au3 run some-gui.au3 --gui window
+
 # debug：加载脚本并进入交互式调试 shell（断点/单步/异常时停/查看/求值）
 au3 debug some.au3
 au3 debug some.au3 -c "break 68" -c run -c "print $string_table[0x4ea]" -c quit
