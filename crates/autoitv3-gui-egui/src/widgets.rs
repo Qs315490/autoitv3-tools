@@ -72,7 +72,7 @@ pub fn draw_control_with(
             ui.add_enabled_ui(control.is_enabled(), |ui| {
                 apply_style(ui, control);
                 let mut body = |ui: &mut egui::Ui| draw_kind(ui, control, &mut actions, siblings);
-                match control.bk_color {
+                match control.background() {
                     // A background color paints behind whatever the control draws.
                     Some(color) => {
                         egui::Frame::new()
@@ -86,7 +86,14 @@ pub fn draw_control_with(
         })
         .response;
     if !control.tip.is_empty() {
-        response.on_hover_text(&control.tip);
+        // A title goes above the text, and is the only thing an icon can sit
+        // next to — `GUICtrlSetTip` says as much.
+        let text = if control.tip_title.is_empty() {
+            control.tip.clone()
+        } else {
+            format!("{}\n{}", control.tip_title, control.tip)
+        };
+        response.on_hover_text(text);
     }
     actions
         .into_iter()
@@ -960,7 +967,7 @@ fn draw_kind(
         }
         ControlKind::List => draw_list(ui, control, actions),
         ControlKind::Combo => draw_combo(ui, control, actions),
-        ControlKind::ListView => draw_listview(ui, control, actions),
+        ControlKind::ListView => draw_listview(ui, control, actions, siblings),
         ControlKind::ListViewItem => draw_listview_item(ui, control, actions),
         ControlKind::TreeView => draw_treeview(ui, control, actions, siblings),
         ControlKind::TreeViewItem => {
@@ -1074,12 +1081,52 @@ fn draw_combo(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
         });
 }
 
-fn draw_listview(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {
+fn draw_listview(
+    ui: &mut egui::Ui,
+    control: &Control,
+    actions: &mut Vec<Action>,
+    siblings: &[Control],
+) {
     let columns: Vec<&str> = control.text.split('|').collect();
     egui::ScrollArea::vertical()
         .max_height(160.0)
         .id_salt(control.id)
         .show(ui, |ui| {
+            // `$GUI_BKCOLOR_LV_ALTERNATE` paints every second row with the row's
+            // own colour, which a grid cannot do per row — so that mode draws
+            // one frame per row instead.
+            if control.alternating_rows() {
+                if !control.text.is_empty() {
+                    ui.horizontal(|ui| {
+                        for column in &columns {
+                            ui.strong(*column);
+                        }
+                    });
+                }
+                for (index, row) in control.data.iter().enumerate() {
+                    let selected = control.selection == Some(index);
+                    let cells: Vec<&str> = row.split('|').collect();
+                    let width = columns.len().max(cells.len()).max(1);
+                    let fill = row_color(control, index, siblings).map(autoit_color);
+                    let mut draw = |ui: &mut egui::Ui| {
+                        ui.horizontal(|ui| {
+                            for cell in 0..width {
+                                let text = cells.get(cell).copied().unwrap_or("");
+                                if ui.selectable_label(selected, text).clicked() {
+                                    actions.push(Action::Selected(index));
+                                }
+                            }
+                        });
+                    };
+                    match fill {
+                        Some(color) => {
+                            egui::Frame::new().fill(color).show(ui, &mut draw);
+                        }
+                        None => draw(ui),
+                    }
+                }
+                return;
+            }
             egui::Grid::new(("listview", control.id))
                 .striped(true)
                 .show(ui, |ui| {
@@ -1103,6 +1150,27 @@ fn draw_listview(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>
                     }
                 });
         });
+}
+
+/// The colour of one alternating `ListView` row.
+///
+/// The help page counts lines from one: the odd ones take the ListView's own
+/// colour and the even ones the colour of the row's item, with the ListView's
+/// colour as the fallback an item without one gets.
+fn row_color(listview: &Control, row: usize, siblings: &[Control]) -> Option<i64> {
+    let listview_color = listview.background();
+    if row % 2 == 0 {
+        return listview_color;
+    }
+    siblings
+        .iter()
+        .find(|control| {
+            control.kind == ControlKind::ListViewItem
+                && control.row == Some(row)
+                && control.parent == Some(listview.id)
+        })
+        .and_then(Control::background)
+        .or(listview_color)
 }
 
 fn draw_listview_item(ui: &mut egui::Ui, control: &Control, actions: &mut Vec<Action>) {

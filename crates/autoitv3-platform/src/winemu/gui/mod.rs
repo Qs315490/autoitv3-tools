@@ -902,7 +902,19 @@ impl GuiState {
                 };
                 let color = arg_int(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
-                    control.bk_color = Some(color);
+                    // The help page's own example sets `$GUI_BKCOLOR_LV_ALTERNATE`
+                    // on a ListView and then the colour to alternate with, so the
+                    // flag has to survive that second call.
+                    let alternate = control
+                        .bk_color
+                        .is_some_and(|old| old & model::GUI_BKCOLOR_LV_ALTERNATE != 0)
+                        && color != model::GUI_BKCOLOR_TRANSPARENT
+                        && color & model::GUI_BKCOLOR_LV_ALTERNATE == 0;
+                    control.bk_color = Some(if alternate {
+                        color | model::GUI_BKCOLOR_LV_ALTERNATE
+                    } else {
+                        color
+                    });
                 }
                 self.notify_control(id);
                 Value::Int(1)
@@ -1016,9 +1028,30 @@ impl GuiState {
                     return Some(Self::no_such_control(ctx));
                 };
                 let tip = arg_str(args, 1);
+                // `Default` (or no argument at all) leaves a parameter as it was;
+                // the help page calls that "skip an optional parameter".
+                let given = |i: usize| match args.get(i) {
+                    None | Some(Value::Default) => None,
+                    Some(_) => Some(i),
+                };
+                let title = given(2).map(|i| arg_str(args, i));
+                let icon = given(3).map(|i| arg_int(args, i));
+                let options = given(4).map(|i| arg_int(args, i));
                 if let Some(control) = self.model.control_mut(id) {
                     control.tip = tip;
+                    if let Some(title) = title {
+                        control.tip_title = title;
+                    }
+                    if let Some(icon) = icon {
+                        control.tip_icon = icon;
+                    }
+                    if let Some(options) = options {
+                        control.tip_options = options;
+                    }
                 }
+                // The tip is a backend's business: a real tooltip window has to
+                // be told, and the tooltip text is the whole of what it shows.
+                self.notify_control(id);
                 Value::Int(1)
             }
             "guictrlsetgraphic" => self.set_graphic(args, ctx),
@@ -1778,6 +1811,9 @@ impl GuiState {
             data: Vec::new(),
             selection: None,
             tip: String::new(),
+            tip_title: String::new(),
+            tip_icon: 0,
+            tip_options: 0,
             on_event: None,
             bk_color: None,
             color: None,
@@ -1898,6 +1934,9 @@ impl GuiState {
             data: Vec::new(),
             selection: None,
             tip: String::new(),
+            tip_title: String::new(),
+            tip_icon: 0,
+            tip_options: 0,
             on_event: None,
             bk_color: None,
             color: None,

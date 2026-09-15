@@ -166,6 +166,13 @@ pub struct Control {
     /// Which item is selected in a list-like control, when the backend knows.
     pub selection: Option<usize>,
     pub tip: String,
+    /// The tooltip's title, empty when the script gave none. The icon needs a
+    /// title to sit next to, so it is ignored on its own.
+    pub tip_title: String,
+    /// `$TIP_NOICON`/`$TIP_INFOICON`/`$TIP_WARNINGICON`/`$TIP_ERRORICON`.
+    pub tip_icon: i64,
+    /// `$TIP_BALLOON`/`$TIP_CENTER`, OR-ed together.
+    pub tip_options: i64,
     pub on_event: Option<String>,
     pub bk_color: Option<i64>,
     pub color: Option<i64>,
@@ -196,6 +203,15 @@ pub const GUI_ENABLE: i64 = 0x40;
 pub const GUI_DISABLE: i64 = 0x80;
 /// `$GUI_CHECKED`.
 pub const GUI_CHECKED: i64 = 0x01;
+
+/// `$GUI_BKCOLOR_TRANSPARENT`: the control keeps the window's own colour.
+pub const GUI_BKCOLOR_TRANSPARENT: i64 = -2;
+/// `$GUI_BKCOLOR_LV_ALTERNATE`: a ListView paints its rows in two colours.
+pub const GUI_BKCOLOR_LV_ALTERNATE: i64 = 0x8000_0000;
+/// `$TIP_BALLOON` from `GUICtrlSetTip`'s options word.
+pub const TIP_BALLOON: i64 = 1;
+/// `$TIP_CENTER` from `GUICtrlSetTip`'s options word.
+pub const TIP_CENTER: i64 = 2;
 
 /// Not an AutoIt constant: "this control is on a tab page that is not the
 /// selected one".
@@ -229,6 +245,9 @@ impl Control {
             data: Vec::new(),
             selection: None,
             tip: String::new(),
+            tip_title: String::new(),
+            tip_icon: 0,
+            tip_options: 0,
             on_event: None,
             bk_color: None,
             color: None,
@@ -259,6 +278,38 @@ impl Control {
     }
     pub fn is_checked(&self) -> bool {
         self.state & GUI_CHECKED != 0
+    }
+
+    /// The solid colour to paint behind this control, `None` when it has none.
+    ///
+    /// `$GUI_BKCOLOR_TRANSPARENT` asks for the window's own colour — the
+    /// official interpreter hands that straight to the control, and the useful
+    /// equivalent here is "paint nothing" — and a ListView's
+    /// `$GUI_BKCOLOR_LV_ALTERNATE` travels *with* the colour rather than
+    /// instead of it, so it is masked off before the value reaches a renderer.
+    pub fn background(&self) -> Option<i64> {
+        match self.bk_color {
+            None | Some(GUI_BKCOLOR_TRANSPARENT) => None,
+            Some(color) => Some(color & !GUI_BKCOLOR_LV_ALTERNATE),
+        }
+    }
+
+    /// Whether this control is the ListView half of `$GUI_BKCOLOR_LV_ALTERNATE`.
+    ///
+    /// [`background`](Self::background) is then the colour of the *odd* rows;
+    /// an even row takes its colour from the row's own item control, falling
+    /// back to the ListView's colour when that item has none.
+    pub fn alternating_rows(&self) -> bool {
+        self.bk_color
+            .is_some_and(|color| color & GUI_BKCOLOR_LV_ALTERNATE != 0)
+    }
+
+    /// The title `GUICtrlSetTip` gave this control's tooltip, if any.
+    ///
+    /// A balloon tip is drawn by the same tooltip window as a plain one, so the
+    /// title and the icon ride along on the control instead of in the backend.
+    pub fn tip_is_balloon(&self) -> bool {
+        self.tip_options & TIP_BALLOON != 0
     }
 }
 
