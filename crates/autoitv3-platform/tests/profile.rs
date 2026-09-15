@@ -193,9 +193,10 @@ fn deterministic_profile_refuses_deletes_creates_and_env_changes() {
         f = file.display(),
         d = newdir.display()
     );
-    // All three calls are refused (0), the file survives, and the directory
-    // was never created so its size is 0.
-    assert_eq!(text_with(ExecutionProfile::deterministic(), &body), "000:True:0");
+    // All three calls are refused (0), the file survives, and the directory was
+    // never created — `DirGetSize` answers the documented `-1` for a path that
+    // is not there.
+    assert_eq!(text_with(ExecutionProfile::deterministic(), &body), "000:True:-1");
     assert!(file.exists(), "the file must not have been deleted");
     assert!(!newdir.exists(), "the directory must not have been created");
 }

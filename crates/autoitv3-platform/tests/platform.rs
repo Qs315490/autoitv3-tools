@@ -199,9 +199,49 @@ fn dirgetsize_reports_the_extended_triple_with_flag_one() {
 
 #[test]
 fn file_open_failure_returns_minus_one() {
+    // The help page gives `FileOpen` no `@error` at all ("Failure: -1 if error
+    // occurs"), and AutoIt's own source never calls `SetError` in it; measured
+    // against 3.3.16, a failed open leaves the reset 0 behind.
     let body = r#"Local $h = FileOpen("/definitely/not/here.txt", 0)
     Return $h & ":" & @error"#;
-    assert_eq!(text(body), "-1:1");
+    assert_eq!(text(body), "-1:0");
+}
+
+#[test]
+fn file_query_failures_report_the_documented_error() {
+    let dir = scratch("failures");
+    // A Windows-style name, so the path that comes back from the name queries
+    // is the one the script wrote — the emulation maps `C:` to the host root in
+    // both directions, and what is being checked is the *@error*, not the path.
+    let missing = r"C:\au3-no-such-file-7f3a.txt";
+    let empty = dir.join("empty.txt");
+    std::fs::write(&empty, "").unwrap();
+    let body = format!(
+        r#"Local $size = FileGetSize("{m}")
+    Local $size_err = @error
+    Local $h = FileOpen("{m}", 0)
+    Local $open_err = @error
+    Local $long = FileGetLongName("{m}")
+    Local $long_err = @error
+    Local $short = FileGetShortName("{m}")
+    Local $short_err = @error
+    Local $pos = FileGetPos(9999)
+    Local $pos_err = @error
+    Local $d = DirGetSize("{m}")
+    Local $dir_err = @error
+    Local $a = FileReadToArray("{e}")
+    Local $arr_err = @error
+    Return $size & ":" & $size_err & ":" & $h & ":" & $open_err & ":" & ($long = "{m}") & ":" & $long_err & ":" & ($short = "{m}") & ":" & $short_err & ":" & $pos & ":" & $pos_err & ":" & $d & ":" & $dir_err & ":" & $a[0] & ":" & $arr_err"#,
+        m = missing,
+        e = empty.display()
+    );
+    // size 0/@error 1, open -1/@error 0, the parameter back with @error 1 for
+    // both name forms, 0/@error 1 for a bad handle, -1/@error 1 for a missing
+    // directory, and an empty array with @error 2 for an empty file.
+    assert_eq!(
+        text(&body),
+        "0:1:-1:0:True:1:True:1:0:1:-1:1:0:2"
+    );
 }
 
 #[test]

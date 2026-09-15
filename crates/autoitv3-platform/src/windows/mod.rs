@@ -423,8 +423,16 @@ impl Platform for WindowsPlatform {
             }
             "filegetshortname" => {
                 let path = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-                ctx.set_error(0, 0);
-                Value::Str(files::file_get_short_name(&path))
+                // "Failure: the parameter and sets the @error flag to 1": the
+                // parameter is what comes back when the OS cannot name the
+                // path. A path that is already short comes back unchanged too,
+                // so the failure is the one the help page means — a path that
+                // is not there.
+                let short = files::file_get_short_name(&path);
+                if !std::path::Path::new(&path).exists() {
+                    ctx.set_error(1, 0);
+                }
+                Value::Str(short)
             }
             "envupdate" => files::env_update(),
             // ---------------- COM ----------------
