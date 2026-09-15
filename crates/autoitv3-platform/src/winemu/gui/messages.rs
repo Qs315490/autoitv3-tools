@@ -81,7 +81,12 @@ pub fn send(control: &mut Control, msg: u32, wparam: i64, lparam: i64) -> (i64, 
         0x1032 => i64::from(control.selection.is_some()), // LVM_GETSELECTEDCOUNT
         0x102B | 0x104D | 0x1061 | 0x1073 | 0x1074 => 0, // pointer-based
         // ---- Tree and tab ----
-        0x1100..=0x11FF => 0, // TVM_*
+        0x1105 => control.data.len() as i64, // TVM_GETCOUNT
+        0x110A => control // TVM_GETNEXTITEM: the selected row
+            .selection
+            .map(|index| index as i64)
+            .unwrap_or(-1),
+        0x1100..=0x11FF => 0, // the rest of TVM_*
         0x1304 => control.data.len() as i64, // TCM_GETITEMCOUNT
         0x130B => control // TCM_GETCURSEL
             .selection
