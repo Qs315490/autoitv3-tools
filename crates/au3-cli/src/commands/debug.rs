@@ -375,7 +375,8 @@ impl Debugger for SharedShell {
 /// completion matches what can actually be typed.
 const COMMAND_WORDS: &[&str] = &[
     "run", "restart", "continue", "c", "step", "s", "next", "n", "finish", "fin", "until", "u",
-    "untilcall", "untilc", "untilgui", "gui", "stopat", "sa", "break", "b", "tbreak", "tb",
+    "untilcall", "untilc", "untilret", "untilr", "untilgui", "gui", "stopat", "sa", "break",
+    "b", "tbreak", "tb",
     "jmp", "j",
     "delete", "d", "del", "enable", "disable", "print", "p", "set", "info", "i", "backtrace",
     "bt", "where", "w", "list", "l", "eval", "watch", "unwatch", "ignore", "commands",
@@ -438,7 +439,7 @@ impl CompletionData {
                 "break" | "b" | "tbreak" | "tb" | "until" | "u" | "jmp" | "j" => {
                     pool.extend(self.functions.iter().cloned())
                 }
-                "untilcall" | "untilc" | "stopat" | "sa" => {
+                "untilcall" | "untilc" | "untilret" | "untilr" | "stopat" | "sa" => {
                     pool.extend(self.builtins.iter().cloned());
                     pool.extend(self.functions.iter().cloned());
                 }
@@ -595,9 +596,12 @@ struct Shell {
     /// Maintained from the call hooks so `trace skip` does not have to snapshot
     /// the whole stack on every statement.
     call_stack: Vec<String>,
-    /// `untilcall <name>`: stop at the next call to this builtin/function
-    /// (lower-case).
+    /// `untilcall <name>`: stop *before* the next call to this builtin/function
+    /// (lower-case). One-shot, like `tbreak`.
     until_call: Option<String>,
+    /// `untilret <name>`: stop at the statement after the next call to this
+    /// builtin/function returns (lower-case). One-shot.
+    until_ret: Option<String>,
     /// `stopat <name>`: stop *before* every call to this builtin/function
     /// (lower-case), so its arguments — a dialog's text — can be read without
     /// it opening.
@@ -668,6 +672,7 @@ impl Shell {
             trace_skip: Vec::new(),
             call_stack: Vec::new(),
             until_call: None,
+            until_ret: None,
             stop_at: None,
             caught_call: None,
             until_hit: false,
@@ -896,6 +901,7 @@ impl Shell {
             // `untilcall` is the builtin counterpart: builtins have no entry
             // line, so it watches the resolved call instead.
             "untilcall" | "untilc" => self.until_call_command(rest.trim()),
+            "untilret" | "untilr" => self.until_ret_command(rest.trim()),
             "stopat" | "sa" => self.stop_at_command(rest.trim()),
             "untilgui" | "gui" => self.until_call_command("GUICreate"),
             "b" | "break" => self.break_command(rest.trim(), host),
@@ -1157,18 +1163,39 @@ impl Shell {
 
     /// `untilcall <name>` — run until the next call to that builtin/function.
     ///
-    /// `tbreak <func>` needs a script entry line; a builtin like `GUICreate`
-    /// has none, so this watches the resolved call and stops at the statement
-    /// after it. `untilgui` is the shorthand for `untilcall GUICreate`.
+    /// `untilcall <func>` — run until the next call to that function and stop
+    /// **before** it runs, so the call itself is what is on screen (the same
+    /// place `stopat` stops, but one-shot). A builtin like `GUICreate` has no
+    /// entry line for `tbreak`, which is why this watches the resolved call
+    /// instead; `untilgui` is the shorthand for `untilcall GUICreate`.
     fn until_call_command(&mut self, name: &str) -> Outcome {
         if name.is_empty() {
             println!("usage: untilcall <function>");
             return Outcome::Stay;
         }
         self.until_call = Some(name.to_ascii_lowercase());
+        self.until_ret = None;
         self.until_hit = false;
         self.step = StepMode::Run;
-        println!("running until {name} is called");
+        println!("running until {name} is called (stopping before it runs)");
+        Outcome::Resume
+    }
+
+    /// `untilret <func>` — the other side of `untilcall`: run until the next
+    /// call to that function has *returned* and stop on the statement after it.
+    /// For a dialog that is after it was answered, and for a script function
+    /// after its body ran — what you want when the *result* is the interesting
+    /// part.
+    fn until_ret_command(&mut self, name: &str) -> Outcome {
+        if name.is_empty() {
+            println!("usage: untilret <function>");
+            return Outcome::Stay;
+        }
+        self.until_ret = Some(name.to_ascii_lowercase());
+        self.until_call = None;
+        self.until_hit = false;
+        self.step = StepMode::Run;
+        println!("running until {name} returns");
         Outcome::Resume
     }
 
@@ -1801,7 +1828,8 @@ Commands (`help <cmd>` describes one)
   next [n], n            run n statements in this frame (default 1)
   finish, fin            run until the current function returns
   until <line-expr>      alias of `tbreak <line-expr>`
-  untilcall <func>       run until <func> is called (builtins too)
+  untilcall <func>       run until <func> is called, stopping *before* it runs
+  untilret <func>        run until <func> has returned (stop after the call)
   untilgui, gui          untilcall GUICreate
   stopat <func>, sa      stop *before* every <func> call — a builtin before it
                          runs (`stopat MsgBox` shows a dialog's text without
@@ -1876,27 +1904,27 @@ impl Debugger for Shell {
         name: &str,
         args: &[autoitv3_runtime::Value],
     ) -> DebugAction {
-        let lower = name.to_ascii_lowercase();
-        if self.until_call.as_deref() == Some(lower.as_str()) {
-            self.until_hit = true;
-        }
-        self.call_stack.push(lower);
+        self.call_stack.push(name.to_ascii_lowercase());
         self.catch_action(name, args)
     }
 
-    fn on_call_exit(&mut self, _name: &str, _result: Option<&autoitv3_runtime::Value>) {
+    fn on_call_exit(&mut self, name: &str, _result: Option<&autoitv3_runtime::Value>) {
         self.call_stack.pop();
+        // A script function's "after the call" is the caller's next statement,
+        // so the `untilret` flag goes up as the frame unwinds — not at entry,
+        // which would stop on the body's first statement.
+        if self.until_ret_matches(name) {
+            self.until_hit = true;
+        }
     }
 
     fn on_builtin_call(&mut self, name: &str, args: &[autoitv3_runtime::Value]) -> DebugAction {
         // A builtin has no entry line, so `untilcall GUICreate` watches the
         // resolved call instead (`GUICreate` still goes through the table and
-        // reaches here as a function value).
-        if self
-            .until_call
-            .as_deref()
-            .is_some_and(|target| target.eq_ignore_ascii_case(name))
-        {
+        // reaches here as a function value). It also has no exit hook, so for
+        // `untilret` *this* is the moment before the statement that follows the
+        // call.
+        if self.until_ret_matches(name) {
             self.until_hit = true;
         }
         self.catch_action(name, args)
@@ -1918,10 +1946,11 @@ impl Debugger for Shell {
         if self.tracing && self.trace_visible(depth) {
             println!("[trace] {}:{} depth={depth}", span.start.line, span.start.col);
         }
-        // `untilcall` saw its target: stop here, one statement after the call.
+        // `untilret` saw its target return: stop here, on the statement after
+        // the call.
         let until = std::mem::take(&mut self.until_hit);
         if until {
-            self.until_call = None;
+            self.until_ret = None;
         }
         // `step n`/`next n` count down as statements go by; the mode is cleared
         // on the stop, so the prompt starts from a clean `Run`.
@@ -1996,18 +2025,35 @@ impl Debugger for Shell {
 }
 
 impl Shell {
-    /// The `stopat` check both call hooks share: report the call and ask the
-    /// interpreter to suspend before it happens. Stops asked for from inside a
-    /// stop are ignored — evaluating an expression for `print` runs calls too.
+    /// Whether `untilret` is waiting for this function.
+    fn until_ret_matches(&self, name: &str) -> bool {
+        self.until_ret
+            .as_deref()
+            .is_some_and(|target| target.eq_ignore_ascii_case(name))
+    }
+
+    /// What the call-entry hooks do: `untilcall`/`stopat` stop *before* the
+    /// call, reporting it and its arguments. `untilret` is handled by the
+    /// caller of this — at the builtin hook for a builtin, at the exit hook for
+    /// a script function. Stops asked for from inside a stop are ignored —
+    /// `print` runs calls too.
     fn catch_action(&mut self, name: &str, args: &[autoitv3_runtime::Value]) -> DebugAction {
-        if !self.paused
-            && self
+        if !self.paused {
+            let one_shot = self
+                .until_call
+                .as_deref()
+                .is_some_and(|target| target.eq_ignore_ascii_case(name));
+            let persistent = self
                 .stop_at
                 .as_deref()
-                .is_some_and(|target| target.eq_ignore_ascii_case(name))
-        {
-            self.caught_call = Some(format_call(name, args));
-            return DebugAction::Pause;
+                .is_some_and(|target| target.eq_ignore_ascii_case(name));
+            if one_shot || persistent {
+                if one_shot {
+                    self.until_call = None;
+                }
+                self.caught_call = Some(format_call(name, args));
+                return DebugAction::Pause;
+            }
         }
         DebugAction::Continue
     }
@@ -2234,7 +2280,10 @@ fn help_for(topic: &str) -> String {
         "finish" => "finish — run until the current function returns".to_string(),
         "until" | "u" => "until <line-expr> — alias of `tbreak <line-expr>`".to_string(),
         "untilcall" | "untilc" => {
-            "untilcall <func> — run until <func> is called, builtins included".to_string()
+            "untilcall <func> — run until <func> is called, stopping before it runs (builtins too); one-shot".to_string()
+        }
+        "untilret" | "untilr" => {
+            "untilret <func> — run until <func> has returned, stopping on the statement after the call".to_string()
         }
         "untilgui" | "gui" => "untilgui — run until GUICreate is called".to_string(),
         "stopat" | "sa" => {

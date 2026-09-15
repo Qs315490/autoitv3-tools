@@ -27,6 +27,19 @@ fn the_first_word_completes_commands() {
 }
 
 #[test]
+fn untilret_completes_functions_and_builtins() {
+    let data = CompletionData {
+        builtins: vec!["MsgBox".into()],
+        functions: vec!["Main".into()],
+        ..CompletionData::default()
+    };
+    assert_eq!(
+        replacements(data.candidates(Some("untilret"), "")),
+        vec!["Main".to_string(), "MsgBox".to_string()]
+    );
+}
+
+#[test]
 fn stopat_completes_functions_and_builtins() {
     let data = CompletionData {
         builtins: vec!["MsgBox".into(), "Sleep".into()],

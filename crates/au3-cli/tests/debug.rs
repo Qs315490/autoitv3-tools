@@ -784,7 +784,7 @@ Main()
 }
 
 #[test]
-fn untilcall_stops_after_a_builtin_call() {
+fn untilcall_stops_before_a_builtin_call() {
     const CALLS: &str = r#"Func Main()
     ConsoleWrite("a")
     ConsoleWrite("b")
@@ -794,12 +794,48 @@ Main()
 "#;
     let path = script("untilcall", CALLS);
     let out = shell(&path, &["untilcall ConsoleWrite", "list", "quit"]);
-    assert!(out.contains("running until ConsoleWrite is called"), "got:\n{out}");
-    assert!(out.contains("Stopped at line 3"), "got:\n{out}");
+    assert!(
+        out.contains("running until ConsoleWrite is called (stopping before it runs)"),
+        "got:\n{out}"
+    );
+    // The call itself is the stop: reported with its argument, before it runs.
+    assert!(out.contains("Catchpoint: ConsoleWrite(\"a\")"), "got:\n{out}");
+    assert!(out.contains("=>      2"), "line 2 is current:\n{out}");
 }
 
 #[test]
-fn untilgui_stops_after_gui_create() {
+fn untilret_stops_after_a_builtin_call() {
+    const CALLS: &str = r#"Func Main()
+    ConsoleWrite("a")
+    ConsoleWrite("b")
+EndFunc
+
+Main()
+"#;
+    let path = script("untilret", CALLS);
+    let out = shell(&path, &["untilret ConsoleWrite", "list", "quit"]);
+    assert!(out.contains("running until ConsoleWrite returns"), "got:\n{out}");
+    // The first call ran (its output is there) and the stop is the next line.
+    assert!(out.contains('a'), "the call ran:\n{out}");
+    assert!(out.contains("Stopped at line 3"), "got:\n{out}");
+}
+
+/// For a script function the "after the call" stop is the caller's next
+/// statement, where the result is already there.
+#[test]
+fn untilret_stops_in_the_caller_after_a_script_function() {
+    let path = script(
+        "untilret-func",
+        "Func Double($n)\n    Return $n * 2\nEndFunc\n\nLocal $v = Double(21)\nConsoleWrite($v & @CRLF)\n",
+    );
+    let out = shell(&path, &["untilret Double", "print $v", "quit"]);
+    assert!(out.contains("running until Double returns"), "got:\n{out}");
+    assert!(out.contains("Stopped at line 6"), "the caller's next statement:\n{out}");
+    assert!(has_line(&out, "42"), "the result is readable:\n{out}");
+}
+
+#[test]
+fn untilgui_stops_before_gui_create() {
     const GUI: &str = r#"Func Main()
     GUICreate("hi")
     ConsoleWrite("made")
@@ -811,8 +847,11 @@ Main()
     // Headless on purpose: `untilgui` is about where the debugger stops, and
     // without the flag a Windows host would draw the window this test creates.
     let out = shell_with(&path, &["--gui", "headless"], &["untilgui", "list", "quit"]);
-    assert!(out.contains("running until GUICreate is called"), "got:\n{out}");
-    assert!(out.contains("Stopped at line 3"), "got:\n{out}");
+    assert!(
+        out.contains("running until GUICreate is called (stopping before it runs)"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("Catchpoint: GUICreate(\"hi\")"), "got:\n{out}");
 }
 
 // ---------------------------------------------------------------------------
