@@ -22,6 +22,10 @@ fn call(src: &str) -> Value {
 }
 
 /// Run `F()` with the emulation fallback removed — native + common only.
+///
+/// Kept for the native-vs-emulation comparisons; the cases that need it are
+/// host-dependent, so it is unused on some Windows builds.
+#[allow(dead_code)]
 fn call_native_only(src: &str) -> Value {
     let prog = parse(&wrap(src)).expect("parses");
     let mut rt = Runtime::with_program(&prog);
@@ -780,6 +784,8 @@ EndFunc
 // COM
 // ---------------------------------------------------------------------------
 
+#[test]
+#[ignore = "starts a real Automation server; run with --ignored on a desktop Windows host"]
 fn objcreate_and_late_bound_calls_hit_a_real_automation_server() {
     let src = r#"
 Func F()

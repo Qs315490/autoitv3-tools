@@ -90,16 +90,27 @@ impl PathMap {
 
     /// `C:\dir\file` → `<root>/dir/file`; `None` when `path` is not on the
     /// mapped drive.
+    ///
+    /// The result is spelled with one separator throughout — the host's — which
+    /// is what a caller handing the path to a filesystem API wants. Building it
+    /// as a `PathBuf` would mix the two whenever the root was written the other
+    /// way (`PathMap::new("C:", "/")` on Windows ends up `/home\me`).
     pub fn to_host(&self, path: &str) -> Option<PathBuf> {
         let rest = self.strip_drive(path)?;
-        let mut out = self.root.clone();
-        for part in rest.split(['\\', '/']) {
-            match part {
-                "" | "." => {}
-                other => out.push(other),
-            }
+        let mut out = self.root.to_string_lossy().into_owned();
+        if std::path::MAIN_SEPARATOR == '\\' {
+            out = out.replace('/', "\\");
         }
-        Some(out)
+        for part in rest.split(['\\', '/']) {
+            if part.is_empty() || part == "." {
+                continue;
+            }
+            if !out.ends_with(std::path::MAIN_SEPARATOR) {
+                out.push(std::path::MAIN_SEPARATOR);
+            }
+            out.push_str(part);
+        }
+        Some(PathBuf::from(out))
     }
 
     /// `<root>/dir/file` → `C:\dir\file`.
@@ -113,7 +124,14 @@ impl PathMap {
         };
         let mut out = self.drive.clone();
         let mut any = false;
-        for part in rest.to_string_lossy().split(std::path::MAIN_SEPARATOR) {
+        // On Windows a host path may have been written either way, and a `/`
+        // cannot be part of a file name there; a POSIX host only ever uses `/`.
+        let separators: &[char] = if std::path::MAIN_SEPARATOR == '\\' {
+            &['\\', '/']
+        } else {
+            &['/']
+        };
+        for part in rest.to_string_lossy().split(separators) {
             if part.is_empty() {
                 continue;
             }
@@ -185,7 +203,12 @@ mod tests {
     #[test]
     fn rewrite_handles_drive_and_relative_paths() {
         let map = PathMap::new("C:", "/");
+        // The host's separator throughout: `/tmp/a.txt` where `/` is the
+        // separator, `\tmp\a.txt` where it is `\`.
+        #[cfg(not(windows))]
         assert_eq!(map.rewrite(r"C:\tmp\a.txt"), "/tmp/a.txt");
+        #[cfg(windows)]
+        assert_eq!(map.rewrite(r"C:\tmp\a.txt"), r"\tmp\a.txt");
         assert_eq!(map.rewrite("plain text"), "plain text");
         #[cfg(not(windows))]
         assert_eq!(map.rewrite(r"sub\file.txt"), "sub/file.txt");
