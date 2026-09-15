@@ -93,6 +93,18 @@ fn a_host_without_elevation_says_so_and_runs_the_script() {
     assert!(out.contains("ran"), "got:\n{out}");
 }
 
+/// The elevated copy is told it is the copy: the elevation happened in the
+/// process that started it, so it neither elevates again nor reports the
+/// directive as skipped.
+#[test]
+fn the_elevated_copy_does_not_elevate_or_report() {
+    let path = script("elevated-copy", "#RequireAdmin\nConsoleWrite(\"ran\")\n");
+    let (ok, out) = au3(&["run", &path.to_string_lossy(), "--elevated-copy"]);
+    assert!(ok, "got:\n{out}");
+    assert!(!out.contains("#RequireAdmin"), "got:\n{out}");
+    assert!(out.contains("ran"), "got:\n{out}");
+}
+
 /// The elevated copy is told which console to print into, so its output does
 /// not end up in a second window. Off Windows there is no Windows console to
 /// attach to, and the copy says so instead of falling over; on Windows this

@@ -149,7 +149,8 @@ AU3_INCLUDE_PATH='D:\Programs\autoitv3\Include' au3 run script.au3
 
 * 原进程**等到**提权副本结束再退出，并把它的退出码写进提示行——AutoIt 会立刻退出，
   在批处理里等一等更有用；
-* 提权副本拿到同一条命令行外加 `--no-elevate`，所以它不会再次提权；
+* 提权副本拿到同一条命令行外加内部开关 `--elevated-copy`（不会再提权，也不会把
+  `#RequireAdmin` 当成"被跳过"再报一次）；
 * 提权副本被 shell 服务放进**它自己的控制台**（也就是新开一个窗口）。原进程会把
   自己的 pid 通过 `--attach-console` 传过去，副本先 `FreeConsole` 再
   `AttachConsole(parent)`，把 `CONOUT$`/`CONIN$` 重新装回标准句柄——`ConsoleWrite`

@@ -54,10 +54,17 @@ fn note(text: &str) {
 /// this function is about the token the script runs with.
 pub fn relaunch_if_required(
     program: &Program,
+    elevated_copy: bool,
     no_elevate: bool,
     spawn_denied: bool,
 ) -> CliResult<bool> {
     if !is_required(program) {
+        return Ok(false);
+    }
+    if elevated_copy {
+        // This *is* the copy: the elevation the script asked for already
+        // happened, and the process that started it has said so. Repeating the
+        // `--no-elevate` note here would read as if the rights were refused.
         return Ok(false);
     }
     if no_elevate {
@@ -109,10 +116,10 @@ pub fn relaunch_if_required(
 
 /// This process's own arguments, with the two flags the copy needs.
 ///
-/// `--no-elevate` goes right after the subcommand (`au3 run --no-elevate
+/// `--elevated-copy` goes right after the subcommand (`au3 run --elevated-copy
 /// FILE`), so it is still an option wherever the user put a later `--`;
 /// `--attach-console PID` goes in front of the subcommand, where the top-level
-/// flag lives, and is how the copy finds the console to print into (the callers
+/// flag lives, and is how the copy finds the console to print into (the caller's
 /// pid, ours).
 fn elevated_args() -> Vec<OsString> {
     let own: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -123,7 +130,7 @@ fn elevated_args() -> Vec<OsString> {
 /// placement can be checked without a real elevation.
 fn elevated_args_from(mut args: Vec<OsString>, pid: u32) -> Vec<OsString> {
     if args.len() > 1 {
-        args.insert(1, OsString::from("--no-elevate"));
+        args.insert(1, OsString::from("--elevated-copy"));
         args.insert(0, OsString::from(pid.to_string()));
         args.insert(0, OsString::from("--attach-console"));
     }
@@ -138,8 +145,8 @@ mod tests {
     #[test]
     fn the_copy_gets_both_flags_where_the_parser_wants_them() {
         // `--attach-console` is a top-level flag, so it goes in front of the
-        // subcommand; `--no-elevate` belongs to `run`, so it goes behind it and
-        // in front of the file. Both survive a later `--`.
+        // subcommand; `--elevated-copy` belongs to `run`, so it goes behind it
+        // and in front of the file. Both survive a later `--`.
         let own: Vec<OsString> =
             vec!["run".into(), "a script.au3".into(), "--".into(), "-x".into()];
         assert_eq!(
@@ -148,7 +155,7 @@ mod tests {
                 "--attach-console",
                 "4242",
                 "run",
-                "--no-elevate",
+                "--elevated-copy",
                 "a script.au3",
                 "--",
                 "-x"
