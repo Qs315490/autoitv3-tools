@@ -480,12 +480,7 @@ impl PrettyPrinter {
                 LitKind::Float(v) => {
                     let _ = write!(self.out, "{v}");
                 }
-                LitKind::Str(s) => {
-                    let _ = write!(self.out, "\"");
-                    let escaped = s.replace('"', "\"\"");
-                    let _ = write!(self.out, "{escaped}");
-                    let _ = write!(self.out, "\"");
-                }
+                LitKind::Str(s) => self.out.push_str(&string_literal(s)),
                 LitKind::Bool(b) => {
                     let _ = write!(self.out, "{}", if *b { "True" } else { "False" });
                 }
@@ -668,6 +663,24 @@ impl PrettyPrinter {
                 let _ = write!(self.out, ")");
             }
         }
+    }
+}
+
+/// Render `value` as an AutoIt string literal.
+///
+/// AutoIt accepts either delimiter and escapes the active one by doubling it, so
+/// this picks the delimiter the value does **not** contain. Deobfuscation
+/// inlines a lot of JSON and regexes, and those are mostly double quotes:
+/// `'{"a": 1}'` says the same thing as `"{""a"": 1}"` while staying readable.
+///
+/// A value holding both kinds of quote has no choice and keeps the double-quoted
+/// form, where only `"` is doubled. Both forms round-trip to the same value —
+/// that is asserted in the tests.
+fn string_literal(value: &str) -> String {
+    if value.contains('"') && !value.contains('\'') {
+        format!("'{value}'")
+    } else {
+        format!("\"{}\"", value.replace('"', "\"\""))
     }
 }
 
