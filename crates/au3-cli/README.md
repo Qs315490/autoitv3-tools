@@ -87,12 +87,17 @@ au3 run some.au3 BuildFunctionTable --init   # --init 先跑脚本体建立全�
 # --trace 打印解释器执行的语句流
 au3 run some.au3 SomeFunc --trace
 
-# 带 GUI 的脚本：GUI 语义（165 个函数）由仿真层回答，默认是**无头**的——
-# 调用有返回值，但屏幕上什么都不画。要看真窗口就构建自带窗口后端的版本：
-#   cargo build --release -p au3-cli --features gui-window
-# 然后 --gui window：窗口归主线程（winit 要求），脚本跑在它的工作线程上，
-# 关闭窗口或脚本结束即退出。不带该 feature 构建时用 --gui window 会明确报错。
-au3 run some-gui.au3 --gui window
+# 带 GUI 的脚本：GUI 语义（165 个函数）由仿真层回答，画不画由 --gui 决定。
+#   auto（默认）——平台自己那套：Windows 上就是真 Win32 窗口和控件，
+#                    其他平台不画（无窗口系统可依赖）
+#   headless    —— 任何平台都不画：调用照旧有返回值，屏幕上什么都没有，
+#                    分析/CI 要的就是这个
+#   window      —— 跨平台的 eframe 窗口（构建时加 --features gui-window）；
+#                    窗口归主线程（winit 要求），脚本跑在它的工作线程上，
+#                    关闭窗口或脚本结束即退出。不带该 feature 构建时会明确报错。
+au3 run some-gui.au3                     # Windows：真窗口；别处：不画
+au3 run some-gui.au3 --gui headless      # 确定性地跑，什么都不弹
+au3 run some-gui.au3 --gui window        # 没有原生路径的主机也能看窗口
 
 # debug：加载脚本并进入交互式调试 shell（断点/单步/异常时停/查看/求值）
 au3 debug some.au3
@@ -104,7 +109,8 @@ echo 'break 68
 run
 backtrace
 quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符）
-au3 debug some-gui.au3 --gui window   # 会话跑在真窗口下（需 --features gui-window 构建）
+au3 debug some-gui.au3                # Windows 默认用真窗口，别处不画
+au3 debug some-gui.au3 --gui window   # 会话跑在 eframe 窗口下（需 --features gui-window 构建）
 ```
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
@@ -255,8 +261,8 @@ Breakpoint 1, line 69
 
 **跑到建窗口**：脚本的 `GUICreate` 是通过函数表调用的内置函数，没有脚本行可下断点，
 `untilgui`（= `untilcall GUICreate`）监听解析后的调用名，跑到建窗口后的第一条语句停下；
-`untilcall <函数>` 对任意内置/脚本函数都适用。注意 GUI 模型默认是**无头**的（不渲染窗口），
-`untilgui` 只是让你跳到那段代码。
+`untilcall <函数>` 对任意内置/脚本函数都适用。`untilgui` 只是让你跳到那段代码，
+窗口本身由 `--gui` 决定（Windows 上默认就是真窗口，别处默认不渲染）。
 
 **trace 过滤**：真实脚本的启动会执行上百万条语句，`trace on` 直接刷屏。用
 `trace skip <热点函数>` 折叠（例如随机 ID 生成器），`trace depth <n>` 只看浅层调用：

@@ -7,12 +7,17 @@
 //! [`Debugger`](autoitv3_runtime::debug::Debugger) to show the statement stream
 //! the future debug module consumes.
 //!
-//! `--gui window` (build with `--features gui-window`) hands the emulation a
-//! backend that owns a real window instead of the headless model, so a GUI
-//! script can actually be seen. winit insists on the main thread, so that mode
-//! runs the script on a worker driven by `LiveBackend::run` and blocks here
-//! until the window closes.
+//! `--gui` picks what draws the GUI the script creates. The default, `auto`,
+//! leaves the choice to the platform: on Windows the emulation drives real Win32
+//! controls, so the script's window is a native one, while elsewhere nothing is
+//! drawn. `--gui headless` forces the in-memory model on every host — the mode
+//! to use when the GUI is only there to be analysed. `--gui window` (build with
+//! `--features gui-window`) hands the emulation a backend that owns an eframe
+//! window instead, so a GUI script can be seen on a host with no native path to
+//! it; winit insists on the main thread, so that mode runs the script on a
+//! worker driven by `LiveBackend::run` and blocks here until the window closes.
 
+use autoitv3_platform::winemu::HeadlessBackend;
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::{Flow, Runtime, Value};
 use clap::Args;
@@ -56,10 +61,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub trace: bool,
 
-    /// GUI backend: `headless` answers the GUI functions without drawing
-    /// anything; `window` opens a real window (needs a build with the
-    /// `gui-window` feature)
-    #[arg(long = "gui", value_name = "MODE", default_value = "headless")]
+    /// GUI backend: `auto` (the default) uses the platform's own — real Win32
+    /// controls on Windows, nothing drawn elsewhere; `headless` never draws;
+    /// `window` opens an eframe window (needs a build with the `gui-window`
+    /// feature)
+    #[arg(long = "gui", value_name = "MODE", default_value = "auto")]
     pub gui: GuiMode,
 
     /// Execution semantics (see `ProfileArgs`).
@@ -85,7 +91,8 @@ pub struct RunArgs {
 /// Entry point for the `run` subcommand.
 pub fn run(args: &RunArgs) -> CliResult<()> {
     match args.gui {
-        GuiMode::Headless => execute(args, None),
+        GuiMode::Auto => execute(args, None),
+        GuiMode::Headless => execute(args, Some(Box::new(HeadlessBackend::new()))),
         GuiMode::Window => run_windowed(args),
     }
 }
@@ -131,7 +138,7 @@ fn execute(
     // reached (see `autoitv3-platform`); off Windows the Windows emulation
     // layer answers first, with the version these arguments select.
     let mut rt = Runtime::with_program(&prog);
-    rt.set_platform(args.win.platform_with_gui(
+    rt.set_platform(args.win.platform(
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
         gui,

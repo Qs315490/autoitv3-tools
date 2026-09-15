@@ -104,9 +104,13 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let mut prog = input.program;
 
     let profile = args.effects.apply(args.profile.profile())?;
-    let platform = args
-        .win
-        .platform(Some(Path::new(&args.input)), input.resource_module.as_deref())?;
+    // Evaluating a script is analysis, not a run: never open a window, not even
+    // the native one a Windows host would pick by itself.
+    let platform = args.win.platform(
+        Some(Path::new(&args.input)),
+        input.resource_module.as_deref(),
+        Some(Box::new(autoitv3_platform::winemu::HeadlessBackend::new())),
+    )?;
     let options = SubstituteOptions {
         inline_declarations: args.substitute.inline_tables,
     };

@@ -763,7 +763,9 @@ EndFunc
 Main()
 "#;
     let path = script("untilgui", GUI);
-    let out = shell(&path, &["untilgui", "list", "quit"]);
+    // Headless on purpose: `untilgui` is about where the debugger stops, and
+    // without the flag a Windows host would draw the window this test creates.
+    let out = shell_with(&path, &["--gui", "headless"], &["untilgui", "list", "quit"]);
     assert!(out.contains("running until GUICreate is called"), "got:\n{out}");
     assert!(out.contains("Stopped at line 3"), "got:\n{out}");
 }
@@ -794,11 +796,21 @@ fn gui_rejects_an_unknown_mode() {
 }
 
 #[test]
-fn gui_headless_is_the_default_and_keeps_the_session_working() {
+fn gui_headless_keeps_the_session_working() {
+    // `--gui headless` forces the model on every host, which is the mode to use
+    // when a window only has to be stepped through and never seen.
     let path = script(
         "gui-headless",
         "Global $h = GUICreate(\"T\", 100, 50)\n",
     );
     let out = shell_with(&path, &["--gui", "headless"], &["next", "quit"]);
     assert!(out.contains("Stopped at line 1"), "got:\n{out}");
+}
+
+/// `--gui auto` is the default, so saying it out loud has to behave the same.
+#[test]
+fn gui_auto_is_accepted() {
+    let path = script("gui-auto", "Global $h = GUICreate(\"T\", 100, 50)\n");
+    let out = shell_with(&path, &["--gui", "auto"], &["quit"]);
+    assert!(!out.contains("invalid value"), "got:\n{out}");
 }

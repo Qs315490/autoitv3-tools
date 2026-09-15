@@ -76,6 +76,29 @@ use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::value::Value;
 use autoitv3_runtime::Runtime;
 
+/// The GUI backend a fresh [`WindowsEmulation`] starts with.
+///
+/// On Windows that is the native one: the GUI *semantics* still come from the
+/// emulation layer — every host runs the same 165 functions — but the window
+/// and its controls are real Win32 ones, drawn and hit-tested by the OS. There
+/// is no toolkit to pull in and nothing to opt into: a script's GUI looks
+/// native because it *is* native.
+///
+/// Elsewhere the default stays headless (no window system is assumed), and a
+/// renderer is installed on request: `autoitv3-gui-egui`'s offscreen
+/// `EguiBackend` (`gui-egui`) or live window (`gui-window`), or
+/// `WindowsEmulation::with_gui_backend` with an embedder's own backend.
+pub(crate) fn default_gui_backend() -> Box<dyn winemu::GuiBackend> {
+    #[cfg(windows)]
+    {
+        Box::new(windows::gui::Win32Backend::new())
+    }
+    #[cfg(not(windows))]
+    {
+        Box::new(winemu::HeadlessBackend::new())
+    }
+}
+
 /// The common layer, wired to the emulation's drive map and script path.
 ///
 /// The two travel together: the emulation answers `C:\...` paths and reports
