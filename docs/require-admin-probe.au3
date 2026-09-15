@@ -21,7 +21,10 @@
 Global $Report = ""
 
 Func Say($line)
-    Global $Report = $Report & $line & @CRLF
+    ; 普通赋值就改脚本级那个 Global —— AutoIt 只有 Local/Global 两种作用域。
+    ; 别写成 `Global $Report = $Report & ...`：官方解释器直接报
+    ; "Can not initialize a variable with itself"。
+    $Report = $Report & $line & @CRLF
     ConsoleWrite($line & @CRLF)
 EndFunc
 
