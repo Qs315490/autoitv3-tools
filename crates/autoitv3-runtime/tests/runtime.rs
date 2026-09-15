@@ -308,6 +308,95 @@ EndFunc
 }
 
 #[test]
+fn byref_writes_back_into_an_array_element() {
+    // AutoIt: "not only a named variable can be passed for a ByRef parameter".
+    // The array is `Rc`-shared, so writing through the container the call site
+    // captured is visible to the caller with no copy-out.
+    let src = r#"
+Func Bump(ByRef $v)
+    $v += 1
+EndFunc
+Func F()
+    Local $a[2]
+    $a[0] = 5
+    Bump($a[0])
+    Bump($a[1])
+    Return $a[0] & "/" & $a[1]
+EndFunc
+"#;
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "6/1");
+}
+
+#[test]
+fn byref_writes_back_through_nested_elements_and_map_keys() {
+    let src = r#"
+Func Bump(ByRef $v)
+    $v += 1
+EndFunc
+Func Nested()
+    Local $a[1][1]
+    $a[0][0] = 1
+    Bump($a[0][0])
+    Return $a[0][0]
+EndFunc
+Func MapTarget()
+    Local $m[]
+    $m["k"] = 3
+    Bump($m["k"])
+    Return $m["k"]
+EndFunc
+"#;
+    assert!(matches!(call(src, "Nested", vec![]), Value::Int(2)));
+    assert!(matches!(call(src, "MapTarget", vec![]), Value::Int(4)));
+}
+
+#[test]
+fn a_byref_subscript_is_evaluated_once() {
+    // The element path is captured while the argument is evaluated, so the
+    // index expression must not run a second time on the way back.
+    let mut runtime = rt(
+        "Global $calls = 0\n\
+         Func Index()\n\
+         \x20   $calls += 1\n\
+         \x20   Return 0\n\
+         EndFunc\n\
+         Func Bump(ByRef $v)\n\
+         \x20   $v += 1\n\
+         EndFunc\n\
+         Func F()\n\
+         \x20   Local $a[1]\n\
+         \x20   $a[0] = 0\n\
+         \x20   Bump($a[Index()])\n\
+         \x20   Return $a[0] & \":\" & $calls\n\
+         EndFunc\n",
+    );
+    // `call_function` runs only the function body, so stand in for the file
+    // scope's `Global $calls = 0`.
+    runtime.assign_variable("$calls", Value::Int(0), true, false);
+    let out = runtime.call_function("F", vec![]).unwrap();
+    assert_eq!(out.to_autoit_string(), "1:1");
+}
+
+#[test]
+fn byref_writes_back_into_a_global_array_element() {
+    let mut runtime = rt(
+        "Global $g[2]\n\
+         Func Bump(ByRef $v)\n\
+         \x20   $v += 1\n\
+         EndFunc\n\
+         Func F()\n\
+         \x20   Bump($g[1])\n\
+         EndFunc\n",
+    );
+    let array = Value::array_sized(2);
+    runtime.assign_variable("$g", array, true, false);
+    runtime.call_function("F", vec![]).unwrap();
+    let g = runtime.variable_value("$g").expect("global is set");
+    let Value::Array(a) = g else { panic!("expected array, got {g:?}") };
+    assert!(matches!(a.borrow()[1], Value::Int(1)));
+}
+
+#[test]
 fn merges_arrays_with_byref_and_redim() {
     let src = r#"
 Func MergeArrays(ByRef $targetArray, Const ByRef $sourceArray)
