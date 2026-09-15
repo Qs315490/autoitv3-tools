@@ -152,8 +152,12 @@ pub struct Control {
 /// viewport to be, so the size is the same before and after the first frame.
 pub const DEFAULT_DESKTOP_SIZE: (i32, i32) = (1024, 768);
 
+/// `$GUI_SHOW`.
+pub const GUI_SHOW: i64 = 0x10;
 /// `$GUI_HIDE`.
 pub const GUI_HIDE: i64 = 0x20;
+/// `$GUI_ENABLE`.
+pub const GUI_ENABLE: i64 = 0x40;
 /// `$GUI_DISABLE`.
 pub const GUI_DISABLE: i64 = 0x80;
 /// `$GUI_CHECKED`.
@@ -183,7 +187,9 @@ impl Control {
             height: 0,
             style: 0,
             exstyle: 0,
-            state: 0,
+            // What the official interpreter answers for a control nobody has
+            // touched: `$GUI_SHOW | $GUI_ENABLE`.
+            state: GUI_SHOW | GUI_ENABLE,
             parent: None,
             row: None,
             data: Vec::new(),
@@ -205,17 +211,14 @@ impl Control {
         self.state & (GUI_HIDE | GUI_PAGE_HIDDEN) == 0
     }
 
-    /// The `$GUI_*` word a script sees: hiding a control because its tab page is
-    /// not the selected one reads as `$GUI_HIDE`, while the bit itself stays
-    /// private so a later `GUICtrlSetState($c, $GUI_SHOW)` cannot reveal a
-    /// control on somebody else's page.
+    /// The `$GUI_*` word a script sees.
+    ///
+    /// The page bit is dropped rather than reported: the official interpreter
+    /// answers `0x50` (`$GUI_SHOW | $GUI_ENABLE`) for a control on a tab page
+    /// that is *not* selected, so `GUICtrlGetState` cannot tell the pages apart.
+    /// Hiding the control stays the renderer's business.
     pub fn public_state(&self) -> i64 {
-        let bits = self.state & !GUI_PAGE_HIDDEN;
-        if self.state & GUI_PAGE_HIDDEN != 0 {
-            bits | GUI_HIDE
-        } else {
-            bits
-        }
+        self.state & !GUI_PAGE_HIDDEN
     }
     pub fn is_enabled(&self) -> bool {
         self.state & GUI_DISABLE == 0

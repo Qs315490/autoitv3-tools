@@ -1035,9 +1035,14 @@ Return $count & ":" & $none & ":" & $selected & ":" & $bob & ":" & $text & ":" &
     assert_eq!(fields[0], "2", "both items are rows: {value}");
     assert_eq!(fields[1], "0", "nothing is selected yet: {value}");
     assert_eq!(fields[2], fields[3], "selecting the item selects its row: {value}");
-    assert_eq!(fields[4], "bob|30", "the item reads back its own row: {value}");
-    assert_eq!(fields[5], "4", "an item's advanced read is its state: {value}");
-    assert_eq!(fields[6], "sue|25", "the other row is untouched: {value}");
+    assert_eq!(
+        fields[4], "bob|30|",
+        "the item reads back its own row, a separator after every cell: {value}"
+    );
+    // Without `$LVS_EX_CHECKBOXES` the advanced read is the text again — the
+    // official interpreter answered the same.
+    assert_eq!(fields[5], "bob|30|", "the advanced read is the text: {value}");
+    assert_eq!(fields[6], "sue|25|", "the other row is untouched: {value}");
 }
 
 #[test]
@@ -1057,7 +1062,10 @@ Return $count & ":" & $sue_row & ":" & $selected & ":" & $sue
     let value = text(win10(), body);
     let fields: Vec<&str> = value.split(':').collect();
     assert_eq!(fields[0], "1", "the deleted row is gone: {value}");
-    assert_eq!(fields[1], "sue", "the row that is left kept its text: {value}");
+    assert_eq!(
+        fields[1], "sue|",
+        "the row that is left kept its text: {value}"
+    );
     assert_eq!(fields[2], fields[3], "the row was re-numbered: {value}");
 }
 
@@ -1073,9 +1081,10 @@ GUICtrlSetData($item, "x")
 Local $first = GUICtrlRead($item)
 Return $third & ":" & $first
 "#;
-    // A cell that is named but empty is erased, which is what the help file
-    // documents: `"||9"` leaves only the third column.
-    assert_eq!(text(win10(), body), "||9:x||9");
+    // Only the cells the update names are written: the probe against the
+    // official interpreter kept the first two columns for `"||9"`, and the read
+    // comes back with a separator after every cell.
+    assert_eq!(text(win10(), body), "1|2|9|:x|2|9|");
 }
 
 #[test]
@@ -1087,7 +1096,9 @@ GUICtrlSetData(-1, "second")
 GUICtrlSetState(-1, 32)
 Return GUICtrlRead($label) & ":" & GUICtrlGetState($label)
 "#;
-    assert_eq!(text(win10(), body), "second:32");
+    // A control nobody has touched reports `$GUI_SHOW | $GUI_ENABLE` (0x50),
+    // which is what the official interpreter prints too.
+    assert_eq!(text(win10(), body), "second:112");
 }
 
 #[test]
@@ -1143,12 +1154,22 @@ Return $index & ":" & $advanced & ":" & $one & ":" & $hidden_second & ":" & $ind
     let value = text(win10(), body);
     let fields: Vec<&str> = value.split(':').collect();
     assert_eq!(fields[0], "0", "the first page is the selected one: {value}");
-    assert_eq!(fields[1], fields[2], "the advanced read is the page's id: {value}");
-    assert_eq!(fields[3], "32", "the other page's control is hidden: {value}");
+    assert_eq!(
+        fields[1], fields[2],
+        "the advanced read is the page's id: {value}"
+    );
+    // A control on a page nobody selected still reports
+    // `$GUI_SHOW | $GUI_ENABLE`: the official interpreter answers 0x50 for both
+    // pages, so which page is on screen is the renderer's business, not the
+    // state word's.
+    assert_eq!(fields[3], "80", "the other page's control reads 0x50: {value}");
     assert_eq!(fields[4], "1", "showing the second page selects it: {value}");
-    assert_eq!(fields[5], "0", "its control is visible now: {value}");
-    assert_eq!(fields[6], "32", "the first page's control is not: {value}");
-    assert_eq!(fields[7], "0", "a control created after the structure closed is not on a page: {value}");
+    assert_eq!(fields[5], "80", "and its control still reads 0x50: {value}");
+    assert_eq!(fields[6], "80", "the first page's too: {value}");
+    assert_eq!(
+        fields[7], "80",
+        "a control created after the structure closed is a normal control: {value}"
+    );
 }
 
 #[test]
@@ -1216,6 +1237,46 @@ Return $count & ":" & $current & ":" & $checked & ":" & $before & ":" & $after &
     assert_eq!(text(win10(), body), "2:b:1:2:0:0:1");
 }
 
+/// A backend that records whether each control it was shown is visible.
+#[derive(Clone, Default)]
+struct VisibilityBackend {
+    log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl GuiBackend for VisibilityBackend {
+    fn on_control(&mut self, control: &Control) {
+        self.log
+            .borrow_mut()
+            .push(format!("{}:{}", control.text, control.is_visible()));
+    }
+}
+
+#[test]
+fn a_tab_page_hides_the_controls_of_the_pages_nobody_selected() {
+    let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $tab = GUICtrlCreateTab(0, 0, 200, 150)
+Local $one = GUICtrlCreateTabItem("one")
+Local $first = GUICtrlCreateLabel("first", 10, 30)
+Local $two = GUICtrlCreateTabItem("two")
+Local $second = GUICtrlCreateLabel("second", 10, 30)
+GUICtrlCreateTabItem("")
+GUICtrlSetState($two, 16)
+Return "done"
+"#;
+    let emu = win10().with_gui_backend(Box::new(VisibilityBackend { log: log.clone() }));
+    assert_eq!(text(emu, body), "done");
+    // `GUICtrlGetState` cannot show this — the official interpreter answers the
+    // same 0x50 for both pages — so what a backend is told is the check.
+    let seen = log.borrow();
+    assert!(seen.iter().any(|line| line == "second:false"), "{seen:?}");
+    assert!(seen.iter().any(|line| line == "first:true"), "{seen:?}");
+    // Showing the second page swaps which one is on screen.
+    assert!(seen.iter().any(|line| line == "second:true"), "{seen:?}");
+    assert!(seen.iter().any(|line| line == "first:false"), "{seen:?}");
+}
+
 #[test]
 fn a_list_or_combo_appends_until_it_is_told_to_start_over() {
     let body = r#"
@@ -1238,12 +1299,31 @@ Local $check = GUICtrlCreateCheckbox("c", 0, 0)
 Local $unchecked = GUICtrlRead($check)
 GUICtrlSetState($check, 1)
 Local $checked = GUICtrlRead($check)
+; A plain check box has no third state: the official interpreter answers
+; "checked" for `$GUI_INDETERMINATE` unless the box is a three-state one.
 GUICtrlSetState($check, 2)
 Local $indeterminate = GUICtrlRead($check)
 Local $advanced = GUICtrlRead($check, 1)
-Return $unchecked & ":" & $checked & ":" & $indeterminate & ":" & $advanced
+GUICtrlSetState($check, 4)
+Local $unchecked_again = GUICtrlRead($check)
+Return $unchecked & ":" & $checked & ":" & $indeterminate & ":" & $advanced & ":" & $unchecked_again
 "#;
-    assert_eq!(text(win10(), body), "4:1:2:c");
+    assert_eq!(text(win10(), body), "4:1:1:c:4");
+}
+
+#[test]
+fn a_three_state_checkbox_does_have_an_indeterminate_read() {
+    let body = r#"
+GUICreate("T", 200, 150)
+Local $check = GUICtrlCreateCheckbox("c", 0, 0, 0, 0, 0x0006)
+GUICtrlSetState($check, 2)
+GUICtrlSetState($check, 1)
+Local $checked = GUICtrlRead($check)
+GUICtrlSetState($check, 2)
+Local $indeterminate = GUICtrlRead($check)
+Return $checked & ":" & $indeterminate
+"#;
+    assert_eq!(text(win10(), body), "1:2");
 }
 
 #[test]
@@ -1254,8 +1334,13 @@ Local $edit = GUICtrlCreateEdit("", 0, 0, 100, 50)
 GUICtrlSetData($edit, "a" & @CRLF & "b" & @CRLF & "c")
 Local $lines = GUICtrlSendMsg($edit, 0x00BA, 0, 0)
 Local $list = GUICtrlCreateListView("", 0, 60, 100, 40)
+; `GUICtrlSetData` on a `ListView` does *not* add rows — the official
+; interpreter answers 0 for the count after two of those calls — so the rows
+; come from `GUICtrlCreateListViewItem`.
+Local $ignored = GUICtrlSendMsg($list, 0x1004, 0, 0)
 GUICtrlSetData($list, "row1")
-GUICtrlSetData($list, "row2")
+GUICtrlCreateListViewItem("row1", $list)
+GUICtrlCreateListViewItem("row2", $list)
 Local $count = GUICtrlSendMsg($list, 0x1004, 0, 0)
 Local $unknown = GUICtrlSendMsg($list, 0x1234, 0, 0)
 Local $err = @error

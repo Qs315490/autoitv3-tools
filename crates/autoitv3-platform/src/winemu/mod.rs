@@ -1967,6 +1967,9 @@ fn host_path_macro(emu: &WindowsEmulation, path: &std::path::Path) -> Value {
     Value::Str(s)
 }
 
+/// The AutoIt release this emulation answers `@AutoItVersion` with.
+const AUTOIT_VERSION: &str = "3.3.16.1";
+
 fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
     let p = &emu.paths;
     let version = emu.version;
@@ -1998,6 +2001,9 @@ fn macro_value(emu: &WindowsEmulation, name: &str) -> Option<Value> {
         "oslang" | "oslocale" | "muilang" => Value::Str("0409".to_string()),
         "kblayout" => Value::Str("00000409".to_string()),
         "autoitx64" => Value::Int(i64::from(arch.pointer_size() == 8)),
+        // The interpreter this toolset emulates: AutoIt's own release, which is
+        // what a script compares against when it gates a feature on the version.
+        "autoitversion" => Value::Str(AUTOIT_VERSION.to_string()),
         // ----- window show flags (`@SW_*`, as GUISetState/WinSetState take them) -----
         "sw_hide" => Value::Int(0),
         "sw_shownormal" => Value::Int(1),
