@@ -129,6 +129,35 @@ fn only_real_algorithms_open() {
     assert!(state.open_provider("AES", false).is_some());
 }
 
+/// A `BCRYPT_RSAKEY_BLOB` header plus the components, big-endian.
+fn rsa_blob(bit_len: u32, e: &[u8], p: &[u8], q: &[u8], mod_len: usize) -> Vec<u8> {
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&0x3241_5352u32.to_le_bytes()); // "RSA2"
+    blob.extend_from_slice(&bit_len.to_le_bytes());
+    for n in [e.len(), mod_len, p.len(), q.len()] {
+        blob.extend_from_slice(&(n as u32).to_le_bytes());
+    }
+    blob.extend_from_slice(e);
+    // The modulus is not read from the blob in the short shape (it is p * q).
+    blob.extend_from_slice(&vec![0u8; mod_len]);
+    blob.extend_from_slice(p);
+    blob.extend_from_slice(q);
+    blob
+}
+
+#[test]
+fn an_rsa_blob_without_the_crt_parameters_still_imports() {
+    // Blobs built by these UDFs stop after prime2: p, q and e are enough to
+    // rebuild the rest, which is what `from_p_q` does. A real 2048-bit blob is
+    // ~1179 bytes; the observed one is 539 — header, exponent, modulus and the
+    // two primes.
+    let mut state = BcryptState::default();
+    let p = provider(&mut state, "RSA", false);
+    // n = 61 * 53 = 3233, e = 17.
+    let blob = rsa_blob(12, &[0x11], &[61], &[53], 2);
+    assert!(state.import_rsa_private_key(p, &blob).is_some());
+}
+
 #[test]
 fn an_rsa_blob_that_is_not_a_private_key_is_rejected() {
     let mut state = BcryptState::default();
