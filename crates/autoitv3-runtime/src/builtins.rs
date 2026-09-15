@@ -643,13 +643,36 @@ pub(crate) fn call(
             rt.call_named(&fname, rest, span)?
         }
 
+        // ---------------- options ----------------
+        // `Opt` is interpreter state: the runtime owns the table, answers the
+        // *previous* setting and rejects a name the help page does not list. A
+        // platform reads the ones that describe its own behaviour (the GUI's
+        // `GUIOnEventMode`) through `HostContext::option`.
+        "opt" | "autoitsetoption" => {
+            let name = args.first().map(|a| a.to_autoit_string()).unwrap_or_default();
+            let Some(default) = default_option(&name) else {
+                rt.set_error_value(1, 0);
+                return Ok(Some(Value::Int(0)));
+            };
+            let key = name.trim().to_ascii_lowercase();
+            let previous = rt.option(&key).cloned().unwrap_or_else(|| default.clone());
+            // No value at all just reports; `Default` puts the documented
+            // default back. Both answer with the previous setting.
+            match args.get(1) {
+                None => {}
+                Some(Value::Default) => rt.set_option(&key, default),
+                Some(value) => rt.set_option(&key, value.clone()),
+            }
+            rt.set_error_value(0, 0);
+            previous
+        }
+
         // ---------------- benign no-ops ----------------
         // Only calls that are pure *interpreter state* are neutralised here.
         // Everything with an external effect (files, environment, processes,
         // registry, COM, DllCall, GUI, console) belongs to a `Platform`
         // implementation: a silent stub in this table would both invent a
         // value and shadow the platform that could answer properly.
-        "opt" | "autoitsetoption" => Value::Int(1),
         // `Ptr`/`HWnd` only retype a value as a handle; the emulation keeps
         // handles as plain integers, so the conversion is the identity.
         "ptr" | "hwnd" => Value::Int(args.first().map(|a| a.to_int()).unwrap_or(0)),
@@ -1132,4 +1155,40 @@ fn ubound(value: &Value, dim: i64) -> i64 {
 /// between two offsets and never finish.
 fn match_end_offset(offset: i64, tail: &str, end: usize) -> i64 {
     (offset - 1).max(0) + crate::regexp::byte_to_char_offset(tail, end) as i64
+}
+
+/// The documented default of an `Opt`/`AutoItSetOption` setting.
+///
+/// `None` means the option does not exist, which is the `@error` the help page
+/// names. The table is that page's list: an unknown name is refused rather than
+/// remembered, so a script that asks for a setting this runtime has never heard
+/// of is told so.
+///
+/// Only the *values* are here. What each one changes — the coordinate mode of
+/// the pixel functions, whether a window search looks at children — is the
+/// business of the platform that implements those functions.
+fn default_option(name: &str) -> Option<Value> {
+    let value = match name.trim().to_ascii_lowercase().as_str() {
+        "caretcoordmode" | "mousecoordmode" | "pixelcoordmode" => Value::Int(1),
+        "expandenvstrings" | "expandvarstrings" => Value::Int(0),
+        "guicloseonesc" => Value::Int(1),
+        "guicoordmode" => Value::Int(1),
+        "guidataseparatorchar" => Value::Str("|".into()),
+        "guieventoptions" | "guioneventmode" | "guiresizemode" => Value::Int(0),
+        "mouseclickdelay" | "mouseclickdowndelay" => Value::Int(10),
+        "mouseclickdragdelay" => Value::Int(250),
+        "mustdeclarevars" => Value::Int(0),
+        "sendattachmode" => Value::Int(0),
+        "sendcapslockmode" => Value::Int(1),
+        "sendkeydelay" | "sendkeydowndelay" => Value::Int(5),
+        "setexitcode" => Value::Int(0),
+        "tcptimeout" => Value::Int(100),
+        "trayautopause" => Value::Int(1),
+        "trayicondebug" | "trayiconhide" | "traymenumode" | "trayoneventmode" => Value::Int(0),
+        "windetecthiddentext" | "winsearchchildren" => Value::Int(0),
+        "wintextmatchmode" | "wintitlematchmode" => Value::Int(1),
+        "winwaitdelay" => Value::Int(250),
+        _ => return None,
+    };
+    Some(value)
 }
