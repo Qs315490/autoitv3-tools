@@ -503,13 +503,10 @@ impl Platform for WindowsPlatform {
 /// machine identity, and OS version. Answered before the common layer so its
 /// portable approximations (`%HOME`, XDG paths) do not win on Windows.
 fn system_macro(name: &str) -> Option<Value> {
-    let dir = |p: String| {
-        let mut s = p;
-        if !s.ends_with('\\') {
-            s.push('\\');
-        }
-        Value::Str(s)
-    };
+    // AutoIt's directory macros carry no trailing backslash — except at a drive
+    // root, which keeps it (`C:\`). `@WindowsDir` is `C:\Windows`, and a script
+    // that compares a path it built with it relies on that.
+    let dir = |p: String| Value::Str(crate::directory_macro(&p, '\\'));
     let env = |key: &str| std::env::var(key).unwrap_or_default();
     let value = match name.to_ascii_lowercase().as_str() {
         "windowsdir" => {

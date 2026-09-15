@@ -189,11 +189,14 @@ fn per_user_macros_share_one_profile() {
 
 #[test]
 fn with_host_paths_lets_the_common_layer_answer() {
-    let body = "Return StringRight(@TempDir, 1)";
-    let emu = win10().with_host_paths();
+    // A directory macro carries no trailing separator — it is the host's own
+    // temporary directory, spelled the host's way.
+    let seen = text(win10().with_host_paths(), "Return @TempDir");
+    let host = std::env::temp_dir().to_string_lossy().into_owned();
     assert_eq!(
-        text(emu, body),
-        std::path::MAIN_SEPARATOR.to_string()
+        seen.trim_end_matches(std::path::MAIN_SEPARATOR),
+        host.trim_end_matches(std::path::MAIN_SEPARATOR),
+        "got {seen:?}, host {host:?}"
     );
     // Windows-only macros are still emulated, because the host cannot answer
     // them at all.
@@ -641,14 +644,15 @@ fn clipboard_round_trips_through_a_file() {
 
 #[test]
 fn drive_queries_answer_for_the_emulated_c_drive() {
-    // `$d[0]` is the number of drives, as AutoIt's `DriveGetDrive` documents;
-    // the letters start at `$d[1]`.
+    // `$d[0]` is the number of drives and the letters start at `$d[1]`; a
+    // drive is spelled `C:` — letter and colon, no separator (the official
+    // implementation strips the one it probed with).
     let body = r#"Local $d = DriveGetDrive("FIXED")
     Return $d[0] & "|" & $d[1] & "|" & DriveGetType("C:\") & "|" & DriveGetFileSystem("C:\") & "|" & _
         (DriveSpaceTotal("C:\") > 0) & "|" & (DriveSpaceFree("C:\") > 0) & "|" & DriveStatus("C:\")"#;
     assert_eq!(
         text(win10(), body),
-        r"1|C:\|FIXED|NTFS|True|True|READY"
+        r"1|C:|FIXED|NTFS|True|True|READY"
     );
 }
 
@@ -681,7 +685,7 @@ fn a_drive_type_list_takes_either_kind() {
     Local $none = DriveGetDrive("CDROM,NETWORK")
     Local $none_err = @error
     Return $either[0] & "|" & $either[1] & "|" & $either_err & "|" & $none & "|" & $none_err"#;
-    assert_eq!(text(win10(), body), r"1|C:\|0||1");
+    assert_eq!(text(win10(), body), r"1|C:|0||1");
 }
 
 #[test]
@@ -2334,9 +2338,11 @@ fn the_script_macros_describe_the_script_in_windows_form() {
         .join("run.au3")
         .to_string_lossy()
         .into_owned();
+    // No trailing separator: the help page gives one to `@ScriptDir` only when
+    // the script sits in the root of a drive (this one is in `tmp`).
     assert_eq!(
         run_mapped(win10().with_script_path(&script), "Return @ScriptDir").to_autoit_string(),
-        r"C:\tmp\demo dir\"
+        r"C:\tmp\demo dir"
     );
     assert_eq!(
         text(win10().with_script_path(&script), "Return @ScriptName"),
@@ -2354,8 +2360,9 @@ fn a_relative_script_path_is_resolved_before_it_is_reported() {
     // `@ScriptDir` would land in the drive root.
     let dir = run_mapped(win10().with_script_path("run.au3"), "Return @ScriptDir")
         .to_autoit_string();
-    assert!(!dir.starts_with(r"C:\."), "got {dir}");
-    assert!(dir.ends_with('\\'), "got {dir}");
+    assert!(!dir.contains(r"\."), "got {dir}");
+    // Not a drive root, so no trailing separator.
+    assert!(!dir.ends_with('\\') || dir.len() == 3, "got {dir}");
     assert_eq!(text(win10().with_script_path("run.au3"), "Return @ScriptName"), "run.au3");
 }
 

@@ -99,6 +99,32 @@ pub(crate) fn default_gui_backend() -> Box<dyn winemu::GuiBackend> {
     }
 }
 
+/// AutoIt's shape for a directory macro (`@WindowsDir`, `@ScriptDir`, ...).
+///
+/// No trailing separator — `@WindowsDir` is `C:\Windows`, `@TempDir` is
+/// `...\Temp`, and a script in `C:\tmp` has `@ScriptDir` = `C:\tmp`. The one
+/// exception is the root of a drive, which *keeps* it: the help page says
+/// `@ScriptDir`/`@WorkingDir` "only include a trailing backslash when the
+/// script is located in the root of a drive", and `C:\` would otherwise lose
+/// the separator that makes it a directory.
+///
+/// Getting this wrong is not cosmetic: a script that compares a path it built
+/// (`$drive & "\Windows"`) with `@WindowsDir` — which is how a driver installer
+/// looks for a Windows installation — fails when the macro carries a separator
+/// the script did not write.
+pub(crate) fn directory_macro(path: &str, separator: char) -> String {
+    let trimmed = path.trim_end_matches(separator);
+    if trimmed.is_empty() {
+        // A POSIX root stays a root.
+        return path.to_string();
+    }
+    if trimmed.len() == 2 && trimmed.ends_with(':') {
+        // A bare drive is a root too: `C:` is spelled `C:\`.
+        return format!("{trimmed}{separator}");
+    }
+    trimmed.to_string()
+}
+
 /// The common layer, wired to the emulation's drive map and script path.
 ///
 /// The two travel together: the emulation answers `C:\...` paths and reports

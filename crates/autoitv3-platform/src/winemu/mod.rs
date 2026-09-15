@@ -363,6 +363,13 @@ impl DriveSpec {
     pub fn root(&self) -> String {
         format!("{}:\\", self.letter.to_ascii_uppercase())
     }
+
+    /// The drive as `DriveGetDrive` reports it: letter and colon, no separator
+    /// (`C:`). A script joins it with `\` itself, and the official interpreter
+    /// strips the separator before storing it in the result.
+    pub fn name(&self) -> String {
+        format!("{}:", self.letter.to_ascii_uppercase())
+    }
 }
 
 /// How the emulated registry is backed, so a version/architecture change can
@@ -1188,7 +1195,7 @@ impl WindowsEmulation {
                 .iter()
                 .any(|kind| *kind == "ALL" || d.kind.eq_ignore_ascii_case(kind))
             {
-                found.push(Value::Str(d.root()));
+                found.push(Value::Str(d.name()));
             }
         }
         if found.is_empty() {
@@ -1977,22 +1984,21 @@ fn script_dir_macro(emu: &WindowsEmulation) -> Option<Value> {
     Some(host_path_macro(emu, &dir))
 }
 
-/// Render a host directory the way the script should see it, keeping the
-/// trailing separator `@ScriptDir`/`@WorkingDir` are expected to carry.
+/// Render a host directory the way the script should see it.
+///
+/// [`crate::directory_macro`] gives it AutoIt's shape: no trailing separator
+/// unless the directory is the root of a drive.
 fn host_path_macro(emu: &WindowsEmulation, path: &std::path::Path) -> Value {
     let mapped = emu
         .path_map
         .as_ref()
         .filter(|map| map.covers(path))
         .map(|map| map.to_windows(path));
-    let (mut s, sep) = match mapped {
+    let (s, sep) = match mapped {
         Some(s) => (s, '\\'),
         None => (path.to_string_lossy().into_owned(), std::path::MAIN_SEPARATOR),
     };
-    if !s.ends_with(sep) {
-        s.push(sep);
-    }
-    Value::Str(s)
+    Value::Str(crate::directory_macro(&s, sep))
 }
 
 /// The AutoIt release this emulation answers `@AutoItVersion` with.

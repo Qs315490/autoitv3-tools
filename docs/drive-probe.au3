@@ -24,6 +24,17 @@ Local $cd = DriveGetDrive("CDROM")
 Local $cd_err = @error
 Local $all = DriveGetDrive("ALL")
 Local $all_err = @error
+; 元素到底拼成什么样（`C:` 还是 `C:\`）：用 <> 括起来逐条打印。
+Func Elements($a)
+Local $s = ""
+If Not IsArray($a) Then Return "  (not an array)" & @CRLF
+For $i = 0 To UBound($a, 1) - 1
+$s = $s & "  [" & $i & "]=<" & $a[$i] & ">" & @CRLF
+Next
+Return $s
+EndFunc
+
 Local $text = Show("BOGUS", $bogus) & Show("RAMDISK", $ram) & Show("CDROM", $cd) & Show("ALL", $all)
+$text = $text & "ALL elements:" & @CRLF & Elements($all)
 $text = $text & "err: bogus=" & $bogus_err & " ram=" & $ram_err & " cd=" & $cd_err & " all=" & $all_err & @CRLF
 MsgBox(0, "probe", $text)
