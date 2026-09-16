@@ -163,14 +163,17 @@ mod tests {
         assert_eq!(command_line(&args), r#"run "my script.au3" --max-steps 0"#);
     }
 
+    /// Off Windows there is no mechanism at all; on Windows the call is the
+    /// real one (and needs a consent prompt), so the test does not exist there
+    /// — which is also what keeps `Path` in scope: its import is
+    /// `#[cfg(not(windows))]`.
+    #[cfg(not(windows))]
     #[test]
     fn other_hosts_have_nothing_to_elevate_with() {
-        if !cfg!(windows) {
-            assert!(!is_admin());
-            assert_eq!(
-                relaunch_elevated(Path::new("au3"), &[], None),
-                Ok(Elevated::Unsupported)
-            );
-        }
+        assert!(!is_admin());
+        assert_eq!(
+            relaunch_elevated(Path::new("au3"), &[], None),
+            Ok(Elevated::Unsupported)
+        );
     }
 }
