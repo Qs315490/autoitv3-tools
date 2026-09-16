@@ -141,6 +141,26 @@ ConsoleWrite("[" & @Compiled & "]" & @CRLF)
 // GUI backend selection
 // ---------------------------------------------------------------------------
 
+/// `#AutoIt3Wrapper_Res_*` lines describe the version resource the build
+/// carried: a run that *is* the build answers `FileGetVersion` for the script's
+/// own file from them, an extracted `.au3` having no `RT_VERSION` of its own.
+#[test]
+fn the_builds_version_resource_answers_for_the_script_itself() {
+    let body = "#AutoIt3Wrapper_Res_FileVersion=1.2.3.4\n\
+                #AutoIt3Wrapper_Res_ProductName=Acme Tool\n\
+                #AutoIt3Wrapper_Res_Field=CompanyName|Acme Inc\n\
+                ConsoleWrite(FileGetVersion(@ScriptFullPath) & \"|\" & FileGetVersion(@ScriptFullPath, \"ProductName\") & \"|\" & FileGetVersion(@ScriptFullPath, \"CompanyName\") & @CRLF)\n";
+    let path = script("wrapper-version", body);
+
+    // A plain source run: the file has no version resource, and the wrapper
+    // lines only ever took effect at build time.
+    let out = au3(&["run", path.to_str().unwrap()]);
+    assert!(out.contains("0.0.0.0|0.0.0.0|0.0.0.0"), "got:\n{out}");
+
+    let out = au3(&["run", path.to_str().unwrap(), "--compiled"]);
+    assert!(out.contains("1.2.3.4|Acme Tool|Acme Inc"), "got:\n{out}");
+}
+
 /// A script plus the payload its build script embedded: the
 /// `#AutoIt3Wrapper_Res_File_Add` line names the file a `FindResourceW` for
 /// `CFGDATA` should hand back, so the resource chain resolves without the

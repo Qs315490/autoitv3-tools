@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use autoitv3_ast::{parse, Program};
 use autoitv3_i18n::{msg, tr};
 use autoitv3_platform::{
-    find_resource_module, has_staged_resources, resource_search_dirs, PlatformOptions,
+    find_resource_module, has_staged_resources, resource_search_dirs, PlatformOptions, VersionInfo,
     WindowsArch, WindowsEmulation, WindowsVersion,
 };
 use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
@@ -496,6 +496,100 @@ pub fn set_wrapper_notes(on: bool) {
     WRAPPER_NOTES.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The version resource the build's `#AutoIt3Wrapper_Res_*` lines describe.
+///
+/// The wrapper writes these into the compiled image's `RT_VERSION`, so a script
+/// analysed from its extracted source can still answer
+/// `FileGetVersion(@ScriptFullPath)` the way the build did. `Res_Field=Name|Value`
+/// covers the names that have no directive of their own.
+pub fn wrapper_version(program: &Program) -> Option<VersionInfo> {
+    /// The wrapper's directive for each string field of the version resource.
+    const FIELDS: &[(&str, &str)] = &[
+        ("Res_Description", "FileDescription"),
+        ("Res_Comment", "Comments"),
+        ("Res_CompanyName", "CompanyName"),
+        ("Res_LegalCopyright", "LegalCopyright"),
+        ("Res_LegalTrademarks", "LegalTrademarks"),
+        ("Res_FileVersion", "FileVersion"),
+        ("Res_ProductVersion", "ProductVersion"),
+        ("Res_ProductName", "ProductName"),
+        ("Res_OriginalFilename", "OriginalFilename"),
+        ("Res_InternalName", "InternalName"),
+        ("Res_PrivateBuild", "PrivateBuild"),
+        ("Res_SpecialBuild", "SpecialBuild"),
+    ];
+
+    let mut strings: Vec<(String, String)> = Vec::new();
+    let mut push = |name: &str, value: &str| {
+        let name = name.trim();
+        let value = value.trim();
+        // The wrapper writes one value per field, so the first one wins.
+        let seen = strings
+            .iter()
+            .any(|(seen, _)| seen.eq_ignore_ascii_case(name));
+        if !name.is_empty() && !value.is_empty() && !seen {
+            strings.push((name.to_string(), value.to_string()));
+        }
+    };
+    for (directive, argument) in autoitv3_preproc::directives(program) {
+        let Some((name, value)) = wrapper_setting(directive, argument) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("Res_Field") {
+            if let Some((field, value)) = value.split_once('|') {
+                push(field, value);
+            }
+            continue;
+        }
+        if let Some((_, field)) = FIELDS
+            .iter()
+            .find(|(directive, _)| name.eq_ignore_ascii_case(directive))
+        {
+            push(field, &value);
+        }
+    }
+    if strings.is_empty() {
+        return None;
+    }
+    let fixed = strings
+        .iter()
+        .find(|(name, _)| name == "FileVersion")
+        .and_then(|(_, value)| dotted_version(value));
+    Some(VersionInfo { fixed, strings })
+}
+
+/// `a.b.c.d` as the four `u16`s the fixed file info holds.
+fn dotted_version(value: &str) -> Option<(u16, u16, u16, u16)> {
+    let mut parts = value.split('.').map(|part| part.trim().parse::<u16>().ok());
+    let major = parts.next().flatten()?;
+    let minor = parts.next().flatten()?;
+    let build = parts.next().flatten()?;
+    let revision = parts.next().flatten()?;
+    Some((major, minor, build, revision))
+}
+
+/// The build's version resource, and whether this run is that build.
+///
+/// `@Compiled` decides the "is": a plain source run has no version resource,
+/// and the wrapper's `_Res_*` lines only ever took effect at build time.
+#[derive(Debug, Clone, Default)]
+pub struct BuildVersion {
+    /// `@Compiled` for this run.
+    pub compiled: bool,
+    /// What the script's own `_Res_*` lines say the build carried.
+    pub declared: Option<VersionInfo>,
+}
+
+impl BuildVersion {
+    /// Read the declared version out of a script's wrapper lines.
+    pub fn of(program: &Program, compiled: bool) -> Self {
+        Self {
+            compiled,
+            declared: wrapper_version(program),
+        }
+    }
+}
+
 /// Note the `#AutoIt3Wrapper_*` settings a script carries, once per process.
 ///
 /// The wrapper consumed them at build time — that is where a build's resources,
@@ -577,6 +671,7 @@ impl WinEmuArgs {
         script: Option<&Path>,
         input_module: Option<&Path>,
         resource_aliases: &[(String, String)],
+        build_version: BuildVersion,
         gui: Option<Box<dyn autoitv3_platform::winemu::GuiBackend>>,
         assume_admin: bool,
     ) -> CliResult<Box<dyn Platform>> {
@@ -671,6 +766,9 @@ impl WinEmuArgs {
         // The script's own names for the files the wrapper embedded: the lookup
         // tries them before the staging convention.
         emu = emu.with_resource_aliases(resource_aliases.iter().cloned());
+        // A run that *is* the build answers `FileGetVersion` for the script's
+        // own file from the version resource the wrapper wrote.
+        emu = emu.with_build_version(build_version.compiled, build_version.declared);
         if let Some(backend) = gui {
             emu = emu.with_gui_backend(backend);
         }

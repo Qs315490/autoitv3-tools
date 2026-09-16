@@ -44,8 +44,18 @@ impl VersionInfo {
 /// Read the version resource of the PE file at `path`.
 pub fn read(path: &str) -> Option<VersionInfo> {
     let image = PeImage::load(path).ok()?;
-    let resource = image.find(&Selector::id(1), &Selector::id(RT_VERSION))?;
-    parse(&resource.data)
+    VersionInfo::from_image(&image)
+}
+
+impl VersionInfo {
+    /// The version resource of an image already parsed.
+    ///
+    /// This is the same lookup `read` does on a path, for a caller holding the
+    /// image — the build a script was unpacked from, say.
+    pub fn from_image(image: &PeImage) -> Option<Self> {
+        let resource = image.find(&Selector::id(1), &Selector::id(RT_VERSION))?;
+        parse(&resource.data)
+    }
 }
 
 /// One `VS_VERSION_INFO` block: its key, raw value and children.

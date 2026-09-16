@@ -66,7 +66,7 @@ use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
     CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
-    StepArgs, WinEmuArgs, build_facts, load_input_included, native_gui_backend,
+    BuildVersion, StepArgs, WinEmuArgs, build_facts, load_input_included, native_gui_backend,
 };
 
 use crate::output::format_value;
@@ -327,17 +327,18 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
     )));
     // The build the script came out of is the same for every `run`, so the
     // facts are computed once and handed to each runtime.
-    let facts = build_facts(
-        &prog,
-        input.build_is_x64,
-        args.compiled.resolve(resource_module.is_some()),
-    );
+    let compiled = args.compiled.resolve(resource_module.is_some());
+    let facts = build_facts(&prog, input.build_is_x64, compiled);
+    // The build's version resource answers `FileGetVersion` for the script's
+    // own file, when this session *is* that build.
+    let build_version = BuildVersion::of(&prog, compiled);
     let mut rt = build_runtime(
         &prog,
         args,
         shell.clone(),
         resource_module.as_deref(),
         &input.resource_aliases,
+        build_version.clone(),
         &gui,
         facts,
     );
@@ -363,6 +364,7 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
                 shell.clone(),
                 resource_module.as_deref(),
                 &input.resource_aliases,
+                build_version.clone(),
                 &gui,
                 facts,
             );
@@ -386,6 +388,7 @@ fn build_runtime(
     shell: Rc<RefCell<Shell>>,
     resource_module: Option<&Path>,
     resource_aliases: &[(String, String)],
+    build_version: BuildVersion,
     gui: &Option<GuiFactory>,
     facts: BuildFacts,
 ) -> Runtime {
@@ -406,6 +409,7 @@ fn build_runtime(
         Some(Path::new(&args.input)),
         resource_module,
         resource_aliases,
+        build_version,
         gui.as_ref().map(|make| make()),
         assume_admin,
     );

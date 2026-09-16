@@ -437,6 +437,15 @@ pub struct WindowsEmulation {
     /// the script's own `_Res_File_Add` table and the resources unpacked next
     /// to it. See `resources::ResourceFiles`.
     resource_files: ResourceFiles,
+    /// Whether this run *is* the build under analysis (`@Compiled`).
+    ///
+    /// `FileGetVersion` on the script's own file answers with the build's
+    /// version resource; a plain source run has none, and answering anyway
+    /// would be the one thing the directives never did.
+    build_compiled: bool,
+    /// What the wrapper's `#AutoIt3Wrapper_Res_*` lines say the build's version
+    /// resource held, when the extracted source still carries them.
+    declared_version: Option<crate::winfmt::verinfo::VersionInfo>,
     /// Resources handed out by `FindResourceW`/`LoadResource`, 1-based.
     handles: Vec<Option<ResourceHandle>>,
     /// Resource bytes materialised by `LockResource`, keyed by their address.
@@ -525,6 +534,8 @@ impl WindowsEmulation {
             module: None,
             module_path: None,
             resource_files: ResourceFiles::default(),
+            build_compiled: false,
+            declared_version: None,
             handles: Vec::new(),
             blobs: Vec::new(),
             sandbox_files: BTreeMap::new(),
@@ -899,6 +910,54 @@ impl WindowsEmulation {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn resource_files(&self) -> &ResourceFiles {
         &self.resource_files
+    }
+
+    /// Install the version resource the build under analysis carried.
+    ///
+    /// `compiled` is `@Compiled`: only a run that *is* the build answers
+    /// `FileGetVersion` for the script's own file from it. `declared` is what
+    /// the wrapper's `_Res_*` lines describe, which an extracted source still
+    /// carries; the image's own `RT_VERSION` wins over it when there is one,
+    /// because that is the real thing.
+    pub fn with_build_version(
+        mut self,
+        compiled: bool,
+        declared: Option<crate::winfmt::verinfo::VersionInfo>,
+    ) -> Self {
+        self.build_compiled = compiled;
+        self.declared_version = declared;
+        self
+    }
+
+    /// The build's version resource, when this run is that build.
+    fn build_version(&self) -> Option<crate::winfmt::verinfo::VersionInfo> {
+        if !self.build_compiled {
+            return None;
+        }
+        if let Some(info) = self
+            .module
+            .as_ref()
+            .and_then(crate::winfmt::verinfo::VersionInfo::from_image)
+        {
+            return Some(info);
+        }
+        self.declared_version.clone()
+    }
+
+    /// Whether `path` names the script under analysis.
+    ///
+    /// Only the file name is compared, and it is split on both separators: the
+    /// path a script passes is the one *it* sees (`C:\...\script.au3` under
+    /// emulation), while the script this tool was pointed at is a host path.
+    fn names_the_script(&self, path: &str) -> bool {
+        let name = path.rsplit(|c| c == '\\' || c == '/').next().unwrap_or(path);
+        if name.is_empty() {
+            return false;
+        }
+        self.script_path
+            .as_ref()
+            .and_then(|script| script.file_name())
+            .is_some_and(|script| script.to_string_lossy().eq_ignore_ascii_case(name))
     }
 
     /// Install the script's own resource names.
@@ -1610,7 +1669,16 @@ impl Platform for WindowsEmulation {
                 } else {
                     field
                 };
-                match crate::winfmt::verinfo::read(&path) {
+                // The file's own version resource first. Failing that, the
+                // build the script came out of answers for the script's *own*
+                // file — the case an extracted `.au3` leaves open, since that
+                // file carries no `RT_VERSION` but the build did.
+                let info = crate::winfmt::verinfo::read(&path).or_else(|| {
+                    self.names_the_script(&path)
+                        .then(|| self.build_version())
+                        .flatten()
+                });
+                match info {
                     Some(info) => {
                         if let Some(v) = info.string(field) {
                             ctx.set_error(0, 0);

@@ -21,7 +21,8 @@ use clap::Args;
 
 use crate::args::{
     CliResult, CompiledArgs, EffectArgs, IncludeArgs, OutputArgs, ProfileArgs, ProgressArgs,
-    StepArgs, SubstituteArgs, WinEmuArgs, build_facts, load_input_included,
+    BuildVersion, StepArgs, SubstituteArgs, WinEmuArgs, build_facts,
+    load_input_included,
 };
 
 use crate::output::write_output;
@@ -124,21 +125,19 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         }
         // Evaluation here is analysis, not a run: never open a window, not
         // even the native one a Windows host would pick by itself.
+        let compiled = args.compiled.resolve(input.resource_module.is_some());
         let platform = args.win.platform(
             Some(Path::new(&args.input)),
             input.resource_module.as_deref(),
             &input.resource_aliases,
+            BuildVersion::of(&prog, compiled),
             Some(Box::new(autoitv3_platform::winemu::HeadlessBackend::new())),
             assume_admin,
         )?;
         // A build's script saw `@Compiled = 1`; evaluating it as a source
         // script would take the wrong branch wherever the macro is tested. The
         // other build facts (`@Unicode`, `@AutoItX64`) travel with it.
-        let facts = build_facts(
-            &prog,
-            input.build_is_x64,
-            args.compiled.resolve(input.resource_module.is_some()),
-        );
+        let facts = build_facts(&prog, input.build_is_x64, compiled);
         let outcome = match reporter(args.progress.no_progress) {
             Some(debugger) => evaluate_with_debugger(
                 &mut prog,

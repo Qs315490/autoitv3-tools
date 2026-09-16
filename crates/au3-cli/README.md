@@ -249,7 +249,7 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 | `#OnAutoItStartRegister "函数"` | **已实现**：脚本每次启动时先调用这个函数，再跑本体第一条语句（`run`/`debug`/`evaluate` 的每次启动都算），返回值和函数体都按普通函数处理；函数不存在按未定义函数报错（`undefined function: …`）。大小写、带不带引号都认，写在函数体里的不算（和 AutoIt 的前处理器一样只看顶层，`#region` 里算）。 |
 | `#NoTrayIcon` | 接受，但**在我们这里没有可抑制的东西**：这个工具从不创建托盘图标（`TraySetState`/`TraySetIcon` 这些由内存模型回答，返回值与有无该指令一致）。 |
 | `#NoAutoIt3Execute` | 接受，但**不是我们执行的检查**：它的意思是"本脚本不允许被 `AutoIt3.exe /AutoIt3ExecuteScript` 或 `/AutoIt3ExecuteLine` 这样启动"，而本工具不是 `AutoIt3.exe`、也没有这两个开关，普通运行不受影响。真要用那种方式自重启，得由真正的 AutoIt 解释器拦。 |
-| `#AutoIt3Wrapper_*` | 打包期指令（图标、版本资源、UPX、`File_Add`……），只在 Aut2Exe 打包时起效，本工具不执行打包。`_UseX64` 参与回答 `@AutoItX64`，`_Res_File_Add` 的产物读取见「资源」一节；`--wrapper-notes`（全局开关，放在子命令前后都行，**默认关**）另外把它们当**构建指纹**报一行：`# AutoIt3Wrapper settings (N): UseX64=N, UseUpx=Y, …`。 |
+| `#AutoIt3Wrapper_*` | 打包期指令（图标、版本资源、UPX、`File_Add`……），只在 Aut2Exe 打包时起效，本工具不执行打包。`_UseX64` 参与回答 `@AutoItX64`，`_Res_File_Add` 的产物读取、`_Res_*` 版本字段的读法见「资源」一节；`--wrapper-notes`（全局开关，放在子命令前后都行，**默认关**）另外把它们当**构建指纹**报一行：`# AutoIt3Wrapper settings (N): UseX64=N, UseUpx=Y, …`。三个**有意不做**的：`_Compile_Both`（它的 `%outx64%` 只是打包机上 `_Run_*` 命令的替换变量，本工具没有打包这一步）、`_Add_Constants`/`_Add_Includes`（注入的常量和 `#include` 在编译产物里早已展开，还原出的源码里没有可注入的位置）。 |
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
 `deobfuscate --evaluate`、`run` 与 `debug`；省略时读环境变量，再回落到默认值：
@@ -267,7 +267,12 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 **同时**交给仿真层和 Windows 原生层，所以 `--no-win-emu` 不影响它——那个开关只抽掉仿真层，Windows
 上原生层照样把镜像按资源映射进来。没有镜像时，`FindResourceW`/`FileInstall` 还会依次查脚本自己的
 `#AutoIt3Wrapper_Res_File_Add=<file>, <type>, <name>, <lang>` 表、再查 `__NAME`/`__Res64/NAME` 这类
-staging 文件（这条兜底是仿真层的服务，只在拿不到镜像时用得上）。`# resource module: …`、`# no resource image …` 这类环境说明
+staging 文件（这条兜底是仿真层的服务，只在拿不到镜像时用得上）。**版本资源**同理：`_Res_FileVersion`/
+`_Res_ProductVersion`/`_Res_CompanyName`/`_Res_LegalCopyright`/`_Res_Description`/`_Res_Field=<Name>|<Value>` 等
+`_Res_*` 字段先合成一份版本信息，`FileGetVersion` 在文件自己没有 `RT_VERSION`、而问的正是**被分析的这个脚本**
+时用它回答（输入是构建时先看镜像里的真 `RT_VERSION`，那份才是打包进去的东西）；因此
+`au3 run script.au3 --compiled` 也能让脚本读到 `#AutoIt3Wrapper_Res_FileVersion=1.2.3.4` 这样的值。
+`# resource module: …`、`# no resource image …` 这类环境说明
 **每个进程只打印一次**（`debug` 每次 `run` 都重建 runtime，不收敛就会一行行刷）。
 
 **两个预设，默认按命令分**。`run` 与 `debug` 默认 `--faithful`（AutoIt 自己的语义：

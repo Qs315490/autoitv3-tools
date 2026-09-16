@@ -82,6 +82,7 @@ pub use winemu::{
     find_resource_module, has_staged_resources, resource_search_dirs, CipherAlg, FileRegistry,
     HashAlg, MemoryRegistry, RegistryData, RegistryStore, WindowsEmulation, WindowsVersion,
 };
+pub use winfmt::verinfo::VersionInfo;
 pub use winfmt::{DllStruct, FieldSelector, PeImage, Resource, Selector, Shortcut, WindowsArch};
 
 #[cfg(windows)]

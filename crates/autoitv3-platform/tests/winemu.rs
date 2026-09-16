@@ -872,6 +872,45 @@ fn file_get_version_reports_a_missing_resource() {
     assert_eq!(text(win10(), &body), "0.0.0.0:1");
 }
 
+#[test]
+fn the_builds_declared_version_answers_for_the_script_itself() {
+    // An extracted `.au3` carries no `RT_VERSION`; the wrapper's `_Res_*` lines
+    // say what the build it came out of had, so a script asking about its own
+    // file gets that answer — and no other file does.
+    let dir = scratch("declared-version");
+    let script = dir.join("script.au3");
+    std::fs::write(&script, b"ConsoleWrite(1)\n").unwrap();
+    let other = dir.join("other.au3");
+    std::fs::write(&other, b"ConsoleWrite(1)\n").unwrap();
+
+    let declared = autoitv3_platform::VersionInfo {
+        fixed: Some((1, 2, 3, 4)),
+        strings: vec![
+            ("FileVersion".to_string(), "1.2.3.4".to_string()),
+            ("ProductName".to_string(), "Acme".to_string()),
+        ],
+    };
+    let body = format!(
+        r#"Return FileGetVersion("{script}") & "|" & FileGetVersion("{script}", "ProductName") & "|" & FileGetVersion("{other}") & "|" & @error"#,
+        script = script.display(),
+        other = other.display()
+    );
+
+    // This run *is* the build: the declared version resource answers.
+    let emu = win10()
+        .with_script_path(&script)
+        .with_build_version(true, Some(declared.clone()));
+    assert_eq!(text(emu, &body), "1.2.3.4|Acme|0.0.0.0|1");
+
+    // A plain source run has no version resource to report: the directives only
+    // ever took effect at build time.
+    let emu = win10()
+        .with_script_path(&script)
+        .with_build_version(false, Some(declared));
+    assert_eq!(text(emu, &body), "0.0.0.0|0.0.0.0|0.0.0.0|1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn file_create_ntfs_link_makes_a_hard_link() {

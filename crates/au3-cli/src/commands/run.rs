@@ -28,7 +28,8 @@ use clap::Args;
 
 use crate::args::{
     CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
-    StepArgs, WinEmuArgs, build_facts, load_input_included, native_gui_backend, parse_arg_value,
+    BuildVersion, StepArgs, WinEmuArgs, build_facts, load_input_included, native_gui_backend,
+    parse_arg_value,
 };
 
 use crate::output::format_value;
@@ -219,22 +220,21 @@ fn execute(
     // reached (see `autoitv3-platform`); off Windows the Windows emulation
     // layer answers first, with the version these arguments select.
     let mut rt = Runtime::with_program(&prog);
+    // A `.exe`/`.a3x` input is a compiled build, so `@Compiled` answers 1 the
+    // way it did for the program the script came out of; `--compiled` /
+    // `--no-compiled` override that when comparing a source against a build.
+    // `@Unicode`/`@AutoItX64` and the build's version resource come from the
+    // same fact.
+    let compiled = args.compiled.resolve(input.resource_module.is_some());
     rt.set_platform(args.win.platform(
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
         &input.resource_aliases,
+        BuildVersion::of(&prog, compiled),
         gui,
         simulate_elevation,
     )?);
-    // A `.exe`/`.a3x` input is a compiled build, so `@Compiled` answers 1 the
-    // way it did for the program the script came out of; `--compiled` /
-    // `--no-compiled` override that when comparing a source against a build.
-    // `@Unicode`/`@AutoItX64` come from the same build facts.
-    rt.set_build_facts(build_facts(
-        &prog,
-        input.build_is_x64,
-        args.compiled.resolve(input.resource_module.is_some()),
-    ));
+    rt.set_build_facts(build_facts(&prog, input.build_is_x64, compiled));
     rt.set_max_steps(args.steps.max_steps);
     rt.set_profile(profile);
 

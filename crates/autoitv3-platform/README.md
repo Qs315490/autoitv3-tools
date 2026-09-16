@@ -189,6 +189,14 @@ UDF 正是这么用它的（传 `""` 当输出参数，再从 `$r[n]` 取回被�
    （`PeImage::find_resource_file`，大小写不敏感，忽略资源类型）；
 3. 才轮到镜像的资源树。
 
+**版本资源也有一条链**。`FileGetVersion` 先解析文件自己的 PE `RT_VERSION`；文件里没有、
+而问的又正是**被分析的这个脚本本身**时，才回落到这次构建的版本信息
+（`WindowsEmulation::with_build_version(compiled, declared)` 记下的 `@Compiled` 与
+`#AutoIt3Wrapper_Res_FileVersion`/`_Res_ProductVersion`/`_Res_CompanyName`/…/`_Res_Field` 合成的
+`VersionInfo`，`declared` 由 CLI 的 `args::wrapper_version()` 从打包期指令拼出）。纯源码
+（`@Compiled = 0`）不问这条链，别的文件更不问——脚本读别人的版本就该读别人的。输入本身是构建时，
+镜像里的真 `RT_VERSION` 优先，那才是打包进去的东西。
+
 于是同一份 `au3 deobf script.au3 --evaluate` 在 Linux 与 Windows 上走到同一条边界
 （只要镜像在手）；只有落盘载荷时，第 1/2 步让 Linux/macOS 上也能把脚本跑过去。
 
@@ -251,7 +259,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 | 注册表 | `RegRead`/`RegWrite`/`RegDelete`/`RegEnumKey`/`RegEnumVal` 全部重定向到可插拔的 `RegistryStore` 接口。默认实现是 `FileRegistry`：注册表状态落在**工作目录的 `.au3_registry` 文本文件**里，读在加载时进入内存；写先在内存累积（dirty 标记），store drop 或显式 `flush()` 时一次落盘；`MemoryRegistry`（不落盘）用 `with_memory_registry()` 选回 |
 | 剪贴板 | `ClipGet`/`ClipPut` 落到**工作目录下的文件**（默认 `.au3_clipboard`，可用 `with_clipboard_file()` 改名） |
 | 驱动器 | `DriveGetDrive`/`DriveGetType`/`DriveGetFileSystem`/`DriveGetLabel`/`DriveGetSerial`/`DriveSpaceTotal`/`DriveSpaceFree`/`DriveStatus`，默认一台 `C:`（`DriveSpec` 可配）；网络映射 `DriveMapAdd`/`DriveMapDel`/`DriveMapGet` 与 `DriveSetLabel` 维护本层的映射/卷标状态 |
-| Windows 文件 | `FileGetVersion`（解析 PE `RT_VERSION`）、`FileCreateShortcut`/`FileGetShortcut`（读写真实 `.lnk` Shell Link）、`FileCreateNTFSLink`、`FileRecycle`/`FileRecycleEmpty`（落到 `.au3_recycle`，可用 `with_recycle_dir()` 改名）、`FileInstall`（磁盘文件或已加载模块的 `RT_RCDATA` 资源） |
+| Windows 文件 | `FileGetVersion`（解析 PE `RT_VERSION`，文件没有、问的又是被分析脚本自己时回落到这次构建的 `_Res_*` 版本字段）、`FileCreateShortcut`/`FileGetShortcut`（读写真实 `.lnk` Shell Link）、`FileCreateNTFSLink`、`FileRecycle`/`FileRecycleEmpty`（落到 `.au3_recycle`，可用 `with_recycle_dir()` 改名）、`FileInstall`（磁盘文件或已加载模块的 `RT_RCDATA` 资源） |
 | 回调 | `DllCallbackRegister`/`DllCallbackGetPtr`/`DllCallbackFree` 发放合成指针；`EnumWindows`/`EnumChildWindows`/`EnumThreadWindows` 按 `with_scripted_windows()` 的句柄表把回调排入队列，运行时在 DllCall 返回后真实执行脚本函数（不重入解释器）；`DllCallAddress` 无加载器，按边界失败 |
 | 系统信息 / Shell | `MemGetStats`（固定机器画像，可复现）、`IsAdmin`（`AU3_WIN_ADMIN`/`with_admin()`）；`ShellExecute`/`ShellExecuteWait`/`RunAs`/`RunAsWait` 委托宿主进程，`Shutdown` 只记录请求 |
 | COM | **伪 COM**：`ObjCreate` 对内建 ProgID 表返回真实行为对象——`Scripting.Dictionary`（Add/Exists/Item/Count/Keys/Items/Remove/RemoveAll）、`WScript.Shell`（RegRead/RegWrite/RegDelete 桥接仿真注册表、ExpandEnvironmentStrings、Run）、`Scripting.FileSystemObject`（FileExists/DriveExists/路径运算/GetSpecialFolder）；表外 ProgID 与 `ObjCreateInterface`/`ObjEvent`/`ObjGet` 维持 `@error = 1`；`IsObj` 对前者返回 `1`、`ObjName` 回显 ProgID |
