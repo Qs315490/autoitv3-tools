@@ -780,6 +780,37 @@ fn resources_extracted_next_to_the_script_answer_find_resource() {
 }
 
 #[test]
+fn the_scripts_own_resource_table_names_the_files() {
+    // `#AutoIt3Wrapper_Res_File_Add=file, RT_RCDATA, CFGDATA, 0` says exactly
+    // which file a `FindResourceW("CFGDATA")` should hand back, so an analysis
+    // holding the file does not have to rely on the `__NAME` staging
+    // convention. `FileInstall` reads through the same table.
+    let dir = scratch("named-resources");
+    std::fs::write(dir.join("payload.bin"), b"named payload").unwrap();
+    let out = dir.join("installed.bin");
+
+    let emu = win10()
+        .with_resource_dirs([dir.clone()])
+        .with_resource_aliases([("CFGDATA".to_string(), "payload.bin".to_string())]);
+    let body = format!(
+        r#"Local $h = DllCall("kernel32.dll", "handle", "FindResourceW", "handle", 0, "wstr", "CFGDATA", "wstr", 10)
+    Local $size = DllCall("kernel32.dll", "dword", "SizeofResource", "handle", 0, "handle", $h[0])
+    Local $res = DllCall("kernel32.dll", "handle", "LoadResource", "handle", 0, "handle", $h[0])
+    Local $ptr = DllCall("kernel32.dll", "ptr", "LockResource", "handle", $res[0])
+    Local $buf = DllStructCreate("byte[" & $size[0] & "]")
+    DllCall("kernel32.dll", "none", "RtlMoveMemory", "ptr", DllStructGetPtr($buf), "ptr", $ptr[0], "dword", $size[0])
+    Local $ok = FileInstall("CFGDATA", "{out}", 1)
+    Local $fh = FileOpen("{out}", 0)
+    Local $installed = FileRead($fh)
+    FileClose($fh)
+    Return $size[0] & "|" & BinaryToString(DllStructGetData($buf, 1)) & "|" & $ok & "|" & $installed"#,
+        out = out.display()
+    );
+    assert_eq!(text(emu, &body), "13|named payload|1|named payload");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn file_install_releases_the_same_extracted_resources() {
     // `FileInstall` writes out a resource the wrapper embedded, so it has to
     // look exactly where `FindResourceW` does: the extracted files first, the

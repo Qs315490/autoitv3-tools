@@ -337,6 +337,7 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
         args,
         shell.clone(),
         resource_module.as_deref(),
+        &input.resource_aliases,
         &gui,
         facts,
     );
@@ -361,6 +362,7 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
                 args,
                 shell.clone(),
                 resource_module.as_deref(),
+                &input.resource_aliases,
                 &gui,
                 facts,
             );
@@ -383,6 +385,7 @@ fn build_runtime(
     args: &DebugArgs,
     shell: Rc<RefCell<Shell>>,
     resource_module: Option<&Path>,
+    resource_aliases: &[(String, String)],
     gui: &Option<GuiFactory>,
     facts: BuildFacts,
 ) -> Runtime {
@@ -402,6 +405,7 @@ fn build_runtime(
     let platform = args.win.platform(
         Some(Path::new(&args.input)),
         resource_module,
+        resource_aliases,
         gui.as_ref().map(|make| make()),
         assume_admin,
     );

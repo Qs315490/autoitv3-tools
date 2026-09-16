@@ -420,7 +420,7 @@ fn read_u32(image: &[u8], off: usize) -> Option<u32> {
 /// Resource names are matched case-insensitively on Windows, but the staged
 /// files sit on whatever filesystem the analysis runs on, so fall back to a
 /// scan of the parent directory.
-fn resolve_ci(path: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_ci(path: &std::path::Path) -> Option<std::path::PathBuf> {
     if path.exists() {
         return Some(path.to_path_buf());
     }

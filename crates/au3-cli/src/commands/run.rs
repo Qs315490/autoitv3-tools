@@ -222,6 +222,7 @@ fn execute(
     rt.set_platform(args.win.platform(
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
+        &input.resource_aliases,
         gui,
         simulate_elevation,
     )?);

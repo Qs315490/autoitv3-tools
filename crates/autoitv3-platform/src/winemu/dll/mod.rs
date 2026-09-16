@@ -157,25 +157,20 @@ impl WindowsEmulation {
             "findresourcew" | "findresourcea" => {
                 let name = resource_selector(arg(1).as_ref())?;
                 let kind = resource_selector(arg(2).as_ref())?;
-                // Resources extracted to files win over the image: an analysis
-                // usually has the payload directory and not the `.exe` it came
-                // from, and looking in the working directory first is what
-                // makes that work.
-                let data = match PeImage::find_resource_file(&self.resource_dirs, &name) {
-                    Some(bytes) => {
-                        if self.trace_dll {
-                            eprintln!(
-                                "{}",
-                                msg!(
-                                    "[winemu] resource {name} from file",
-                                    name = name.name.as_deref().unwrap_or("?")
-                                )
-                            );
-                        }
-                        bytes
-                    }
-                    None => self.module.as_ref()?.find(&name, &kind)?.data.clone(),
-                };
+                // Files win over the image — the script's own `_Res_File_Add`
+                // table first, then the resources extracted next to it: an
+                // analysis usually has the payload and not the `.exe` it came
+                // from, and looking there first is what makes that work.
+                let (data, from_file) = self.read_resource(&name, &kind)?;
+                if from_file && self.trace_dll {
+                    eprintln!(
+                        "{}",
+                        msg!(
+                            "[winemu] resource {name} from file",
+                            name = name.name.as_deref().unwrap_or("?")
+                        )
+                    );
+                }
                 self.handles.push(Some(ResourceHandle {
                     data,
                     address: None,

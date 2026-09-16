@@ -133,6 +133,7 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let platform = args.win.platform(
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
+        &input.resource_aliases,
         Some(Box::new(autoitv3_platform::winemu::HeadlessBackend::new())),
         assume_admin,
     )?;

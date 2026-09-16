@@ -172,7 +172,19 @@ UDF 正是这么用它的（传 `""` 当输出参数，再从 `$r[n]` 取回被�
   返回它，于是 `FindResource*`/`LoadResource`/`LockResource`/`RtlMoveMemory` 全走真实
   Win32 语义、真实指针。
 
-于是同一份 `au3 deobf script.au3 --evaluate` 在 Linux 与 Windows 上走到同一条边界。
+**没有镜像时，仿真层也能从落盘文件回答**（原生层不行——它的 `FindResourceW` 是真
+Win32 调用，只认映射进来的镜像）。`FindResourceW` 与 `FileInstall` 走同一条链，
+按顺序试：
+
+1. 脚本自己的 `#AutoIt3Wrapper_Res_File_Add=file[, section[, name[, language]]]`
+   表（`with_resource_aliases`：资源名 → 构建时那个文件，先按原样、再把 `\` 当分隔符，
+   相对脚本目录/工作目录找）——这是构建脚本自己说"哪个名字对应哪个文件"；
+2. 脚本旁边的 staging 文件：`__NAME` / `NAME` / `__Res64/NAME` / `__ResImage/_NAME`
+   （`PeImage::find_resource_file`，大小写不敏感，忽略资源类型）；
+3. 才轮到镜像的资源树。
+
+于是同一份 `au3 deobf script.au3 --evaluate` 在 Linux 与 Windows 上走到同一条边界
+（只要镜像在手）；只有落盘载荷时，第 1/2 步让 Linux/macOS 上也能把脚本跑过去。
 
 `Platform` **trait** 留在 `autoitv3-runtime`（解释器调用的接缝），**实现**在此 crate。
 依赖方向单向——运行时不知道任何具体操作系统——因此 `Runtime::new()` 默认**没有**平台层，

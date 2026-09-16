@@ -141,6 +141,32 @@ ConsoleWrite("[" & @Compiled & "]" & @CRLF)
 // GUI backend selection
 // ---------------------------------------------------------------------------
 
+/// A script plus the payload its build script embedded: the
+/// `#AutoIt3Wrapper_Res_File_Add` line names the file a `FindResourceW` for
+/// `CFGDATA` should hand back, so the resource chain resolves without the
+/// `.exe` the payload came out of.
+const WRAPPER_RESOURCE_SCRIPT: &str = r#"
+#AutoIt3Wrapper_Res_File_Add=payload.bin, RT_RCDATA, CFGDATA, 0
+Local $h = DllCall("kernel32.dll", "handle", "FindResourceW", "handle", 0, "wstr", "CFGDATA", "wstr", 10)
+Local $size = DllCall("kernel32.dll", "dword", "SizeofResource", "handle", 0, "handle", $h[0])
+Local $res = DllCall("kernel32.dll", "handle", "LoadResource", "handle", 0, "handle", $h[0])
+Local $ptr = DllCall("kernel32.dll", "ptr", "LockResource", "handle", $res[0])
+Local $buf = DllStructCreate("byte[" & $size[0] & "]")
+DllCall("kernel32.dll", "none", "RtlMoveMemory", "ptr", DllStructGetPtr($buf), "ptr", $ptr[0], "dword", $size[0])
+ConsoleWrite($size[0] & "|" & BinaryToString(DllStructGetData($buf, 1)) & @CRLF)
+"#;
+
+#[test]
+fn the_wrapper_resource_table_names_the_file_to_read() {
+    let path = script("wrapper-resource", WRAPPER_RESOURCE_SCRIPT);
+    let dir = path.parent().expect("script dir");
+    std::fs::write(dir.join("payload.bin"), b"named payload").expect("write payload");
+
+    let out = au3(&["run", path.to_str().unwrap()]);
+    assert!(out.contains("13|named payload"), "got:\n{out}");
+    assert!(out.contains("Res_File_Add=payload.bin"), "the note names it: got:\n{out}");
+}
+
 #[test]
 fn gui_calls_are_answered_with_and_without_a_backend() {
     // Without `--gui` the platform picks the backend; either way the GUI

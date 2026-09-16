@@ -432,6 +432,10 @@ pub struct WindowsEmulation {
     /// Directories searched for resources staged as files (see
     /// [`PeImage::find_resource_file`]) before the PE image is consulted.
     resource_dirs: Vec<PathBuf>,
+    /// The script's own resource names: `(name, file as written)` from
+    /// `#AutoIt3Wrapper_Res_File_Add`. Checked before the staging names, because
+    /// it is the build script saying exactly what it put where.
+    resource_aliases: Vec<(String, String)>,
     /// Resources handed out by `FindResourceW`/`LoadResource`, 1-based.
     handles: Vec<Option<ResourceHandle>>,
     /// Resource bytes materialised by `LockResource`, keyed by their address.
@@ -520,6 +524,7 @@ impl WindowsEmulation {
             module: None,
             module_path: None,
             resource_dirs: Vec::new(),
+            resource_aliases: Vec::new(),
             handles: Vec::new(),
             blobs: Vec::new(),
             sandbox_files: BTreeMap::new(),
@@ -883,6 +888,81 @@ impl WindowsEmulation {
     /// The directories searched for staged resource files.
     pub fn resource_dirs(&self) -> &[PathBuf] {
         &self.resource_dirs
+    }
+
+    /// Install the script's own resource names.
+    ///
+    /// Each entry is `(resource name, file as written)` from
+    /// `#AutoIt3Wrapper_Res_File_Add=file[, section[, name[, language]]]`. The
+    /// wrapper embedded that file under that name at build time; an analysis
+    /// that has the file on disk can serve the lookup from it instead of
+    /// insisting on the `__NAME` staging convention.
+    pub fn with_resource_aliases(
+        mut self,
+        aliases: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.resource_aliases = aliases.into_iter().collect();
+        self
+    }
+
+    /// The file the script's own `_Res_File_Add` table maps this name to.
+    ///
+    /// A name is whatever the script asked `FindResourceW` for, so only string
+    /// selectors can match; the file is tried as written, with `\` read as a
+    /// separator, and relative to the resource search directories — a build
+    /// script's path does not exist on the analysing host, but the file it
+    /// named usually sits next to the script.
+    fn resource_alias(&self, name: &Selector) -> Option<Vec<u8>> {
+        let wanted = name.name.as_deref()?;
+        for (resource, file) in &self.resource_aliases {
+            if !resource.eq_ignore_ascii_case(wanted) {
+                continue;
+            }
+            for candidate in [file.clone(), file.replace('\\', "/")] {
+                if let Some(bytes) = self.read_alias_file(&candidate) {
+                    return Some(bytes);
+                }
+            }
+        }
+        None
+    }
+
+    /// Read one candidate path, relative to the search directories when it is
+    /// not absolute. Case-insensitive, like the resource lookup it serves.
+    fn read_alias_file(&self, file: &str) -> Option<Vec<u8>> {
+        if let Some(path) = crate::winfmt::pe::resolve_ci(std::path::Path::new(file)) {
+            if let Ok(bytes) = std::fs::read(&path) {
+                return Some(bytes);
+            }
+        }
+        for dir in &self.resource_dirs {
+            if let Some(path) = crate::winfmt::pe::resolve_ci(&dir.join(file)) {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    return Some(bytes);
+                }
+            }
+        }
+        None
+    }
+
+    /// Read one resource the way `FindResourceW` does.
+    ///
+    /// The order is the script's own table, then the files staged next to it,
+    /// then the loaded image; the first two answer "from a file", which is what
+    /// the trace reports. [`file_install`](Self::file_install) reads through
+    /// the same function, so a `FileInstall` and a `FindResourceW` of one name
+    /// can never disagree about where the bytes come from.
+    fn read_resource(&self, name: &Selector, kind: &Selector) -> Option<(Vec<u8>, bool)> {
+        if let Some(bytes) = self.resource_alias(name) {
+            return Some((bytes, true));
+        }
+        if let Some(bytes) = PeImage::find_resource_file(&self.resource_dirs, name) {
+            return Some((bytes, true));
+        }
+        self.module
+            .as_ref()?
+            .find(name, kind)
+            .map(|res| (res.data.clone(), false))
     }
 
     /// Report every `DllCall` target the emulation does not implement, once
@@ -1268,20 +1348,14 @@ impl WindowsEmulation {
         if basename.is_empty() {
             return false;
         }
-        // The extracted files carry the wrapper's staging names, so one lookup
-        // with the bare name covers `__NAME` and the `__Res64`/`__ResImage`
-        // directories as well.
-        if let Some(bytes) =
-            PeImage::find_resource_file(&self.resource_dirs, &Selector::name(basename.clone()))
-        {
-            return std::fs::write(dest, &bytes).is_ok();
-        }
-        let Some(module) = &self.module else {
-            return false;
-        };
+        // The same lookup `FindResourceW` answers with: the script's own
+        // `_Res_File_Add` table, the files staged next to it (one lookup with
+        // the bare name covers `__NAME` and the `__Res64`/`__ResImage`
+        // directories), then the image — where the embedded name may carry the
+        // wrapper's `__` prefix.
         for name in [basename.clone(), format!("__{basename}")] {
-            if let Some(res) = module.find(&Selector::name(name), &Selector::id(10)) {
-                return std::fs::write(dest, &res.data).is_ok();
+            if let Some((bytes, _)) = self.read_resource(&Selector::name(name), &Selector::id(10)) {
+                return std::fs::write(dest, &bytes).is_ok();
             }
         }
         false

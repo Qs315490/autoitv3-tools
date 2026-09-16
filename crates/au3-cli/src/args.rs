@@ -395,31 +395,41 @@ pub fn build_facts(program: &Program, build_is_x64: Option<bool>, compiled: bool
 /// A `#AutoIt3Wrapper_<name>=Y|N` setting, when the script carries one.
 fn wrapper_flag(program: &Program, wanted: &str) -> Option<bool> {
     for (directive, argument) in autoitv3_preproc::directives(program) {
-        let Some((name, value)) = wrapper_setting(directive) else {
+        let Some((name, value)) = wrapper_setting(directive, argument) else {
             continue;
         };
         if name.eq_ignore_ascii_case(wanted) {
-            return truthy_flag(if value.is_empty() { argument.trim() } else { value });
+            return truthy_flag(&value);
         }
     }
     None
 }
 
-/// Split one `#AutoIt3Wrapper_<name>=<value>` directive.
+/// Split one `#AutoIt3Wrapper_<name>[=<value>]` directive into its two halves.
 ///
-/// The wrapper writes `Name=value` with no space, so the generic directive
-/// split — which cuts on whitespace, because `#include <file>` needs it to —
-/// leaves the value stuck to the name. Both spellings are accepted here.
-fn wrapper_setting(directive: &str) -> Option<(&str, &str)> {
+/// Both halves of the generic directive split are needed. It cuts on the first
+/// whitespace, because `#include <file>` needs the space to find its argument —
+/// so `Name=value` with no space leaves the value stuck to the name, and a
+/// value that contains a space (`file, RT_RCDATA, name, 0`) leaves part of
+/// itself in the argument. Joining them back gives the value the wrapper wrote.
+fn wrapper_setting<'a>(directive: &'a str, argument: &'a str) -> Option<(&'a str, String)> {
     const PREFIX: &str = "AutoIt3Wrapper_";
     if !directive.get(..PREFIX.len())?.eq_ignore_ascii_case(PREFIX) {
         return None;
     }
-    let rest = &directive[PREFIX.len()..];
-    Some(match rest.split_once('=') {
-        Some((name, value)) => (name.trim(), value.trim()),
-        None => (rest.trim(), ""),
-    })
+    let head = &directive[PREFIX.len()..];
+    let (name, inline) = match head.split_once('=') {
+        Some((name, value)) => (name, value.trim()),
+        None => (head, ""),
+    };
+    let argument = argument.trim();
+    let value = match (inline.is_empty(), argument.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => argument.to_string(),
+        (false, true) => inline.to_string(),
+        (false, false) => format!("{inline} {argument}"),
+    };
+    Some((name.trim(), value))
 }
 
 /// The spellings the wrapper accepts for `Y`/`N`.
@@ -429,6 +439,49 @@ fn truthy_flag(raw: &str) -> Option<bool> {
         "n" | "no" | "0" | "false" | "off" => Some(false),
         _ => None,
     }
+}
+
+/// The resources a script's own `#AutoIt3Wrapper_Res_File_Add` lines name.
+///
+/// The wrapper read that file at build time and embedded it under that name, so
+/// the pair is the build script saying exactly which bytes a `FindResourceW`
+/// for `name` should hand back. An analysis that has the file on disk can
+/// answer from it instead of guessing at the `__NAME` staging convention.
+///
+/// The syntax is `file[, section[, name[, language]]]`: `section` is the
+/// resource type and the language is a build detail, neither of which a file on
+/// disk carries, so only the name matters here. A missing name defaults to the
+/// file's own, as the wrapper documents.
+pub fn wrapper_resources(program: &Program) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (directive, argument) in autoitv3_preproc::directives(program) {
+        let Some((name, value)) = wrapper_setting(directive, argument) else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("Res_File_Add") {
+            continue;
+        }
+        let mut fields = value.split(',').map(str::trim);
+        let Some(file) = fields.next().filter(|field| !field.is_empty()) else {
+            continue;
+        };
+        let _section = fields.next();
+        let resource = fields
+            .next()
+            .filter(|field| !field.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                Path::new(file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| file.to_string())
+            });
+        let pair = (resource, file.to_string());
+        if !out.contains(&pair) {
+            out.push(pair);
+        }
+    }
+    out
 }
 
 /// Note the `#AutoIt3Wrapper_*` settings a script carries, once per process.
@@ -445,12 +498,11 @@ fn note_wrapper_directives(program: &Program) {
 
     let mut settings: Vec<String> = Vec::new();
     for (directive, argument) in autoitv3_preproc::directives(program) {
-        let Some((name, value)) = wrapper_setting(directive) else {
+        let Some((name, value)) = wrapper_setting(directive, argument) else {
             continue;
         };
         // The real spelling keeps the wrapper's own capitalisation.
         let mut shown = name.to_string();
-        let value = if value.is_empty() { argument } else { value };
         let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
         if !value.is_empty() {
             let value = if value.chars().count() > ARG {
@@ -508,6 +560,7 @@ impl WinEmuArgs {
         &self,
         script: Option<&Path>,
         input_module: Option<&Path>,
+        resource_aliases: &[(String, String)],
         gui: Option<Box<dyn autoitv3_platform::winemu::GuiBackend>>,
         assume_admin: bool,
     ) -> CliResult<Box<dyn Platform>> {
@@ -587,12 +640,19 @@ impl WinEmuArgs {
             // Resources already extracted next to the script answer before the
             // image does, so the payload alone is enough to analyse a build.
             let dirs = resource_search_dirs(script);
-            if emu.module_path().is_none() && !has_staged_resources(&dirs) {
+            if emu.module_path().is_none()
+                && !has_staged_resources(&dirs)
+                && resource_aliases.is_empty()
+            {
                 note_once(tr(
-                    "# no resource image or __* resource files found: resource calls may fail",
+                    "# no resource image, __* files or _Res_File_Add entry found: resource calls may fail",
                 ));
             }
             emu = emu.with_resource_dirs(dirs);
+            // The script's own names for the files the wrapper embedded: the
+            // lookup tries them before the staging convention, and like the
+            // staging names this is a service of the emulation layer.
+            emu = emu.with_resource_aliases(resource_aliases.iter().cloned());
         }
         if let Some(backend) = gui {
             emu = emu.with_gui_backend(backend);
@@ -655,6 +715,9 @@ pub struct Input {
     /// one machine, and the script branched on that. `None` for a `.au3` input,
     /// where only the wrapper directive or the emulated machine can say.
     pub build_is_x64: Option<bool>,
+    /// The resources the script's own `#AutoIt3Wrapper_Res_File_Add` lines
+    /// name, as `(resource name, file as written)`. See [`wrapper_resources`].
+    pub resource_aliases: Vec<(String, String)>,
 }
 
 /// Read and parse the AutoIt program at `path`.
@@ -685,11 +748,13 @@ pub fn load_input(path: &str) -> CliResult<Input> {
     let program = parse(&source)
         .map_err(|e| CliError::failure(msg!("parse error in {path}: {e}", path = path, e = e)))?;
     note_wrapper_directives(&program);
+    let resource_aliases = wrapper_resources(&program);
     Ok(Input {
         source,
         program,
         resource_module: None,
         build_is_x64: None,
+        resource_aliases,
     })
 }
 
@@ -761,6 +826,7 @@ fn load_compiled(path: &str) -> CliResult<Input> {
             e = e
         ))
     })?;
+    let resource_aliases = wrapper_resources(&program);
     Ok(Input {
         source,
         program,
@@ -771,6 +837,7 @@ fn load_compiled(path: &str) -> CliResult<Input> {
         build_is_x64: autoitv3_platform::PeImage::load(path)
             .ok()
             .map(|image| image.is_x64()),
+        resource_aliases,
     })
 }
 

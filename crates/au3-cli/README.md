@@ -264,7 +264,9 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 
 选出来的 PE 镜像（`--resource-module`/`AU3_RESOURCE_MODULE`，或输入构建本身，或脚本旁自动找到的那张）
 **同时**交给仿真层和 Windows 原生层，所以 `--no-win-emu` 不影响它——那个开关只抽掉仿真层，Windows
-上原生层照样把镜像按资源映射进来。`# resource module: …`、`# no resource image …` 这类环境说明
+上原生层照样把镜像按资源映射进来。没有镜像时，`FindResourceW`/`FileInstall` 还会依次查脚本自己的
+`#AutoIt3Wrapper_Res_File_Add=<file>, <type>, <name>, <lang>` 表、再查 `__NAME`/`__Res64/NAME` 这类
+staging 文件（这条兜底是仿真层的服务，只在拿不到镜像时用得上）。`# resource module: …`、`# no resource image …` 这类环境说明
 **每个进程只打印一次**（`debug` 每次 `run` 都重建 runtime，不收敛就会一行行刷）。
 
 **两个预设，默认按命令分**。`run` 与 `debug` 默认 `--faithful`（AutoIt 自己的语义：
