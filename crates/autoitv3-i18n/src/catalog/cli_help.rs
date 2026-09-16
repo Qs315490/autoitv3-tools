@@ -108,6 +108,22 @@ pub static ENTRIES: &[(&str, &str)] = &[
         "打印本消息或给定子命令的帮助",
     ),
     ("Print help", "打印帮助"),
+    (
+        "Ignore `#RequireAdmin`: debug the script in this, unelevated, process",
+        "忽略 `#RequireAdmin`：就在当前（非提权）进程里调试",
+    ),
+    (
+        "Ignore `#RequireAdmin`: debug the script in this, unelevated, process\n\nThe default is to honour it the way the interpreter does — start an elevated copy through the shell's `runas` verb, and let that copy run the session. `--attach-console` hands the copy this window's console, so the prompt and the output stay where the command was typed. Pass this to debug a script that asks for rights it does not get, or to avoid the UAC prompt; a session whose input or output is not a terminal stays here anyway (there is no console to hand over).",
+        "忽略 `#RequireAdmin`：就在当前（非提权）进程里调试\n\n默认按解释器的做法处理——用 shell 的 `runas` 动词起一个提权副本，由那个副本跑这个会话；`--attach-console` 把本窗口的控制台交给副本，所以提示符和输出都留在你敲命令的地方。要调试一个申请了权限却拿不到权限的脚本、或想避开 UAC 提示时用它；输入或输出不是终端的会话本来也会留在这里（没有控制台可交）。",
+    ),
+    (
+        "(internal) Run as the elevated copy an `#RequireAdmin` session started",
+        "（内部）作为 `#RequireAdmin` 会话启动的提权副本运行",
+    ),
+    (
+        "(internal) Run as the elevated copy an `#RequireAdmin` session started\n\nOur own launcher passes this together with `--attach-console`; it says \"the elevation already happened\", so the directive is not acted on again and not reported as skipped either. Not meant to be used by hand.",
+        "（内部）作为 `#RequireAdmin` 会话启动的提权副本运行\n\n我们自己的启动器把它和 `--attach-console` 一起传进来；它表示“提权已经发生”，于是不再对该指令采取行动，也不报告为已跳过。不要手工使用。",
+    ),
     ("Print help (see more with '--help')", "打印帮助（用 '--help' 查看更多）"),
     ("Print help (see a summary with '-h')", "打印帮助（用 '-h' 看摘要）"),
     ("Print version", "打印版本"),

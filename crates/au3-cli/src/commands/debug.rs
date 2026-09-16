@@ -50,6 +50,7 @@ use std::rc::Rc;
 use autoitv3_ast::span::Span;
 use autoitv3_ast::Program;
 use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, FrameInfo, StopReason};
+use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::RuntimeError;
 use autoitv3_runtime::Runtime;
 use autoitv3_i18n::{msg, tr};
@@ -132,6 +133,26 @@ pub struct DebugArgs {
     #[arg(long = "gui", value_name = "MODE", default_value = "auto")]
     pub gui: GuiMode,
 
+    /// Ignore `#RequireAdmin`: debug the script in this, unelevated, process
+    ///
+    /// The default is to honour it the way the interpreter does — start an
+    /// elevated copy through the shell's `runas` verb, and let that copy run the
+    /// session. `--attach-console` hands the copy this window's console, so the
+    /// prompt and the output stay where the command was typed. Pass this to
+    /// debug a script that asks for rights it does not get, or to avoid the UAC
+    /// prompt; a session whose input or output is not a terminal stays here
+    /// anyway (there is no console to hand over).
+    #[arg(long)]
+    pub no_elevate: bool,
+
+    /// (internal) Run as the elevated copy an `#RequireAdmin` session started
+    ///
+    /// Our own launcher passes this together with `--attach-console`; it says
+    /// "the elevation already happened", so the directive is not acted on again
+    /// and not reported as skipped either. Not meant to be used by hand.
+    #[arg(long, hide = true)]
+    pub elevated_copy: bool,
+
     /// `#include` search path (see `IncludeArgs`).
     #[command(flatten)]
     pub includes: IncludeArgs,
@@ -212,18 +233,41 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
     let prog = input.program;
     let resource_module = input.resource_module;
 
-    // A debug session is interactive, and an elevated copy would be a second
-    // process without this shell's stdin — the session would end at the first
-    // prompt. Say what was not done instead of silently stepping through a
-    // script that asked for rights.
-    if crate::elevate::is_required(&prog) {
+    // `#RequireAdmin` is about the *process*, not the script, so the session is
+    // handed to an elevated copy the same way `au3 run` hands the script over:
+    // the copy attaches to this window's console (`--attach-console`), which is
+    // what keeps an interactive session usable there. Two cases stay here and
+    // say so — a session whose input or output is not a terminal has no console
+    // to hand over (and handing over would move a redirected log onto the
+    // screen), and `--gui window` owns the window in this process.
+    let spawn_denied = args
+        .effects
+        .deny
+        .iter()
+        .any(|kind| EffectKind::from_name(kind) == Some(EffectKind::Spawn));
+    let hand_over = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && args.gui != GuiMode::Window;
+    let stays_here = crate::elevate::is_required(&prog)
+        && !hand_over
+        && !args.no_elevate
+        && !spawn_denied;
+    if stays_here {
         eprintln!(
             "{}",
             tr(
-                "note: #RequireAdmin: this script wants administrator rights; \
-                 the debugger does not elevate — run it from an elevated shell to match"
+                "note: #RequireAdmin: this script wants administrator rights, but this \
+                 session stays in this process — run the debugger from an elevated shell \
+                 to match"
             )
         );
+    } else if crate::elevate::relaunch_if_required(
+        &prog,
+        args.elevated_copy,
+        args.no_elevate,
+        spawn_denied,
+    )? {
+        return Ok(());
     }
 
     let mut file_commands = Vec::new();

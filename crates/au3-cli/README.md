@@ -194,6 +194,8 @@ AU3_INCLUDE_PATH='D:\Programs\autoitv3\Include' au3 run script.au3
 au3 run setup.au3                  # 脚本里有 #RequireAdmin 且当前不是管理员 → 弹 UAC
 au3 run setup.au3 --no-elevate     # 就在当前进程里跑，stderr 说明原因
 au3 run setup.au3 --deny spawn     # 同上：显式禁掉 spawn 也算不想要提权
+au3 debug setup.au3                # 调试也一样：提权副本接回本窗口的控制台
+au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 ```
 
 **已经是管理员就不申请**：从提权后的 shell 启动、UAC 关闭（令牌本来就是完整的）、或者
@@ -204,8 +206,11 @@ au3 run setup.au3 --deny spawn     # 同上：显式禁掉 spawn 也算不想要
 提权是"脚本以什么身份跑"，两者无关。
 
 非 Windows 主机没有提权机制：读到指令、打印一行说明，脚本照常在本进程里跑。
-`au3 debug` 与 `au3 run --gui window` 也不提权——前者提权后拿不到这个 shell 的 stdin，
-后者窗口与脚本同进程——两者都只打印一行提示。
+
+`au3 debug` 和 `au3 run` 一样默认把会话交给提权副本（UAC 之后副本 `--attach-console`
+接回本窗口的控制台，提示符和输出都留在原地）；两种情况下留在本进程并只打印一行说明：
+**输入或输出不是终端**（管道/重定向的会话没有控制台可交，交出去还会把重定向的日志挪到
+屏幕上）、以及 **`--gui window`**（窗口归本进程）。`--no-elevate` / `--deny spawn` 也留着，这时打印的是对应的跳过原因。
 
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
 `deobfuscate --evaluate`、`run` 与 `debug`；省略时读环境变量，再回落到默认值：

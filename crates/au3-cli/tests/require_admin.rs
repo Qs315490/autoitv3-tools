@@ -134,3 +134,61 @@ fn the_debugger_reports_the_directive_without_elevating() {
         "got:\n{out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `au3 debug`
+// ---------------------------------------------------------------------------
+//
+// A debug session can be handed over too (`--attach-console` keeps the prompt
+// in this window), but a test cannot answer a UAC prompt: what is checked here
+// is where the session stays and what it says about it.
+
+/// The test harness runs the debugger with `stdin` at `/dev/null`, so there is
+/// no console to hand a session over to: it stays in this process, says so, and
+/// still debugs the script.
+#[test]
+fn debug_stays_unelevated_without_a_console_to_hand_over() {
+    let path = script("debug-pipe", "#RequireAdmin\nConsoleWrite(\"ran\")\n");
+    let (ok, out) = au3(&[
+        "debug",
+        &path.to_string_lossy(),
+        "-c",
+        "run",
+        "-c",
+        "quit",
+    ]);
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("note: #RequireAdmin: this script wants administrator rights, but this session stays in this process"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("ran"), "the session still ran the script:\n{out}");
+}
+
+#[test]
+fn debug_no_elevate_reports_the_skip_reason() {
+    let path = script("debug-no-elevate", "#RequireAdmin\nConsoleWrite(\"ran\")\n");
+    let (ok, out) = au3(&[
+        "debug",
+        &path.to_string_lossy(),
+        "--no-elevate",
+        "-c",
+        "run",
+        "-c",
+        "quit",
+    ]);
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("note: #RequireAdmin: --no-elevate"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("ran"), "got:\n{out}");
+}
+
+#[test]
+fn debug_without_the_directive_says_nothing() {
+    let path = script("debug-plain", "#NoTrayIcon\nConsoleWrite(\"ran\")\n");
+    let (ok, out) = au3(&["debug", &path.to_string_lossy(), "-c", "run", "-c", "quit"]);
+    assert!(ok, "got:\n{out}");
+    assert!(!out.contains("#RequireAdmin"), "got:\n{out}");
+}

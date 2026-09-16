@@ -81,7 +81,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("nostop <id> | stop <id> — logpoint mode on/off", "nostop <id> | stop <id> — 日志点模式开/关"),
     ("not a line expression: {expr}", "不是行表达式：{expr}"),
     ("not tracing inside {other}", "不再跟踪 {other} 内部"),
-    ("note: #RequireAdmin: this script wants administrator rights; the debugger does not elevate — run it from an elevated shell to match", "注意：#RequireAdmin：此脚本需要管理员权限；调试器不会提权 — 请从已提权的 shell 中运行以保持一致"),
+    ("note: #RequireAdmin: this script wants administrator rights, but this session stays in this process — run the debugger from an elevated shell to match", "注意：#RequireAdmin：此脚本需要管理员权限，但该会话留在本进程里 — 请从已提权的 shell 中运行调试器保持一致"),
     ("only top-level code is on the stack", "栈上只有顶层代码"),
     ("only top-level code is on the stack (`#0  <script>`)", "栈上只有顶层代码（`#0  <script>`）"),
     ("opening the GUI window failed: {e}", "打开 GUI 窗口失败：{e}"),
