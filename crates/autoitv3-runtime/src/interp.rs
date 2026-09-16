@@ -166,6 +166,10 @@ pub struct Runtime {
     compiled: bool,
     /// Top-level (script) statements, executed by [`Runtime::run_script`].
     script: Vec<Stmt>,
+    /// The function `#OnAutoItStartRegister` names, if the program carries the
+    /// directive: AutoIt's compiler calls it once, before the body's first
+    /// statement, at every script start.
+    start_register: Option<String>,
     /// The `Opt`/`AutoItSetOption` settings a script changed, by lower-cased
     /// option name.
     ///
@@ -344,6 +348,7 @@ impl Runtime {
             profile: ExecutionProfile::default(),
             compiled: false,
             script: Vec::new(),
+            start_register: None,
             options: HashMap::new(),
         }
     }
@@ -441,6 +446,7 @@ impl Runtime {
         for item in &prog.items {
             self.load_item(item);
         }
+        self.start_register = start_register(prog);
     }
 
     /// Execute the program's top-level statements (script body), stopping at
@@ -450,6 +456,13 @@ impl Runtime {
     /// [`Runtime::call_function`].
     pub fn run_script(&mut self) -> Result<Flow, RuntimeError> {
         self.error_reported = false;
+        // `#OnAutoItStartRegister "F"`: AutoIt's compiler registers a call to
+        // `F` that runs once at each start, before the body's first statement.
+        // A name that is not defined fails the way any other missing function
+        // does.
+        if let Some(name) = self.start_register.clone() {
+            self.call_function(&name, Vec::new())?;
+        }
         let stmts = std::mem::take(&mut self.script);
         let mut flow = Flow::Normal;
         for s in &stmts {
@@ -2369,6 +2382,41 @@ impl Runtime {
 /// Deobfuscation uses this as the safety gate for inlining an evaluated
 /// expression: a pure constant is guaranteed to have the same value wherever
 /// it appears, which is exactly what constant folding needs.
+/// The function `#OnAutoItStartRegister` names, if the program carries the
+/// directive.
+///
+/// AutoIt's preprocessor only ever reads directives at the top level, so this
+/// walks the same way the preprocessor does ([`autoitv3_preproc::directives`]):
+/// regions count, a directive inside a function body does not. The argument is
+/// usually quoted (`"Prologue"`); the quotes are not part of the name.
+fn start_register(prog: &Program) -> Option<String> {
+    fn find(items: &[Item]) -> Option<String> {
+        for item in items {
+            match &item.kind {
+                ItemKind::Directive(text) => {
+                    let mut parts = text.trim().splitn(2, char::is_whitespace);
+                    let name = parts.next().unwrap_or("");
+                    if !name.eq_ignore_ascii_case("OnAutoItStartRegister") {
+                        continue;
+                    }
+                    let argument = parts.next().unwrap_or("").trim().trim_matches('"').trim();
+                    if !argument.is_empty() {
+                        return Some(argument.to_string());
+                    }
+                }
+                ItemKind::Region(region) => {
+                    if let Some(found) = find(&region.items) {
+                        return Some(found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    find(&prog.items)
+}
+
 pub fn is_constant_expr(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Lit(_) => true,

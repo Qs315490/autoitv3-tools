@@ -2214,3 +2214,46 @@ EndFunc
         other => panic!("got {other:?}"),
     }
 }
+
+#[test]
+fn on_autoit_start_register_runs_before_the_body() {
+    // The compiler's start hook: the named function runs once, before the
+    // body's first statement, so anything it sets is already there.
+    let mut rt = rt(
+        "#OnAutoItStartRegister \"Boot\"\n\
+         Func Boot()\n\
+         \x20   Global $G = 7\n\
+         EndFunc\n\
+         Func Get()\n\
+         \x20   Return $G\n\
+         EndFunc\n",
+    );
+    rt.run_script().expect("starts");
+    assert_eq!(rt.call_function("Get", vec![]).unwrap().to_int(), 7);
+}
+
+#[test]
+fn a_missing_start_register_function_is_reported() {
+    let mut rt = rt("#OnAutoItStartRegister \"Nope\"\n");
+    let err = rt.run_script().expect_err("no such function");
+    assert!(
+        err.message().contains("undefined function: Nope"),
+        "got: {}",
+        err.message()
+    );
+}
+
+#[test]
+fn the_start_register_directive_is_case_insensitive_and_may_be_unquoted() {
+    let mut rt = rt(
+        "#onautoitstartregister boot\n\
+         Func boot()\n\
+         \x20   Global $G = 9\n\
+         EndFunc\n\
+         Func Get()\n\
+         \x20   Return $G\n\
+         EndFunc\n",
+    );
+    rt.run_script().expect("starts");
+    assert_eq!(rt.call_function("Get", vec![]).unwrap().to_int(), 9);
+}

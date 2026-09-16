@@ -220,6 +220,15 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 **输入或输出不是终端**（管道/重定向的会话没有控制台可交，交出去还会把重定向的日志挪到
 屏幕上）、以及 **`--gui window`**（窗口归本进程）。`--no-elevate` / `--deny spawn` 也留着，这时打印的是对应的跳过原因。
 
+### 其他指令
+
+| 指令 | 行为 |
+| ---- | ---- |
+| `#OnAutoItStartRegister "函数"` | **已实现**：脚本每次启动时先调用这个函数，再跑本体第一条语句（`run`/`debug`/`evaluate` 的每次启动都算），返回值和函数体都按普通函数处理；函数不存在按未定义函数报错（`undefined function: …`）。大小写、带不带引号都认，写在函数体里的不算（和 AutoIt 的前处理器一样只看顶层，`#region` 里算）。 |
+| `#NoTrayIcon` | 接受，但**在我们这里没有可抑制的东西**：这个工具从不创建托盘图标（`TraySetState`/`TraySetIcon` 这些由内存模型回答，返回值与有无该指令一致）。 |
+| `#NoAutoIt3Execute` | 接受，但**不是我们执行的检查**：它的意思是"本脚本不允许被 `AutoIt3.exe /AutoIt3ExecuteScript` 或 `/AutoIt3ExecuteLine` 这样启动"，而本工具不是 `AutoIt3.exe`、也没有这两个开关，普通运行不受影响。真要用那种方式自重启，得由真正的 AutoIt 解释器拦。 |
+| `#AutoIt3Wrapper_*` | 编译器包装器的指令（图标、版本资源、UPX、`File_Add`……），只在 Aut2Exe 打包时有用，本工具解析后忽略。 |
+
 `--win-version` / `--win-arch` / `--no-win-emu` 三个开关同时适用于 `evaluate`、
 `deobfuscate --evaluate`、`run` 与 `debug`；省略时读环境变量，再回落到默认值：
 
