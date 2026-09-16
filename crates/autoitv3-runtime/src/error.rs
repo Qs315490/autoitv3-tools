@@ -49,7 +49,11 @@ pub enum RuntimeError {
     /// A declaration asked for more array elements than AutoIt allows.
     ArrayTooLarge { elements: i64, limit: i64, span: Option<Span> },
     /// Too many interpreter steps (runaway loop guard).
-    StepLimitExceeded { limit: u64 },
+    ///
+    /// The span is the statement that was running when the budget ran out, so
+    /// a runaway loop is reported at the line it is spinning on instead of
+    /// pointing at nothing.
+    StepLimitExceeded { limit: u64, span: Option<Span> },
     /// Too many nested calls (runaway recursion guard).
     CallDepthExceeded { limit: usize },
     /// An error raised by a host/native function.
@@ -86,7 +90,7 @@ impl RuntimeError {
                 elements = elements,
                 limit = limit
             ),
-            RuntimeError::StepLimitExceeded { limit } => {
+            RuntimeError::StepLimitExceeded { limit, .. } => {
                 msg!("step limit exceeded ({limit})", limit = limit)
             }
             RuntimeError::CallDepthExceeded { limit } => {
@@ -107,7 +111,8 @@ impl RuntimeError {
             | RuntimeError::UndefinedVariable { span, .. }
             | RuntimeError::UndefinedFunction { span, .. }
             | RuntimeError::IndexOutOfBounds { span, .. }
-            | RuntimeError::ArrayTooLarge { span, .. } => *span,
+            | RuntimeError::ArrayTooLarge { span, .. }
+            | RuntimeError::StepLimitExceeded { span, .. } => *span,
             _ => None,
         }
     }

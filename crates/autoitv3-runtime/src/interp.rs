@@ -149,6 +149,8 @@ pub struct Runtime {
     extended: i64,
     steps: u64,
     max_steps: u64,
+    /// The statement currently executing, for error reporting.
+    current_span: Option<Span>,
     max_depth: usize,
     /// Set when a debugger asked to stop, read by [`Runtime::take_pause`].
     paused: Option<StopReason>,
@@ -385,6 +387,7 @@ impl Runtime {
             extended: 0,
             steps: 0,
             max_steps: DEFAULT_MAX_STEPS,
+            current_span: None,
             max_depth: DEFAULT_MAX_DEPTH,
             paused: None,
             jump_target: None,
@@ -1905,7 +1908,10 @@ impl Runtime {
     fn tick(&mut self) -> Result<(), RuntimeError> {
         self.steps += 1;
         if self.max_steps != 0 && self.steps > self.max_steps {
-            return Err(RuntimeError::StepLimitExceeded { limit: self.max_steps });
+            return Err(RuntimeError::StepLimitExceeded {
+                limit: self.max_steps,
+                span: self.current_span,
+            });
         }
         Ok(())
     }
@@ -1927,6 +1933,9 @@ impl Runtime {
     }
 
     fn exec_stmt_inner(&mut self, s: &Stmt) -> Result<Flow, RuntimeError> {
+        // Remember where we are before spending the step: a runaway loop is
+        // reported at the statement it is spinning on.
+        self.current_span = Some(s.span);
         self.tick()?;
 
         // An unconditional jump skips every statement until the target line
