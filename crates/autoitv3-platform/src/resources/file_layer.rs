@@ -41,6 +41,12 @@ pub(crate) const FILE_HGLOBAL_BASE: usize = 0x00A3_2000;
 /// `RtlMoveMemory`, so an emulated address would not survive the trip. Anything
 /// that does not carry one of the layer's sentinels is left to the native
 /// layer, so a resource in some other module still goes through real Win32.
+///
+/// The module argument is the one place where "the sentinel" is not the whole
+/// story: a script may pass the [`FILE_MODULE`] this layer handed it, or a plain
+/// `NULL` — `FindResourceW(0, "NAME", 10)` is the shorter spelling of the same
+/// thing, and the emulation layer answers it too. A real handle from anywhere
+/// else stays the native layer's call.
 pub(crate) struct FileResourceLayer {
     files: ResourceFiles,
     /// The bytes the chain has handed out. Nothing is ever removed: a pointer a
@@ -62,9 +68,25 @@ impl FileResourceLayer {
         })
     }
 
-    /// Whether a `DllCall` argument is the module handle this layer reports.
-    fn is_file_module(value: Option<&Value>) -> bool {
-        matches!(value, Some(Value::Int(handle)) if *handle as usize == FILE_MODULE)
+    /// Whether a `DllCall` argument names the module this layer stands in for.
+    ///
+    /// Two spellings mean it, and both have to be accepted: the sentinel
+    /// [`FILE_MODULE`] this layer's own `GetModuleHandleW(NULL)` hands out, and
+    /// a plain `NULL`. Scripts write `FindResourceW(0, …)` about as often as
+    /// they write `FindResourceW(GetModuleHandleW(0), …)`, and the emulation
+    /// layer answers both (it reads the name and the type and never looks at the
+    /// module). Declining `0` here would make the same script resolve its
+    /// resources off Windows and not on it.
+    ///
+    /// Anything else is a real module handle and belongs to the native layer.
+    /// The check is on the *type*: AutoIt coerces a name to 0 numerically, so a
+    /// value test would capture `FindResourceW("some.dll", …)`.
+    fn is_own_module(value: Option<&Value>) -> bool {
+        match value {
+            Some(Value::Int(handle)) => *handle == 0 || *handle as usize == FILE_MODULE,
+            Some(_) => false,
+            None => true,
+        }
     }
 
     /// The blob behind one of this layer's `HRSRC` handles.
@@ -81,7 +103,7 @@ impl FileResourceLayer {
 
     /// `FindResourceW(hMod, name, type)`: ours only.
     fn find_resource(&mut self, pairs: &[(String, Value)]) -> Option<Value> {
-        if !Self::is_file_module(pairs.first().map(|(_, value)| value)) {
+        if !Self::is_own_module(pairs.first().map(|(_, value)| value)) {
             return None;
         }
         let Some(name) = pairs.get(1).and_then(|(_, value)| selector(value)) else {
@@ -99,25 +121,24 @@ impl FileResourceLayer {
     }
 
     /// `SizeofResource(hMod, hResInfo)`.
+    ///
+    /// A handle this layer never issued goes back to the native layer rather
+    /// than answering `0`: a real `HRSRC` from another module is not ours to
+    /// describe.
     fn size_of_resource(&self, pairs: &[(String, Value)]) -> Option<Value> {
-        if !Self::is_file_module(pairs.first().map(|(_, value)| value)) {
+        if !Self::is_own_module(pairs.first().map(|(_, value)| value)) {
             return None;
         }
-        let size = self
-            .blob_of(pairs.get(1).map(|(_, value)| value))
-            .map(|blob| self.blobs[blob].len())
-            .unwrap_or(0);
-        Some(Value::Int(size as i64))
+        let blob = self.blob_of(pairs.get(1).map(|(_, value)| value))?;
+        Some(Value::Int(self.blobs[blob].len() as i64))
     }
 
     /// `LoadResource(hMod, hResInfo)`.
     fn load_resource(&self, pairs: &[(String, Value)]) -> Option<Value> {
-        if !Self::is_file_module(pairs.first().map(|(_, value)| value)) {
+        if !Self::is_own_module(pairs.first().map(|(_, value)| value)) {
             return None;
         }
-        let Some(blob) = self.blob_of(pairs.get(1).map(|(_, value)| value)) else {
-            return Some(Value::Int(0));
-        };
+        let blob = self.blob_of(pairs.get(1).map(|(_, value)| value))?;
         Some(Value::Int((FILE_HGLOBAL_BASE + blob) as i64))
     }
 

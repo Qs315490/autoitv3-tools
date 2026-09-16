@@ -145,6 +145,41 @@ fn the_layer_answers_the_whole_chain_with_real_memory() {
 }
 
 #[test]
+fn a_null_module_is_the_module_the_layer_stands_in_for() {
+    // A script need not ask for the module handle first: `FindResourceW(0, …)`
+    // is the shorter spelling of the same thing, and the emulation layer answers
+    // it (it reads the name and the type and never looks at the module). This
+    // layer has to answer it too, or the same script resolves its payload off
+    // Windows and comes back empty on it.
+    let dir = scratch("null-module");
+    std::fs::write(dir.join("payload.bin"), b"named payload").unwrap();
+
+    let mut files = ResourceFiles::default();
+    files.with_dirs([dir.clone()]);
+    files.with_aliases([("CFGDATA".to_string(), "payload.bin".to_string())]);
+    let mut layer = FileResourceLayer::new(files).expect("a layer");
+
+    let handle = dll(
+        &mut layer,
+        "FindResourceW",
+        &[Value::Int(0), Value::str("CFGDATA"), Value::Int(10)],
+    );
+    assert_ne!(handle.to_int(), 0, "a NULL module still finds the file");
+
+    let size = dll(&mut layer, "SizeofResource", &[Value::Int(0), handle.clone()]);
+    assert_eq!(size.to_int(), 13);
+
+    let global = dll(&mut layer, "LoadResource", &[Value::Int(0), handle]);
+    let pointer = dll(&mut layer, "LockResource", &[global]);
+    let bytes = unsafe {
+        std::slice::from_raw_parts(pointer.to_int() as usize as *const u8, size.to_int() as usize)
+    };
+    assert_eq!(bytes, b"named payload");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn calls_that_are_not_the_layers_are_left_alone() {
     // Anything without the sentinel handle belongs to the native layer: a real
     // module's resource, or a `DllCall` that has nothing to do with resources.
@@ -161,8 +196,13 @@ fn calls_that_are_not_the_layers_are_left_alone() {
     };
     for (function, args) in [
         ("GetModuleHandleW", vec![Value::str("kernel32.dll")]),
+        ("FindResourceW", vec![Value::str("kernel32.dll"), Value::str("CFGDATA"), Value::Int(10)]),
         ("FindResourceW", vec![Value::Int(0x7fff_0000), Value::str("CFGDATA"), Value::Int(10)]),
         ("SizeofResource", vec![Value::Int(0x7fff_0000), Value::Int(1)]),
+        // A `NULL` module is ours, but a handle we never issued is not: a real
+        // `HRSRC` from some other module stays the native layer's to describe.
+        ("SizeofResource", vec![Value::Int(0), Value::Int(0x7fff_0000)]),
+        ("LoadResource", vec![Value::Int(0), Value::Int(0x7fff_0000)]),
         ("LoadResource", vec![Value::Int(0x7fff_0000), Value::Int(1)]),
         ("LockResource", vec![Value::Int(0x7fff_0000)]),
         ("GetTickCount", vec![]),
