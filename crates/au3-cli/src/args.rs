@@ -484,13 +484,29 @@ pub fn wrapper_resources(program: &Program) -> Vec<(String, String)> {
     out
 }
 
+/// Whether `--wrapper-notes` asked for the build fingerprint.
+///
+/// The note is printed where the script is loaded, which is several call frames
+/// below the command that owns the flag, and the answer cannot change while the
+/// process lives — the same reason the language is a process-global too.
+static WRAPPER_NOTES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turn the `#AutoIt3Wrapper_*` fingerprint note on (`--wrapper-notes`).
+pub fn set_wrapper_notes(on: bool) {
+    WRAPPER_NOTES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Note the `#AutoIt3Wrapper_*` settings a script carries, once per process.
 ///
 /// The wrapper consumed them at build time — that is where a build's resources,
 /// version info, x64 stub and UPX packing came from — so nothing here acts on
 /// them. They are the build's *fingerprint*, which is what an analyst wants to
-/// see: which packer knobs produced the thing in hand.
+/// see: which packer knobs produced the thing in hand. Off unless
+/// `--wrapper-notes` asked: it is diagnostic output, not part of a run.
 fn note_wrapper_directives(program: &Program) {
+    if !WRAPPER_NOTES.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     /// Longest setting shown before the line would stop being readable.
     const SHOWN: usize = 6;
     /// Longest argument kept per setting (paths can be long).

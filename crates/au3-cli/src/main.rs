@@ -34,6 +34,12 @@ fn main() {
     autoitv3_i18n::set_lang(i18n_cli::lang_from_args());
     let cli = i18n_cli::parse();
 
+    // The build fingerprint is a diagnostic, not part of the run: it is off
+    // unless `--wrapper-notes` asked for it. The note is printed where the
+    // script is loaded, well below the flag's owner, so it reads a switch the
+    // way the language does.
+    args::set_wrapper_notes(cli.wrapper_notes);
+
     // The elevated copy of an `#RequireAdmin` run is created by the shell
     // service, which hands it a console of its own — the output would open in a
     // second window. Attaching to the launcher's console first puts everything

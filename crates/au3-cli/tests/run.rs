@@ -162,7 +162,7 @@ fn the_wrapper_resource_table_names_the_file_to_read() {
     let dir = path.parent().expect("script dir");
     std::fs::write(dir.join("payload.bin"), b"named payload").expect("write payload");
 
-    let out = au3(&["run", path.to_str().unwrap()]);
+    let out = au3(&["run", path.to_str().unwrap(), "--wrapper-notes"]);
     assert!(out.contains("13|named payload"), "got:\n{out}");
     assert!(out.contains("Res_File_Add=payload.bin"), "the note names it: got:\n{out}");
 }
@@ -207,6 +207,10 @@ fn build_directives_answer_the_macros_and_show_up_in_the_notes() {
     let path = script("wrapper-facts", body);
     let out = au3(&["run", path.to_str().unwrap()]);
     assert!(out.contains("x64=0 unicode=1"), "the build says x86: got:\n{out}");
+    // The fingerprint is diagnostic output: off unless asked for.
+    assert!(!out.contains("AutoIt3Wrapper settings"), "off by default: got:\n{out}");
+
+    let out = au3(&["run", path.to_str().unwrap(), "--wrapper-notes"]);
     assert!(out.contains("AutoIt3Wrapper settings (3)"), "got:\n{out}");
     assert!(out.contains("UseUpx=Y"), "got:\n{out}");
 

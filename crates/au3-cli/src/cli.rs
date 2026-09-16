@@ -35,6 +35,15 @@ pub struct Cli {
           value_parser = clap::builder::PossibleValuesParser::new(["auto", "en", "zh-CN"]))]
     pub lang: String,
 
+    /// Report the `#AutoIt3Wrapper_*` settings the script carries
+    ///
+    /// The wrapper consumed them at build time — they are where a build's
+    /// resources, version info, x64 stub and UPX packing came from — so nothing
+    /// acts on them, but they are the build's fingerprint: which packer knobs
+    /// produced the thing being analysed. Off by default.
+    #[arg(long = "wrapper-notes", global = true)]
+    pub wrapper_notes: bool,
+
     /// (internal) Attach to the console of the process that started us
     ///
     /// The elevated copy an `#RequireAdmin` run starts is given a console of
