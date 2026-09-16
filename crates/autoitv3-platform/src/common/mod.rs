@@ -480,14 +480,13 @@ impl CommonPlatform {
             };
             let bytes = e.bytes.as_deref().unwrap_or(&[]);
             let start = e.cursor.min(bytes.len());
-            // A non-positive count means "to the end of the file".
-            let end = if count <= 0 {
-                bytes.len()
-            } else {
-                (start + count.max(0) as usize).min(bytes.len())
-            };
+            let (end, read) = read_span(start, count, bytes.len());
             e.cursor = end;
-            ctx.set_error(0, 0);
+            if let Some(eof) = eof_error(read, count) {
+                ctx.set_error(eof, 0);
+                return Value::str("");
+            }
+            ctx.set_error(0, read as i64);
             return Value::Binary(std::rc::Rc::new(bytes[start..end].to_vec()));
         }
         self.ensure_text(handle);
@@ -497,14 +496,13 @@ impl CommonPlatform {
         let text = e.text.as_deref().unwrap_or("");
         let chars: Vec<char> = text.chars().collect();
         let start = e.cursor.min(chars.len());
-        // A non-positive count means "to the end of the file".
-        let end = if count <= 0 {
-            chars.len()
-        } else {
-            (start + count as usize).min(chars.len())
-        };
+        let (end, read) = read_span(start, count, chars.len());
         e.cursor = end;
-        ctx.set_error(0, 0);
+        if let Some(eof) = eof_error(read, count) {
+            ctx.set_error(eof, 0);
+            return Value::str("");
+        }
+        ctx.set_error(0, read as i64);
         Value::Str(chars[start..end].iter().collect())
     }
 
@@ -536,17 +534,19 @@ impl CommonPlatform {
                     ctx.set_error(0, 0);
                     Value::Str(l)
                 }
+                // Measured: a line number past the last line is EOF, `@error = -1`.
                 None => {
-                    ctx.set_error(1, 0);
+                    ctx.set_error(-1, 0);
                     Value::str("")
                 }
             }
         } else {
             // `FileReadLine($handle)` reads the next line from the cursor and
-            // advances it; reading past the end of the file is `@error = 1`.
+            // advances it; reading past the end of the file is `@error = -1`
+            // (measured, like the numbered form).
             let start = e.cursor.min(chars.len());
             if start >= chars.len() {
-                ctx.set_error(1, 0);
+                ctx.set_error(-1, 0);
                 return Value::str("");
             }
             let end = chars[start..]
@@ -1607,6 +1607,28 @@ fn map_value_back(value: Value, map: &crate::pathmap::PathMap) -> Value {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/// Where a `FileRead` of `count` items lands, and how many it gets.
+///
+/// A count of 0 — or no count at all — means "the rest of the file".
+fn read_span(start: usize, count: i64, len: usize) -> (usize, usize) {
+    let end = if count <= 0 {
+        len
+    } else {
+        (start + count as usize).min(len)
+    };
+    (end, end - start)
+}
+
+/// The `@error` a `FileRead` reports, when it reports one.
+///
+/// Measured against 3.3.16: a positive count that cannot be satisfied at all is
+/// EOF — `@error = -1` with `@extended = 0` — while "the rest of the file" is
+/// never an error, not even for an empty file (which reads as `@error = 0`).
+/// A chunked reader has to see that -1: it is what ends the loop.
+fn eof_error(read: usize, count: i64) -> Option<i64> {
+    (read == 0 && count > 0).then_some(-1)
+}
 
 fn arg_str(args: &[Value], i: usize) -> String {
     args.get(i).map(|v| v.to_autoit_string()).unwrap_or_default()

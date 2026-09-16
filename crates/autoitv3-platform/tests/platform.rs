@@ -215,7 +215,8 @@ fn file_read_line_is_one_based_and_reports_eof() {
     Return $two & "|" & $gone & "|" & $e"#,
         p = path.display()
     );
-    assert_eq!(text(&body), "beta||1");
+    // Measured: a line number past the last line is EOF, `@error = -1`.
+    assert_eq!(text(&body), "beta||-1");
 }
 
 #[test]
@@ -235,8 +236,8 @@ fn file_read_line_without_a_line_number_reads_sequentially() {
     Return $a & "," & $b & "," & $c & "," & $d & "," & $e & "," & $err"#,
         p = path.display()
     );
-    // Empty lines are real lines; only reading past the end is an error.
-    assert_eq!(text(&body), "one,two,,four,,1");
+    // Empty lines are real lines; only reading past the end is EOF (-1).
+    assert_eq!(text(&body), "one,two,,four,,-1");
 }
 
 #[test]
@@ -876,6 +877,66 @@ fn a_binary_file_read_hands_back_bytes() {
         p = path.display()
     );
     assert_eq!(text(&body), "1|4|0x00FF1080");
+}
+
+#[test]
+fn file_read_reports_the_count_and_the_eof_error() {
+    // Measured on the official 3.3.16 x64 interpreter: a positive count reports
+    // how many characters it got in `@extended`, and a count that cannot be
+    // satisfied at all is EOF - `@error = -1`, `@extended = 0`, an empty
+    // string. "The rest of the file" (count 0 or omitted) is not an error even
+    // when nothing is left, and neither is an empty file read that way. A
+    // chunked reader ends its loop on that -1, so getting it wrong means the
+    // loop never ends.
+    let dir = scratch("chunks");
+    let path = dir.join("ten.txt");
+    std::fs::write(&path, "0123456789").unwrap();
+    let empty = dir.join("empty.txt");
+    std::fs::write(&empty, "").unwrap();
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 0)
+    Local $a = FileRead($h, 4)
+    Local $xa = @extended
+    Local $b = FileRead($h, 4)
+    Local $c = FileRead($h, 4)
+    Local $xc = @extended
+    Local $d = FileRead($h, 4)
+    Local $ed = @error, $xd = @extended
+    Local $e = FileRead($h)
+    Local $ee = @error
+    FileClose($h)
+    Local $he = FileOpen("{e}", 0)
+    Local $f = FileRead($he, 10)
+    Local $ef = @error, $xf = @extended
+    Local $g = FileRead($he)
+    Local $eg = @error
+    FileClose($he)
+    Return $a & ":" & $xa & ":" & $b & ":" & $c & ":" & $xc & ":" & $d & ":" & $ed & ":" & $xd & ":" & $e & ":" & $ee & ":" & $f & ":" & $ef & ":" & $xf & ":" & $g & ":" & $eg"#,
+        p = path.display(),
+        e = empty.display()
+    );
+    assert_eq!(text(&body), "0123:4:4567:89:2::-1:0::0::-1:0::0");
+}
+
+#[test]
+fn a_binary_read_at_eof_hands_back_an_empty_string() {
+    // Measured: once a `$FO_BINARY` handle is at the end, a countable read
+    // answers `String` - not an empty `Binary` - with `@error = -1`.
+    let dir = scratch("bineof");
+    let path = dir.join("k.bin");
+    std::fs::write(&path, [0x41u8, 0x42]).unwrap();
+    let body = format!(
+        r#"Local $h = FileOpen("{p}", 16)
+    Local $a = FileRead($h)
+    Local $t = VarGetType($a)
+    Local $b = FileRead($h, 4)
+    Local $e = @error, $x = @extended
+    Local $bt = VarGetType($b)
+    FileClose($h)
+    Return $t & ":" & $bt & ":" & $e & ":" & $x"#,
+        p = path.display()
+    );
+    assert_eq!(text(&body), "Binary:String:-1:0");
 }
 
 #[test]
