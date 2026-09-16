@@ -218,6 +218,26 @@ impl DebugHost for Runtime {
         Runtime::evaluate_expression(self, source, span)
     }
 
+    fn evaluate_in_frame(&mut self, depth: usize, source: &str) -> Result<Value, RuntimeError> {
+        let hidden = self.hide_frames_below(depth);
+        let span = self.frames.last().and_then(|f| f.span).unwrap_or_default();
+        let out = self.execute_source(source, span);
+        self.frames.extend(hidden);
+        out
+    }
+
+    fn evaluate_expression_in_frame(
+        &mut self,
+        depth: usize,
+        source: &str,
+    ) -> Result<Value, RuntimeError> {
+        let hidden = self.hide_frames_below(depth);
+        let span = self.frames.last().and_then(|f| f.span).unwrap_or_default();
+        let out = Runtime::evaluate_expression(self, source, span);
+        self.frames.extend(hidden);
+        out
+    }
+
     fn breakpoints(&self) -> Vec<Breakpoint> {
         self.breakpoints.items().to_vec()
     }
@@ -1853,6 +1873,17 @@ impl Runtime {
             self.write_var_key(item.name.key(), value, scope, span);
         }
         Ok(())
+    }
+
+    /// Take off the frames deeper than `depth` (the selected one), so a
+    /// variable lookup starts there and walks outward. The caller puts them
+    /// back with `self.frames.extend(..)`.
+    fn hide_frames_below(&mut self, depth: usize) -> Vec<Frame> {
+        if depth + 1 < self.frames.len() {
+            self.frames.split_off(depth + 1)
+        } else {
+            Vec::new()
+        }
     }
 
     /// The value a declaration gives one variable: its initializer, else the

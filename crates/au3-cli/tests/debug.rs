@@ -816,6 +816,26 @@ Main()
     assert!(out.contains("[trace] 6:"), "Main body missing:\n{out}");
 }
 
+/// `frame`/`up`/`down` select a frame the way gdb does: numbering is
+/// innermost-first, and `print`/`info locals` act on the selected frame.
+#[test]
+fn frames_can_be_selected_like_gdb() {
+    let path = script(
+        "frames",
+        "Func Inner($a)\n    Local $r = $a + 1\n    Return $r\nEndFunc\n\nFunc Outer($x)\n    Local $y = $x * 2\n    Local $z = Inner($y)\n    Return $z\nEndFunc\n\nConsoleWrite(Outer(5) & @CRLF)\n",
+    );
+    let out = shell(
+        &path,
+        &["break 3", "run", "bt", "frame 1", "print $y", "down", "print $r", "quit"],
+    );
+    assert!(out.contains("#0  Inner(a=10) at script.au3:3"), "got:\n{out}");
+    assert!(out.contains("#1  Outer(x=5) at script.au3:8"), "got:\n{out}");
+    // In `Outer` the local is there and the inner frame's parameter is not.
+    assert!(has_line(&out, "10"), "the outer frame's local:\n{out}");
+    // `down` comes back to the innermost frame, where `$r` lives.
+    assert!(has_line(&out, "11"), "back in the inner frame:\n{out}");
+}
+
 #[test]
 fn untilcall_stops_before_a_builtin_call() {
     const CALLS: &str = r#"Func Main()

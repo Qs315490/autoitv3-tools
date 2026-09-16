@@ -397,6 +397,29 @@ pub trait DebugHost {
     /// `print` that quietly assigned would be a nasty surprise.
     fn evaluate_expression(&mut self, source: &str) -> Result<Value, RuntimeError>;
 
+    /// Evaluate `source` as if the interpreter were stopped in the frame
+    /// [`FrameInfo::depth`] names: the frames deeper than it are hidden while
+    /// the evaluation runs, so a variable lookup starts there and walks outward
+    /// — gdb's "the selected frame decides what `print` sees".
+    ///
+    /// The default ignores the depth and evaluates in the current frame, which
+    /// is what a stub host with no real stack wants.
+    fn evaluate_in_frame(&mut self, depth: usize, source: &str) -> Result<Value, RuntimeError> {
+        let _ = depth;
+        self.evaluate(source)
+    }
+
+    /// [`evaluate_in_frame`](Self::evaluate_in_frame) for an expression (what
+    /// `print` uses).
+    fn evaluate_expression_in_frame(
+        &mut self,
+        depth: usize,
+        source: &str,
+    ) -> Result<Value, RuntimeError> {
+        let _ = depth;
+        self.evaluate_expression(source)
+    }
+
     /// The current breakpoints.
     fn breakpoints(&self) -> Vec<Breakpoint>;
 

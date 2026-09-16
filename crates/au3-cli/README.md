@@ -287,6 +287,7 @@ Breakpoint 1, line 69
 | `next [n]` / `n` | 单步（或连跑 `n` 步），不进入调用（停在同层或更浅的语句） |
 | `finish` / `fin` | 跑到当前函数返回 |
 | `until <行表达式>` / `u` | `tbreak <行表达式>` 的别名（跑到某一行） |
+| `frame [n]` / `f`、`up [n]`、`down [n]` | 选帧，编号与 gdb 一致（`#0` 是最内层）：选完 `print`、`info locals`（`list` 也按该帧的行）都在那一帧里求值，`up` 往调用者走、`down` 往最内层走 |
 | `untilcall <函数>` / `untilc` | 跑到下一次调用该函数，**在它执行之前**停下（内置函数也行，`tbreak` 对内置函数无效）；一次性，停完就清掉 |
 | `untilret <函数>` / `untilr` | 跑到下一次调用该函数**返回**，停在调用之后的那条语句（想问"它返回了什么""框点掉之后"用这个） |
 | `untilgui` / `gui` | `untilcall GUICreate` 的简写，停在建窗口之前 |

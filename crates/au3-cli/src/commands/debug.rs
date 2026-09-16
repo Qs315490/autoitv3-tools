@@ -49,7 +49,7 @@ use std::rc::Rc;
 
 use autoitv3_ast::span::Span;
 use autoitv3_ast::Program;
-use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, StopReason};
+use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, FrameInfo, StopReason};
 use autoitv3_runtime::RuntimeError;
 use autoitv3_runtime::Runtime;
 use clap::Args;
@@ -377,7 +377,7 @@ const COMMAND_WORDS: &[&str] = &[
     "run", "restart", "continue", "c", "step", "s", "next", "n", "finish", "fin", "until", "u",
     "untilcall", "untilc", "untilret", "untilr", "untilgui", "gui", "stopat", "sa", "break",
     "b", "tbreak", "tb",
-    "jmp", "j",
+    "jmp", "j", "frame", "f", "up", "down",
     "delete", "d", "del", "enable", "disable", "print", "p", "set", "info", "i", "backtrace",
     "bt", "where", "w", "list", "l", "eval", "watch", "unwatch", "ignore", "commands",
     "nostop", "stop", "catch", "source", "trace", "help", "h", "?", "quit", "q", "exit",
@@ -602,6 +602,10 @@ struct Shell {
     /// `untilret <name>`: stop at the statement after the next call to this
     /// builtin/function returns (lower-case). One-shot.
     until_ret: Option<String>,
+    /// `frame <n>`/`up`/`down`: the selected frame, numbered the way gdb
+    /// numbers a stack (0 = innermost). `None` is the innermost frame, which is
+    /// also what every stop resets to.
+    selected_frame: Option<usize>,
     /// `stopat <name>...`: stop *before* every call to any of these
     /// builtin/functions (lower-case), so their arguments — a dialog's text, a
     /// DLL name — can be read without the call running. Several targets may be
@@ -675,6 +679,7 @@ impl Shell {
             call_stack: Vec::new(),
             until_call: None,
             until_ret: None,
+            selected_frame: None,
             stop_at: Vec::new(),
             caught_call: None,
             until_hit: false,
@@ -929,6 +934,14 @@ impl Shell {
             }
             "i" | "info" => {
                 self.info_command(rest.trim(), host);
+                Outcome::Stay
+            }
+            "frame" | "f" => {
+                self.frame_command(rest.trim(), host);
+                Outcome::Stay
+            }
+            "up" | "down" => {
+                self.move_frame_command(word.as_str(), rest.trim(), host);
                 Outcome::Stay
             }
             "bt" | "where" | "backtrace" | "w" => {
@@ -1530,8 +1543,13 @@ impl Shell {
             return;
         }
         // An expression, so `p $i = 5` compares rather than assigns — `set` is
-        // the command that assigns, and it says so.
-        self.show(host.evaluate_expression(expr));
+        // the command that assigns, and it says so. With a frame selected the
+        // evaluation happens there, the way gdb's `print` works.
+        let value = match self.frame_depth(host.frames().len()) {
+            Some(depth) => host.evaluate_expression_in_frame(depth, expr),
+            None => host.evaluate_expression(expr),
+        };
+        self.show(value);
     }
 
     fn set_command(&mut self, rest: &str, host: &mut dyn DebugHost) {
@@ -1612,7 +1630,8 @@ impl Shell {
             return;
         }
         let frames = host.frames();
-        let Some(frame) = frames.last() else {
+        let index = self.frame_index(frames.len());
+        let Some(frame) = frames.get(index) else {
             // Top-level code runs without a frame; its variables are globals.
             println!("the top level has no locals — see `info globals`");
             return;
@@ -1652,10 +1671,7 @@ impl Shell {
             return;
         }
         let frames = host.frames();
-        let file = Path::new(&self.script)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.script.clone());
+        let file = self.script_file();
         if frames.is_empty() {
             // Top-level code: there is no activation record to show, but the
             // position still is one.
@@ -1665,22 +1681,137 @@ impl Shell {
             }
             return;
         }
-        // Innermost first, numbered from zero, the way gdb prints a stack; a
-        // frame's parameters are shown the way gdb shows arguments.
+        // Innermost first, numbered from zero, the way gdb prints a stack. The
+        // selected frame (after `frame`/`up`/`down`) is tagged, which gdb leaves
+        // to the `frame` command and pdb marks with `>`.
+        let selected = self.selected_frame.unwrap_or(0);
+        let file = self.script_file();
         for (i, frame) in frames.iter().rev().enumerate() {
-            let name = frame.function.as_deref().unwrap_or("<script>");
-            let args: Vec<String> = frame
-                .params
-                .iter()
-                .map(|(k, v)| format!("{k}={}", format_value(v)))
-                .collect();
-            // gdb always prints the parentheses, empty ones included.
-            let args = format!("({})", args.join(", "));
-            let at = frame
-                .span
-                .map(|s| format!("{file}:{}", s.start.line))
-                .unwrap_or_else(|| "-".to_string());
-            println!("#{i}  {name}{args} at {at}");
+            let tag = if i == selected && selected != 0 {
+                "  (selected)"
+            } else {
+                ""
+            };
+            println!("{}{tag}", self.frame_line(i, frame, &file));
+        }
+    }
+
+    /// One `bt`/`frame` line: `#0  Name(a=1, b="x") at file:line`.
+    fn frame_line(&self, number: usize, frame: &FrameInfo, file: &str) -> String {
+        let name = frame.function.as_deref().unwrap_or("<script>");
+        let args: Vec<String> = frame
+            .params
+            .iter()
+            .map(|(k, v)| format!("{k}={}", format_value(v)))
+            .collect();
+        // gdb always prints the parentheses, empty ones included.
+        let args = format!("({})", args.join(", "));
+        let at = frame
+            .span
+            .map(|s| format!("{file}:{}", s.start.line))
+            .unwrap_or_else(|| "-".to_string());
+        format!("#{number}  {name}{args} at {at}")
+    }
+
+    /// The file name `bt` shows for every frame (one script, so one file).
+    fn script_file(&self) -> String {
+        Path::new(&self.script)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.script.clone())
+    }
+
+    /// The frame the commands should act on, as an index into `host.frames()`
+    /// (which is outermost first). The innermost frame is the default.
+    fn frame_index(&self, count: usize) -> usize {
+        match self.selected_frame {
+            Some(number) => count.saturating_sub(1 + number),
+            None => count.saturating_sub(1),
+        }
+    }
+
+    /// The same index as the `depth` [`FrameInfo::depth`] reports, for the host
+    /// calls that evaluate in a frame.
+    fn frame_depth(&self, count: usize) -> Option<usize> {
+        match self.selected_frame {
+            Some(number) if count > 1 => Some(count.saturating_sub(1 + number)),
+            _ => None,
+        }
+    }
+
+    /// `frame [number]` — select a frame (what gdb's `frame` does). With no
+    /// number it reports the selected one.
+    fn frame_command(&mut self, rest: &str, host: &mut dyn DebugHost) {
+        if !self.paused {
+            println!("the script is not stopped — use `run` first");
+            return;
+        }
+        let count = host.frames().len();
+        if count == 0 {
+            println!("only top-level code is on the stack (`#0  <script>`)");
+            return;
+        }
+        if !rest.is_empty() {
+            let number = rest.split_whitespace().next().unwrap_or("").parse::<usize>();
+            match number {
+                Ok(n) if n < count => self.selected_frame = (n != 0).then_some(n),
+                Ok(n) => {
+                    println!("no frame {n}: the stack has {count} (0..{})", count - 1);
+                    return;
+                }
+                Err(_) => {
+                    println!("usage: frame [number]");
+                    return;
+                }
+            }
+        }
+        self.show_frame(host);
+    }
+
+    /// `up [n]` / `down [n]` — move the selection: `up` goes toward the caller
+    /// (gdb numbers grow outward), `down` toward the innermost frame.
+    fn move_frame_command(&mut self, word: &str, rest: &str, host: &mut dyn DebugHost) {
+        if !self.paused {
+            println!("the script is not stopped — use `run` first");
+            return;
+        }
+        let count = host.frames().len();
+        if count == 0 {
+            println!("only top-level code is on the stack");
+            return;
+        }
+        let step = rest
+            .split_whitespace()
+            .next()
+            .map(|w| w.parse::<usize>().unwrap_or(1))
+            .unwrap_or(1)
+            .max(1);
+        let current = self.selected_frame.unwrap_or(0);
+        let next = if word.eq_ignore_ascii_case("up") {
+            (current + step).min(count - 1)
+        } else {
+            current.saturating_sub(step)
+        };
+        self.selected_frame = (next != 0).then_some(next);
+        self.show_frame(host);
+    }
+
+    /// Report the selected frame the way gdb's `frame` does: the line, then the
+    /// source at that frame's position.
+    fn show_frame(&mut self, host: &mut dyn DebugHost) {
+        let frames = host.frames();
+        let index = self.frame_index(frames.len());
+        let Some(frame) = frames.get(index) else {
+            println!("no frames — only top-level code is on the stack");
+            return;
+        };
+        let number = frames.len() - 1 - index;
+        let file = self.script_file();
+        println!("{}", self.frame_line(number, frame, &file));
+        if let Some(span) = frame.span {
+            if let Some(line) = self.lines.get(span.start.line.saturating_sub(1) as usize) {
+                println!("{}  {}", span.start.line, line.trim());
+            }
         }
     }
 
@@ -1863,7 +1994,9 @@ Commands (`help <cmd>` describes one)
   print <expr>, p        evaluate an expression in the current frame
   set $x = <expr>        assign to a variable in the current frame
   info <topic>           breakpoints | locals | globals | functions | frame
-  backtrace, bt          show the call stack
+  backtrace, bt          show the call stack (innermost first, like gdb)
+  frame [n], f           select a frame: what `print`/`info locals`/`list` see
+  up [n], down [n]       move the selection outward / inward
   list [line-expr], l    show source around the stop point
   trace on|off           echo every statement (filters: depth N, skip Func)
   catch on|off           stop where an uncaught error is raised (default on)
@@ -2009,6 +2142,7 @@ impl Debugger for Shell {
             }
             StopReason::Breakpoint { id, line } => {
                 self.paused = true;
+                self.selected_frame = None;
                 if self.jmp_pending.iter().any(|t| t == id) {
                     // A `jmp` target: one-shot, so remove it on arrival.
                     self.jmp_pending.retain(|t| t != id);
@@ -2023,6 +2157,7 @@ impl Debugger for Shell {
             }
             StopReason::Call { name } => {
                 self.paused = true;
+                self.selected_frame = None;
                 match self.caught_call.take() {
                     Some(call) => println!("Catchpoint: {call}"),
                     None => println!("Catchpoint: {name}"),
@@ -2033,6 +2168,7 @@ impl Debugger for Shell {
             }
             StopReason::Step | StopReason::Pause => {
                 self.paused = true;
+                self.selected_frame = None;
                 match self.current {
                     Some((span, _)) => println!("Stopped at line {}", span.start.line),
                     None => println!("Stopped"),
@@ -2346,7 +2482,11 @@ fn help_for(topic: &str) -> String {
         }
         "set" => "set $var = <expr> — assign in the stopped frame".to_string(),
         "info" | "i" => "info breakpoints|locals|globals|functions|frame".to_string(),
-        "backtrace" | "bt" | "where" => "backtrace — the call stack, innermost last".to_string(),
+        "backtrace" | "bt" | "where" => "backtrace — the call stack, innermost first (gdb numbering: #0 is the innermost)".to_string(),
+        "frame" | "f" => {
+            "frame [n] — select a frame (gdb numbering: #0 innermost); print/info locals act there".to_string()
+        }
+        "up" | "down" => "up [n] / down [n] — move the frame selection toward the caller / innermost".to_string(),
         "list" | "l" => "list [line-expr] — eight source lines around the stop point".to_string(),
         "trace" => {
             "trace on|off | trace depth <n> | trace skip <func> — echo statements, optionally filtered".to_string()
