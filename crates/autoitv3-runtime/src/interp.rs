@@ -2082,6 +2082,23 @@ impl Runtime {
     fn decl_value(&mut self, item: &VarDeclItem, span: Span) -> Result<Value, RuntimeError> {
         if let Some(init) = &item.init {
             let literals = self.eval_expr(init)?;
+            if item.dims.is_empty() {
+                return Ok(literals);
+            }
+            // Every bracket empty (`[]`, `[][]`): the initializer decides the shape.
+            let auto = item
+                .dims
+                .iter()
+                .all(|d| matches!(d.kind, ExprKind::Lit(Lit { kind: LitKind::Null, .. })));
+            if auto {
+                // A
+                // nested literal makes it *rectangular* - rows are the sub-arrays,
+                // the longest row sets the width, and a cell a short row does not
+                // fill is an empty string. Measured on the official x64
+                // interpreter: ``[[1], [2, 3], [4, 5, 6]]`` is 3x3 with
+                // `VarGetType($a[0][1])` "String", `StringLen` 0.
+                return Ok(rectangular(&literals));
+            }
             if !item.dims.is_empty() && !is_empty_brackets(&item.dims) {
                 // Both given: the *declared dimensions* are the shape, the literal
                 // only fills the elements it names, and the rest stay empty strings.
@@ -3025,4 +3042,42 @@ fn fill_from_literal(
         }
     }
     Ok(())
+}
+
+/// The array an auto-sized declaration builds from its initializer.
+///
+/// A flat literal is used as it is. A nested one becomes **rectangular**: the rows
+/// are the sub-arrays, the longest one sets the width, and a cell a short row does
+/// not fill is an empty string (measured - see `decl_value`).
+fn rectangular(literals: &Value) -> Value {
+    let Value::Array(rows) = literals else {
+        return literals.clone();
+    };
+    let rows = rows.borrow();
+    if !rows.iter().any(|row| matches!(row, Value::Array(_))) {
+        return literals.clone();
+    }
+    let width = rows
+        .iter()
+        .map(|row| match row {
+            Value::Array(items) => items.borrow().len(),
+            _ => 1,
+        })
+        .max()
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        let mut cells = vec![Value::Str(String::new()); width];
+        match row {
+            Value::Array(items) => {
+                for (slot, value) in cells.iter_mut().zip(items.borrow().iter()) {
+                    *slot = value.clone();
+                }
+            }
+            other if width > 0 => cells[0] = other.clone(),
+            _ => {}
+        }
+        out.push(Value::array(cells));
+    }
+    Value::array(out)
 }

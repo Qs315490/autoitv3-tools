@@ -2389,3 +2389,19 @@ fn an_initializer_larger_than_the_declaration_is_an_error() {
     let mut rt = rt(src);
     assert!(rt.call_function("F", vec![]).is_err(), "must not silently truncate");
 }
+
+
+#[test]
+fn an_auto_sized_nested_literal_is_rectangular() {
+    // Measured on the official x64 interpreter: rows are the sub-arrays, the
+    // longest row sets the width, and a short row is padded with empty strings -
+    // both for an auto-sized declaration and for one with explicit dimensions.
+    let src = "Func F()\n\
+               \x20   Local $a[][] = [[1], [2, 3], [4, 5, 6]]\n\
+               \x20   Local $d[2][3] = [[1], [2, 3]]\n\
+               \x20   Return UBound($a, 1) & \"x\" & UBound($a, 2) & \":\" & $a[0][0] & \":\" \
+               & StringLen($a[0][1]) & \":\" & $a[2][2] & \":\" & UBound($d, 1) & \"x\" \
+               & UBound($d, 2) & \":\" & $d[0][0] & \":\" & StringLen($d[0][2])\n\
+               EndFunc\n";
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "3x3:1:0:6:2x3:1:0");
+}
