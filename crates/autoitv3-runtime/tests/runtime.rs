@@ -2405,3 +2405,21 @@ fn an_auto_sized_nested_literal_is_rectangular() {
                EndFunc\n";
     assert_eq!(call(src, "F", vec![]).to_autoit_string(), "3x3:1:0:6:2x3:1:0");
 }
+
+
+#[test]
+fn and_or_short_circuit() {
+    // Measured on the official 3.3.16 x64 interpreter: `If (1 = 1 Or $x[0])` never
+    // evaluates `$x[0]` (a fatal subscript error if it ran), `If (1 = 0 And $x[0])`
+    // likewise, and `If (1 = 0 Or $x[0])` does evaluate it. AutoIt's failure idiom
+    // `If (@error Or Not $arr[0])` - with a scalar in `$arr` after a failed
+    // `DllCall` - depends on exactly this.
+    let src = "Func F()\n\
+               \x20   Local $x = 5\n\
+               \x20   Local $n = 0\n\
+               \x20   If (1 = 1 Or $x[0]) Then $n += 1\n\
+               \x20   If (1 = 0 And $x[0]) Then $n += 10\n\
+               \x20   Return $n\n\
+               EndFunc\n";
+    assert_eq!(call(src, "F", vec![]).to_int(), 1);
+}

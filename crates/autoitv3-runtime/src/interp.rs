@@ -1468,7 +1468,28 @@ impl Runtime {
                     },
                 })
             }
-            ExprKind::Binary(op, a, b) => self.eval_binary(op, a, b, e.span),
+            ExprKind::Binary(op, a, b) => {
+                // `And`/`Or` are **short-circuit**, and scripts rely on it: AutoIt's
+                // own failure idiom is `If (@error Or Not $arr[0])`, where `$arr` is
+                // a *scalar* when the call failed - evaluating the right side would
+                // be the fatal "expected Array or Map" error instead of the handler.
+                // Measured on the official 3.3.16 x64 interpreter (under wine):
+                // `If (1 = 1 Or $x[0])` leaves `$x[0]` unevaluated (its fatal
+                // subscript error never fires) and `If (1 = 0 And $x[0])` likewise,
+                // while `If (1 = 0 Or $x[0])` really does evaluate it and dies.
+                if matches!(op, BinaryOp::And | BinaryOp::Or) {
+                    let truth = self.eval_expr(a)?.is_truthy();
+                    let short = match op {
+                        BinaryOp::And => !truth,
+                        _ => truth,
+                    };
+                    if short {
+                        return Ok(Value::Bool(truth));
+                    }
+                    return Ok(Value::Bool(self.eval_expr(b)?.is_truthy()));
+                }
+                self.eval_binary(op, a, b, e.span)
+            }
             ExprKind::Paren(p) => self.eval_expr(p),
             // Object member access resolves through the platform: property
             // reads for `Member`, method dispatch for `MethodCall`.
