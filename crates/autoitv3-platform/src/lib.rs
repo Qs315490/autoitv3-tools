@@ -100,7 +100,7 @@ use autoitv3_runtime::Runtime;
 /// it by name (`au3 run --gui native`); `None` elsewhere, where there is no
 /// native Win32 to draw on. The alternatives off Windows are
 /// `autoitv3-gui-egui`'s offscreen `EguiBackend` (`gui-egui`), its live window
-/// (`gui-window`), or an embedder's own backend through
+/// (`gui-egui-window`), or an embedder's own backend through
 /// [`WindowsEmulation::with_gui_backend`].
 pub fn native_gui_backend() -> Option<Box<dyn winemu::GuiBackend>> {
     #[cfg(windows)]

@@ -32,7 +32,7 @@ default = []
 gui-egui = [
     "dep:autoitv3-gui-egui",
     "autoitv3-gui-egui/window",
-    "autoitv3-platform/gui-window",
+    "autoitv3-platform/gui-egui-window",
 ]
 
 [[bin]]
