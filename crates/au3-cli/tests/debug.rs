@@ -65,8 +65,8 @@ fn run_full(path: &Path, flags: &[&str], commands: &[&str], input: &str) -> Stri
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_au3"));
     cmd.arg("debug").arg(path);
     // A test must never open a real window or dialog, and must not write, spawn
-    // or sleep: `--gui auto` is the native Win32 backend on Windows, where a
-    // `MsgBox` would block the session until somebody clicked it, and the
+    // or sleep. `--deterministic` alone already makes `--gui auto` headless
+    // (see `GuiMode::resolve`); `--gui headless` is belt and braces, and the
     // faithful profile would let the script do whatever it says. Tests that are
     // *about* `--gui` pass their own and are left alone.
     let has = |flag: &str| flags.contains(&flag);
@@ -961,6 +961,27 @@ Main()
         "got:\n{out}"
     );
     assert!(out.contains("Catchpoint: GUICreate(\"hi\")"), "got:\n{out}");
+}
+
+/// `--gui auto` under the deterministic profile means headless (see
+/// `GuiMode::resolve`), which matters most here: the real Win32 backend would
+/// put a `MsgBox` on screen and wait for a click, and a debug session has
+/// somebody at the keyboard only sometimes.
+#[test]
+fn deterministic_debug_makes_auto_headless() {
+    let path = script(
+        "gui-auto-headless",
+        "Local $a = MsgBox(0, \"t\", \"b\", 1)\n",
+    );
+    let out = shell_with(
+        &path,
+        &["--gui", "auto", "--deterministic"],
+        &["run", "quit"],
+    );
+    assert!(
+        out.contains("[winemu] MsgBox(0, \"t\", \"b\") -> 1"),
+        "the dialog was answered, not shown:\n{out}"
+    );
 }
 
 // ---------------------------------------------------------------------------

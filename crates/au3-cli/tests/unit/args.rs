@@ -24,3 +24,15 @@ fn source_text_is_not_a_build() {
     assert!(!is_compiled_build(b"Global $s = \"MZ\"\n"));
     assert!(!is_compiled_build(b"Global $s = \"AU3!EA06\"\n"));
 }
+
+#[test]
+fn auto_is_headless_under_the_deterministic_profile() {
+    // The platform's own backend is the real Win32 one on Windows: windows, and
+    // dialogs that wait for somebody. An analysis must not do that.
+    assert_eq!(GuiMode::Auto.resolve(true), GuiMode::Headless);
+    assert_eq!(GuiMode::Auto.resolve(false), GuiMode::Auto);
+    // An explicit mode is never second-guessed.
+    assert_eq!(GuiMode::Headless.resolve(false), GuiMode::Headless);
+    assert_eq!(GuiMode::Window.resolve(true), GuiMode::Window);
+    assert_eq!(GuiMode::Window.resolve(false), GuiMode::Window);
+}

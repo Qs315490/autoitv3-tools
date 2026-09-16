@@ -85,6 +85,31 @@ fn the_deterministic_profile_refuses_and_says_which_kind() {
     );
 }
 
+/// Under the deterministic profile `--gui auto` has to mean headless: the
+/// platform's own backend is the real Win32 one on Windows, and a `MsgBox`
+/// there waits for somebody to click it. The timeout keeps a regression from
+/// hanging the suite — it would answer `-1` after a second instead.
+#[test]
+fn the_deterministic_profile_makes_auto_headless() {
+    let path = script(
+        "auto-headless",
+        "Local $a = MsgBox(0, \"t\", \"b\", 1)\nConsoleWrite(\"answer=\" & $a & @CRLF)\n",
+    );
+    let (ok, out) = au3(&[
+        "run",
+        &path.to_string_lossy(),
+        "--deterministic",
+        "--gui",
+        "auto",
+    ]);
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("[winemu] MsgBox(0, \"t\", \"b\") -> 1"),
+        "the dialog was answered, not shown:\n{out}"
+    );
+    assert!(out.contains("answer=1"), "got:\n{out}");
+}
+
 #[test]
 fn a_refused_kind_is_reported_once() {
     // Two writes, one note: the second attempt is the same kind.

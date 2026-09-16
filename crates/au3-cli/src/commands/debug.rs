@@ -127,9 +127,12 @@ pub struct DebugArgs {
     pub compiled: CompiledArgs,
 
     /// GUI backend: `auto` (the default) is the platform's own — real Win32
-    /// controls on Windows, nothing drawn elsewhere; `headless` answers the GUI
-    /// functions without drawing anything on any host; `window` runs the session
-    /// under an eframe window (needs a build with the `gui-window` feature)
+    /// controls on Windows, nothing drawn elsewhere — except under the
+    /// deterministic profile, where it means `headless` (an analysis must not
+    /// open windows or dialogs that wait for somebody); `headless` answers the
+    /// GUI functions without drawing anything on any host; `window` runs the
+    /// session under an eframe window (needs a build with the `gui-window`
+    /// feature)
     #[arg(long = "gui", value_name = "MODE", default_value = "auto")]
     pub gui: GuiMode,
 
@@ -177,7 +180,13 @@ type GuiFactory = Box<dyn Fn() -> Box<dyn autoitv3_platform::winemu::GuiBackend>
 /// main thread to the window loop (winit insists on it), so it moves the whole
 /// session — shell included — onto `LiveBackend`'s worker instead.
 pub fn run(args: &DebugArgs) -> CliResult<()> {
-    match args.gui {
+    // `auto` is the platform's own backend, except under the deterministic
+    // profile, where it is headless: an analysis must not open windows or
+    // blocking dialogs (see `GuiMode::resolve`).
+    let gui = args
+        .gui
+        .resolve(args.profile.preset(Preset::Faithful) == Preset::Deterministic);
+    match gui {
         // No factory: the platform stack keeps its own backend, which is the
         // native Win32 one on Windows.
         GuiMode::Auto => session(args, None),

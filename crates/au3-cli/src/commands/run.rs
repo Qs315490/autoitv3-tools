@@ -65,7 +65,9 @@ pub struct RunArgs {
     pub trace: bool,
 
     /// GUI backend: `auto` (the default) uses the platform's own — real Win32
-    /// controls on Windows, nothing drawn elsewhere; `headless` never draws;
+    /// controls on Windows, nothing drawn elsewhere — except under the
+    /// deterministic profile, where it means `headless` (an analysis must not
+    /// open windows or dialogs that wait for somebody); `headless` never draws;
     /// `window` opens an eframe window (needs a build with the `gui-window`
     /// feature)
     #[arg(long = "gui", value_name = "MODE", default_value = "auto")]
@@ -114,7 +116,13 @@ pub struct RunArgs {
 
 /// Entry point for the `run` subcommand.
 pub fn run(args: &RunArgs) -> CliResult<()> {
-    match args.gui {
+    // `auto` is the platform's own backend, except under the deterministic
+    // profile, where it is headless: an analysis must not open windows or
+    // blocking dialogs (see `GuiMode::resolve`).
+    let gui = args
+        .gui
+        .resolve(args.profile.preset(Preset::Faithful) == Preset::Deterministic);
+    match gui {
         GuiMode::Auto => execute(args, None),
         GuiMode::Headless => execute(args, Some(Box::new(HeadlessBackend::new()))),
         GuiMode::Window => run_windowed(args),

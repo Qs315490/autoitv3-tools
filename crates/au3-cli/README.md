@@ -95,15 +95,17 @@ au3 run some.au3 SomeFunc --trace
 
 # 带 GUI 的脚本：GUI 语义（165 个函数）由仿真层回答，画不画由 --gui 决定。
 #   auto（默认）——平台自己那套：Windows 上就是真 Win32 窗口和控件，
-#                    其他平台不画（无窗口系统可依赖）
+#                    其他平台不画（无窗口系统可依赖）。**确定性配置下 auto
+#                    等于 headless**（分析不该开窗口，更不该弹一个等人点的对话
+#                    框）；`--faithful` 时才真的是平台自己那套。
 #   headless    —— 任何平台都不画：调用照旧有返回值，屏幕上什么都没有，
 #                    分析/CI 要的就是这个
 #   window      —— 跨平台的 eframe 窗口（构建时加 --features gui-window）；
 #                    窗口归主线程（winit 要求），脚本跑在它的工作线程上，
 #                    关闭窗口或脚本结束即退出。不带该 feature 构建时会明确报错。
 au3 run some-gui.au3                     # Windows：真窗口、真对话框；别处：不画
-au3 run some-gui.au3 --gui headless      # 不画窗口：MsgBox/InputBox 只按脚本化答案回答
-                                         # （不等人）；分析/CI 再加 --deterministic
+au3 run some-gui.au3 --gui headless      # 不画窗口：MsgBox/InputBox 只按脚本化答案回答（不等人）
+au3 run some-gui.au3 --deterministic     # 确定性配置：--gui auto 本来就会解析成 headless
 au3 run some-gui.au3 --gui window        # 没有原生路径的主机也能看窗口
 
 # --lang：消息/帮助/诊断用哪种语言（en 英文、zh-CN 简体中文、auto 跟随环境，默认 auto）
@@ -253,6 +255,11 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 `deobfuscate --evaluate` 默认 `--deterministic`（跳过 `Sleep`、`Random` 固定种子、
 拒绝一切副作用）——那是分析，不该动这台机器。两个开关都能显式给出（互斥），
 覆盖命令自己的默认。
+
+确定性配置还会把**画不画**一起管起来：它下面的 `--gui auto` 解析成 `headless`。
+理由是 Windows 上 `auto` 就是真 Win32 后端，`MsgBox`/`InputBox` 会开一个**等人点**
+的对话框——分析跑一半卡在弹窗上就白跑了。显式写的 `--gui headless`/`--gui window`
+不受影响（后者是你自己要的窗口）。
 `--allow <KIND>` / `--deny <KIND>`（可重复）在预设之上叠加**按效果类型**的开关：
 
 | KIND | 覆盖的效果 |

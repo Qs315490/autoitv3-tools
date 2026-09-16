@@ -64,6 +64,22 @@ pub enum GuiMode {
     Window,
 }
 
+impl GuiMode {
+    /// The mode a run actually uses, given what the profile is.
+    ///
+    /// `auto` means "the platform's own backend", which on Windows is the real
+    /// Win32 one: real windows, and dialogs that wait for somebody to click
+    /// them. A deterministic run is an analysis — it must not put either on
+    /// somebody's desktop — so `auto` resolves to [`GuiMode::Headless`] there.
+    /// An explicit `--gui` is never overridden.
+    pub const fn resolve(self, deterministic: bool) -> Self {
+        match self {
+            GuiMode::Auto if deterministic => GuiMode::Headless,
+            other => other,
+        }
+    }
+}
+
 #[derive(Args, Debug, Clone, Default)]
 pub struct WinEmuArgs {
     /// Emulated Windows version: xp, vista, 7, 8, 81, 10, 11
