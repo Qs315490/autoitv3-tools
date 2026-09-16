@@ -58,3 +58,42 @@ fn struct_pointers_are_by_reference() {
 fn unknown_types_are_rejected() {
     assert!(parse_type("no_such_type").is_none());
 }
+
+#[test]
+fn a_string_argument_slot_owns_a_writable_buffer() {
+    // Both spellings hand the callee the documented 65536-character buffer —
+    // `str*`/`wstr*` are the same allocation with a write-back, not a shorter
+    // one. Anything less is a heap overwrite the moment a function fills the
+    // buffer in.
+    let ansi = ansi_slot_buffer("");
+    assert_eq!(ansi.len(), crate::abi::DLLCALL_STRING_CHARS);
+    assert!(ansi.len() >= 260, "a path has to fit");
+
+    let wide = wstr_slot_buffer("");
+    assert_eq!(wide.len(), crate::abi::DLLCALL_STRING_CHARS);
+    assert!(wide.len() >= 260, "a path has to fit");
+
+    // The by-reference form keeps the same room, in the byte shape the slot
+    // stores it in.
+    assert_eq!(
+        wstr_slot_bytes(&wide).len(),
+        crate::abi::DLLCALL_STRING_CHARS * 2
+    );
+}
+
+#[test]
+fn a_string_argument_reads_the_callees_write_back_out() {
+    // What the result array does with an argument a function filled in: the
+    // pointer the slot hands out is the one the read-back looks at.
+    let slot = ArgSlot::WStr(wstr_slot_buffer(""));
+    let path: Vec<u16> = "C:\\written by the callee".encode_utf16().collect();
+    unsafe {
+        let out = slot.word() as *mut u16;
+        std::ptr::copy_nonoverlapping(path.as_ptr(), out, path.len());
+        std::ptr::write(out.add(path.len()), 0);
+    }
+    assert_eq!(
+        slot.result(&ty("wstr"), &Value::str("")).to_autoit_string(),
+        "C:\\written by the callee"
+    );
+}

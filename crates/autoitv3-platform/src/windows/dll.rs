@@ -5,9 +5,11 @@
 //! The return type may name a calling convention after a colon —
 //! `"INT:cdecl"`, the spelling real scripts use (see [`crate::abi`]).
 //! The return is an array whose element 0 is the return value and whose
-//! remaining elements echo the arguments, updated in place for the
-//! by-reference types (`int*`, `wstr*`, …) — the same shape the emulation
-//! layer produces.
+//! remaining elements echo the arguments, updated in place for anything the
+//! callee may have written through: the by-reference types (`int*`, `dword*`,
+//! …), and the string types (`str`/`wstr`, with or without the `*`), which
+//! AutoIt hands a 65536-character buffer precisely so a function can fill it in
+//! — the same shape the emulation layer produces.
 //!
 //! # Invocation
 //!
@@ -29,7 +31,7 @@ use std::rc::Rc;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::value::Value;
 
-use crate::abi::{split_convention, strip_convention, Convention};
+use crate::abi::{self, split_convention, strip_convention, Convention};
 
 use super::WindowsPlatform;
 
@@ -146,6 +148,13 @@ impl ArgSlot {
     }
 
     /// The array element this argument echoes back as.
+    ///
+    /// A `str`/`wstr` argument is a live buffer the callee may write through,
+    /// and the result array is how a script reads the change back — that is
+    /// exactly how the standard UDFs pick up an output path (`$aRet[2]` after
+    /// handing the call `""`). Only the by-reference spellings (`str*`,
+    /// `wstr*`) additionally write the value back into the script's variable,
+    /// which is why the `*` forms go through [`ArgSlot::Buffer`].
     fn result(&self, ty: &ArgType, original: &Value) -> Value {
         match self {
             ArgSlot::Buffer(buf, width) if ty.by_ref => match ty.class {
@@ -161,24 +170,32 @@ impl ArgSlot {
                         Value::Float(f64::from_le_bytes(buf[..8].try_into().unwrap()))
                     }
                 }
-                ArgClass::Str => {
-                    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-                    Value::Str(String::from_utf8_lossy(&buf[..end]).into_owned())
-                }
-                ArgClass::WStr => {
-                    let units: Vec<u16> = buf
-                        .chunks_exact(2)
-                        .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-                        .collect();
-                    let end = units.iter().position(|u| *u == 0).unwrap_or(units.len());
-                    Value::Str(String::from_utf16_lossy(&units[..end]))
-                }
+                ArgClass::Str => abi::ansi_buffer_string(buf),
+                ArgClass::WStr => abi::wstr_buffer_string(buf),
                 _ => original.clone(),
             },
+            ArgSlot::Str(buf) => abi::ansi_buffer_string(buf),
+            ArgSlot::WStr(units) => abi::wstr_units_string(units),
             ArgSlot::StructBuf(_, handle) => Value::Int(*handle),
             _ => original.clone(),
         }
     }
+}
+
+/// A `str` argument's live buffer, as the slot keeps it.
+fn ansi_slot_buffer(text: &str) -> Rc<[u8]> {
+    Rc::from(abi::ansi_argument_buffer(text).as_slice())
+}
+
+/// A `wstr` argument's live buffer, as the slot keeps it.
+fn wstr_slot_buffer(text: &str) -> Rc<[u16]> {
+    Rc::from(abi::wstr_argument_buffer(text).as_slice())
+}
+
+/// The bytes of a `wstr` argument buffer, which is the shape the by-reference
+/// slot keeps its memory in.
+fn wstr_slot_bytes(units: &[u16]) -> Rc<[u8]> {
+    Rc::from(abi::units_to_bytes(units).as_slice())
 }
 
 fn value_to_word(value: &Value) -> u64 {
@@ -485,18 +502,14 @@ impl WindowsPlatform {
                     Some(ArgSlot::Buffer(Rc::from(buf.as_slice()), ty.width))
                 }
                 ArgClass::Str => {
-                    let mut buf = value.to_autoit_string().into_bytes();
-                    buf.push(0);
-                    Some(ArgSlot::Buffer(Rc::from(buf.as_slice()), 1))
+                    // AutoIt's `str*` is the same documented buffer, and the
+                    // callee writes through it before it is read back into the
+                    // script's variable.
+                    Some(ArgSlot::Buffer(ansi_slot_buffer(&value.to_autoit_string()), 1))
                 }
                 ArgClass::WStr => {
-                    let mut units: Vec<u16> = value.to_autoit_string().encode_utf16().collect();
-                    units.push(0);
-                    let mut bytes = Vec::with_capacity(units.len() * 2);
-                    for u in units {
-                        bytes.extend_from_slice(&u.to_le_bytes());
-                    }
-                    Some(ArgSlot::Buffer(Rc::from(bytes.as_slice()), 2))
+                    let units = wstr_slot_buffer(&value.to_autoit_string());
+                    Some(ArgSlot::Buffer(wstr_slot_bytes(&units), 2))
                 }
                 ArgClass::Struct => match self.struct_memory(value.to_int()) {
                     Some((addr, _)) => Some(ArgSlot::StructBuf(addr, value.to_int())),
@@ -519,16 +532,8 @@ impl WindowsPlatform {
             }
             ArgClass::Int => ArgSlot::Word(value_to_word(value)),
             ArgClass::Float => ArgSlot::Float(value.to_f64()),
-            ArgClass::Str => {
-                let mut buf = value.to_autoit_string().into_bytes();
-                buf.push(0);
-                ArgSlot::Str(Rc::from(buf.as_slice()))
-            }
-            ArgClass::WStr => {
-                let mut units: Vec<u16> = value.to_autoit_string().encode_utf16().collect();
-                units.push(0);
-                ArgSlot::WStr(Rc::from(units.as_slice()))
-            }
+            ArgClass::Str => ArgSlot::Str(ansi_slot_buffer(&value.to_autoit_string())),
+            ArgClass::WStr => ArgSlot::WStr(wstr_slot_buffer(&value.to_autoit_string())),
             ArgClass::Struct => match self.struct_memory(value.to_int()) {
                 Some((addr, _)) => ArgSlot::StructBuf(addr, value.to_int()),
                 None => ArgSlot::Word(value_to_word(value)),

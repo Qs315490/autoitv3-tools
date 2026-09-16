@@ -279,6 +279,31 @@ EndFunc
     );
 }
 
+/// A `str`/`wstr` argument is a buffer the callee may write into, not just a
+/// copy of the string: AutoIt documents "a minimum of 65536 chars is
+/// allocated", which is what the shipped UDFs lean on when they pass `""` as an
+/// output parameter (`SHGetPathFromIDListW(pidl, "")`,
+/// `PathSearchAndQualifyW(path, "", 4096)`).
+///
+/// `GetWindowsDirectoryW` is that shape in one call — an empty `wstr` the
+/// callee fills with a `MAX_PATH`-sized path — so a buffer cut to the empty
+/// string's own two bytes would both overwrite the heap and come back empty.
+#[test]
+fn a_wide_string_argument_is_a_buffer_the_callee_can_write() {
+    assert_eq!(
+        int(
+            r#"
+Func F()
+    Local $r = DllCall("kernel32.dll", "uint", "GetWindowsDirectoryW", "wstr", "", "uint", 260)
+    If @error Or Not $r[0] Then Return 0
+    Return ($r[1] = @WindowsDir) + 0
+EndFunc
+"#
+        ),
+        1
+    );
+}
+
 #[test]
 fn dllcall_reports_unresolvable_targets_with_error() {
     // A missing export is @error 3; a missing DLL is @error 1.

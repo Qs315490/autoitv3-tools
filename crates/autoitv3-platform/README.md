@@ -141,6 +141,14 @@
 | 系统 | `linux/` | 仅 Linux | `/proc` 进程查询（`ProcessList`/`ProcessExists`/`ProcessClose`）、OS 标识宏 |
 | 系统 | `windows/` | 仅 Windows | **原生 Win32 后端**：`DllCall`/`DllCallAddress`/`DllOpen`/`DllClose`（`LoadLibraryW`/`GetProcAddress` + 变参调用桥）、`DllStruct*`（复用 winemu 布局引擎，但缓冲是**真实堆内存**，被调方直接写穿）、剪贴板（`ClipGet`/`ClipPut`，`CF_UNICODETEXT`）、进程（`ProcessList`/`ProcessExists`/`ProcessClose`，Toolhelp 快照）、驱动器（`DriveGet*`/`DriveMap*` 真实卷与网络映射）、注册表（`Reg*`，64 位视图 + AutoIt 类型码）、COM（`ObjCreate`/`IsObj`/`ObjName` 与 `.$member`/`.Method()` 经手写 `IDispatch` vtable 晚绑定）、系统/Shell（`MemGetStats`/`IsAdmin`/`ShellExecute*`/`RunAs*`/`Shutdown`）以及 Windows 身份宏（`@WindowsDir`/`@OSVersion`/`@ComputerName`…）；`files.rs` 以真实 Win32 语义覆盖 common 的近似实现（`FileGetAttrib`/`FileSetAttrib` 的 RASH 位、`FileGetShortName` 的真实 8.3 名、`EnvUpdate` 的 `WM_SETTINGCHANGE` 广播）。GUI 仍由仿真层兜底；`ObjGet`（文件名字对象）与 `ObjEvent`（事件接收器）报告 `@error = 1` |
 
+原生 `DllCall` 的实参按 AutoIt 的**类型语义**准备，不是"把值原样传过去"：`str`/`wstr`
+拿到的是一块**至少 65536 字符**的可写缓冲（官方文档的 "a minimum of 65536 chars is
+allocated"），字符串填在开头、其余清零，调用后按 NUL 终止读回结果数组——随 AutoIt 发行的
+UDF 正是这么用它的（传 `""` 当输出参数，再从 `$r[n]` 取回被调方写进去的路径），所以缓冲区**不能**
+按字符串自身长度裁剪：那等于把一次正常的"写输出参数"变成越界写堆；`int*`/`dword*`/`ptr*`
+等 by-ref 类型同理走各自宽度的临时缓冲，`struct*` 直接给 `DllStruct` 的真实内存。规则的
+跨平台部分在 `abi.rs`，因此在任何宿主上都有单测覆盖。
+
 `host_platform()` 按目标平台组装成 `CompositePlatform`：Windows 为
 `windows+common+winemu`（原生层最前应答真实语义，通用层居中，仿真层最后只接住
 原生未实现的 Windows 专有名），其余平台为 `winemu+common+linux`（仿真层在最前，
