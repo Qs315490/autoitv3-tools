@@ -243,29 +243,57 @@ pub fn candidates_from_image(path: impl AsRef<Path>) -> Result<Vec<(String, Vec<
     Ok(out)
 }
 
-/// Write `resources` under `dir`, one file each, grouped by resource type.
+/// How the files an extraction writes are laid out inside its directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// The way `AutoIt3Wrapper` stages the files it embeds — and the way this
+    /// crate's own reader looks for them: `__ResImage/_NAME`.
+    Stage,
+    /// One directory per resource type: `RCDATA/NAME`, `ICON/1`, `MANIFEST/1`.
+    ByType,
+}
+
+/// Write `resources` under `dir`, one file each.
 ///
 /// This is the read-back the `#AutoIt3Wrapper_Res_File_Add` files are for: a
 /// build keeps every added file as a resource under the name that directive
 /// gave it, so writing them out hands those files back without the build's
-/// script being involved. A name that is not usable as a file name (a path, a
-/// colon, an empty numeric id) is flattened, and a name that collides with one
-/// already written in the same type directory gets a `.N` suffix.
+/// script being involved. [Layout::Stage] writes the staging path the wrapper
+/// uses (`__ResImage/_NAME`), which is what an analysis that feeds the files
+/// back to a resource lookup needs; [Layout::ByType] groups them by resource
+/// type instead. A name that is not usable as a file name (a path, a colon, an
+/// empty numeric id) is flattened, and a name that collides with one already
+/// written gets a `.N` suffix.
 ///
 /// Returns the paths written, in order.
 pub fn write_resources(
     dir: impl AsRef<Path>,
     resources: &[(String, String, Vec<u8>)],
+    layout: Layout,
 ) -> Result<Vec<PathBuf>, Error> {
     let dir = dir.as_ref();
     std::fs::create_dir_all(dir).map_err(|e| Error::Io(e.to_string()))?;
     let mut used: Vec<(String, String)> = Vec::new();
     let mut written: Vec<PathBuf> = Vec::new();
     for (index, (kind, name, bytes)) in resources.iter().enumerate() {
-        let kind_dir = sanitize_component(kind);
-        let sub = dir.join(&kind_dir);
+        let (sub, base) = match layout {
+            // The staging path the wrapper writes for a file it embeds: a
+            // `__ResImage` directory holding `_NAME`. A resource lookup looks
+            // for exactly this, so an extraction can stand in for the files a
+            // build was made from.
+            Layout::Stage => (
+                "__ResImage".to_string(),
+                if name.trim().is_empty() {
+                    format!("resource_{}", index + 1)
+                } else {
+                    format!("_{name}")
+                },
+            ),
+            Layout::ByType => (sanitize_component(kind), name.clone()),
+        };
+        let sub = dir.join(&sub);
         std::fs::create_dir_all(&sub).map_err(|e| Error::Io(e.to_string()))?;
-        let file = sub.join(unique_file_name(&mut used, &kind_dir, name, index + 1));
+        let file = sub.join(unique_file_name(&mut used, &sub.to_string_lossy(), &base, index + 1));
         std::fs::write(&file, bytes).map_err(|e| Error::Io(e.to_string()))?;
         written.push(file);
     }

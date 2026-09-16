@@ -85,6 +85,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("Only these entries: a 1-based index, or a comma-separated list with inclusive ranges (`152`, `1-5,3148`)", "仅这些条目：从 1 开始的索引，或用逗号分隔且范围闭合的列表（`152`、`1-5,3148`）"),
     ("Extract the build's resource files into this directory, one type per subdirectory (the default is <input>.unpacked next to the input)", "把产物里的资源文件解出来写进这个目录，每个资源类型一个子目录（默认写在输入旁边的 <input>.unpacked）"),
     ("Decode the resource-packed payload and emit its entries, instead of extracting the resources", "改为解码资源打包的负载并输出其条目，而不是解出资源文件"),
+    ("Group the extracted files by resource type (RCDATA/NAME) instead of the staging layout AutoIt3Wrapper writes them in (__ResImage/_NAME)", "把解出的文件按资源类型分目录（RCDATA/NAME），而不是用 AutoIt3Wrapper 落盘时的 staging 布局（__ResImage/_NAME）"),
     // Runtime messages from `args.rs`.
     ("unknown effect {shown} (try file, env, registry, clipboard, spawn, shutdown, net, process)", "未知的副作用 {shown}（请尝试 file、env、registry、clipboard、spawn、shutdown、net、process）"),
     ("effect {shown} given to both --allow and --deny", "副作用 {shown} 同时传给了 --allow 和 --deny"),

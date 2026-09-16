@@ -94,11 +94,13 @@ au3 unpack chunk.bin  --script                   # 裸 chunk（已 dump 出来�
 
 ## 解出资源文件（默认行为）
 
-`au3 unpack <PATH>` 不给别的开关时，把产物带的资源写成文件：给 PE 枚举它**全部类型**的
-资源，给目录用 AutoIt3Wrapper 落盘的 `__NAME`/`__Res64/NAME`/`__ResImage/_NAME`；每条按
-资源名写进自己类型对应的子目录（`RCDATA/SCRIPT`、`ICON/1`、`MANIFEST/1`……），默认落在
-输入旁边的 `<input>.unpacked/`，`--dir DIR` 换位置。`#AutoIt3Wrapper_Res_File_Add` 加进去的
-文件就是这些 `RCDATA` 条目；名字里不能当文件名的字符会压平，同一类型里重名加 `.N`。
+`au3 unpack <PATH>` 不给别的开关时，把产物带的资源写成文件，用的是 AutoIt3Wrapper 落盘时
+的 **staging 路径**：每个资源写成 `__ResImage/_NAME`（本 crate 的读取端 `find_resource_file`
+正是按这个形状找的），默认落在输入旁边的 `<input>.unpacked/`，`--dir DIR` 换位置；
+`--by-type` 改成按资源类型分目录（`RCDATA/SCRIPT`、`ICON/1`、`MANIFEST/1`……）。
+`#AutoIt3Wrapper_Res_File_Add` 加进去的文件就是这些 `RCDATA` 条目；名字里不能当文件名的
+字符会压平，重名加 `.N`。解出来的目录可以直接当 staging 目录用——`--payload` 认得它，
+`au3 run` 也能从里面读资源。
 
 ## 解包资源载荷（`au3 unpack --payload`）
 

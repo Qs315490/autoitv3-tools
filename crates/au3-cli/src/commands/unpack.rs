@@ -24,7 +24,7 @@ use autoitv3_i18n::{msg, tr};
 use autoitv3_unpack::script;
 use autoitv3_unpack::{
     candidates_from_dir, candidates_from_image, resources_from_image, select_entries, unpack,
-    write_resources,
+    write_resources, Layout,
 };
 use clap::Args;
 
@@ -66,6 +66,11 @@ pub struct UnpackArgs {
     /// extracting the resources
     #[arg(long, conflicts_with = "script")]
     pub payload: bool,
+
+    /// Group the extracted files by resource type (RCDATA/NAME) instead of the
+    /// staging layout AutoIt3Wrapper writes them in (__ResImage/_NAME)
+    #[arg(long)]
+    pub by_type: bool,
 
     #[command(flatten)]
     pub output: OutputArgs,
@@ -125,13 +130,16 @@ fn run_resources(args: &UnpackArgs, dir: &Path) -> CliResult<()> {
             path = path.display()
         )));
     }
-    let written = write_resources(dir, &resources).map_err(|e| CliError::failure(e.to_string()))?;
-    for ((kind, name, bytes), file) in resources.iter().zip(written.iter()) {
+    let layout = if args.by_type { Layout::ByType } else { Layout::Stage };
+    let written =
+        write_resources(dir, &resources, layout).map_err(|e| CliError::failure(e.to_string()))?;
+    for ((_, _, bytes), file) in resources.iter().zip(written.iter()) {
+        let relative = file.strip_prefix(dir).unwrap_or(file).display().to_string();
         eprintln!(
             "{}",
             msg!(
                 "  {name} -> {path} ({bytes} bytes)",
-                name = format!("{kind}/{name}"),
+                name = relative,
                 path = file.display(),
                 bytes = bytes.len()
             )

@@ -124,20 +124,35 @@ fn candidates_are_written_out_as_one_file_each() {
         ("ICON".to_string(), "1".to_string(), vec![9]),
         ("CUSTOM TYPE".to_string(), String::new(), vec![7]),
     ];
-    let written = write_resources(&dir, &resources).expect("writes");
-    let rel: Vec<String> = written
-        .iter()
-        .map(|p| {
-            p.strip_prefix(&dir)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
-        .collect();
-    // One directory per resource type, the resource's own name inside it; a
-    // repeat inside a type gets a suffix rather than overwriting the first.
+    let relative = |dir: &std::path::Path, written: &[std::path::PathBuf]| -> Vec<String> {
+        written
+            .iter()
+            .map(|p| {
+                p.strip_prefix(dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    };
+    // The staging layout is what a resource lookup looks for: every embedded
+    // file sits in `__ResImage` under `_NAME`.
+    let staged = write_resources(&dir, &resources, Layout::Stage).expect("writes");
     assert_eq!(
-        rel,
+        relative(&dir, &staged),
+        vec![
+            "__ResImage/_File_Add.dat",
+            "__ResImage/_file_add.DAT.2",
+            "__ResImage/_1",
+            "__ResImage/resource_4"
+        ]
+    );
+    // Grouped by resource type instead: one directory per type, the resource
+    // name inside it, a repeat getting a suffix rather than overwriting.
+    let by_type_dir = dir.join("by-type");
+    let grouped = write_resources(&by_type_dir, &resources, Layout::ByType).expect("writes");
+    assert_eq!(
+        relative(&by_type_dir, &grouped),
         vec![
             "RCDATA/File_Add.dat",
             "RCDATA/file_add.DAT.2",
@@ -145,7 +160,7 @@ fn candidates_are_written_out_as_one_file_each() {
             "CUSTOM TYPE/resource_4"
         ]
     );
-    assert_eq!(std::fs::read(&written[0]).unwrap(), vec![1, 2, 3]);
-    assert_eq!(std::fs::read(&written[3]).unwrap(), vec![7]);
+    assert_eq!(std::fs::read(&staged[0]).unwrap(), vec![1, 2, 3]);
+    assert_eq!(std::fs::read(&grouped[3]).unwrap(), vec![7]);
     let _ = std::fs::remove_dir_all(&dir);
 }

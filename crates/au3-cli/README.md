@@ -340,7 +340,7 @@ evaluated: 120 globals, 4 tables, 1800 values inlined, 420 calls resolved
 | `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--inline-tables` 顺带把表声明换成字面量；`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
 | `run <FILE> [FUNC] [--cmdline V]… [--arg V]… [--init] [--trace]` | `r`, `exec` | 执行整个脚本；给了 `FUNC` 则调用该函数。`--cmdline` 始终是脚本的 `$CmdLine`/`$CmdLineRaw`；`--arg` 是 `FUNC` 的入参，未给 `FUNC` 时也并入 `$CmdLine`（同样接受 `--win-*` 开关）；默认按 AutoIt 语义**真跑**，`--deterministic` 改回分析配置） |
 | `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停）；同样默认 `--faithful` 真跑 |
-| `unpack <PATH> [--dir DIR] [--payload] [-o FILE]` | `unp` | 取回产物里带的东西：**默认把资源文件解出来落盘**（给 PE 就枚举它全部类型的资源、给目录就用 AutoIt3Wrapper 落盘的 `__NAME`/`__Res64/NAME`/`__ResImage/_NAME`；按资源类型分子目录，默认写输入旁边的 `<input>.unpacked/`，`--dir DIR` 换位置）——`#AutoIt3Wrapper_Res_File_Add` 加进去的文件就在这些 `RCDATA` 条目里；`--script` 输出编译进去的 `.au3` 源码（`AU3!EA05`/`AU3!EA06`）；`--payload` 改为解码那个 4 资源的打包载荷（`--raw`/`--table`/`--at`/`-o` 都作用于它）。UPX 加壳的镜像会被点名（`UPX0`/`UPX1`/`UPX!`），它不会替你脱壳 |
+| `unpack <PATH> [--dir DIR] [--by-type] [--payload] [-o FILE]` | `unp` | 取回产物里带的东西：**默认把资源文件解出来落盘**，并按 AutoIt3Wrapper 落盘时的 **staging 路径**命名（`__ResImage/_NAME`，即资源名加 `_` 前缀放进 `__ResImage/`），默认写输入旁边的 `<input>.unpacked/`、`--dir DIR` 换位置、`--by-type` 改成按资源类型分目录（`RCDATA/NAME`）——解出来的目录本身就能当 staging 目录用（`--payload` 直接认）；`--script` 输出编译进去的 `.au3` 源码（`AU3!EA05`/`AU3!EA06`）；`--payload` 改为解码那个 4 资源的打包载荷（`--raw`/`--table`/`--at`/`-o` 都作用于它）。UPX 加壳的镜像会被点名（`UPX0`/`UPX1`/`UPX!`），它不会替你脱壳 |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 
 以上 `<FILE>` 一律接受 `.au3` 源码或编译产物（`.exe` / 裸 `AU3!EA05|EA06` chunk）；
