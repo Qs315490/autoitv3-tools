@@ -2081,7 +2081,19 @@ impl Runtime {
     /// array its brackets describe, else an empty string.
     fn decl_value(&mut self, item: &VarDeclItem, span: Span) -> Result<Value, RuntimeError> {
         if let Some(init) = &item.init {
-            return self.eval_expr(init);
+            let literals = self.eval_expr(init)?;
+            if !item.dims.is_empty() && !is_empty_brackets(&item.dims) {
+                // Both given: the *declared dimensions* are the shape, the literal
+                // only fills the elements it names, and the rest stay empty strings.
+                // Measured on the official x64 interpreter: `Local $b[4] = [9]` is
+                // four elements with `$b[0] = 9` and `$b[1] = ""` (VarGetType
+                // "String", IsNumber 0, StringLen 0), and `Local $a[3][2] = [[7]]` is
+                // 3x2 with the same empty tail.
+                let target = self.array_with_dims(&item.dims, span)?;
+                fill_from_literal(&target, &literals, span)?;
+                return Ok(target);
+            }
+            return Ok(literals);
         }
         if !item.dims.is_empty() {
             if is_empty_brackets(&item.dims) {
@@ -2158,7 +2170,10 @@ impl Runtime {
         }
         let n = n as usize;
         if dims.len() == 1 {
-            return Ok(Value::array_sized(n));
+            // An element nothing has written yet is an empty string, not 0 —
+            // measured: `Local $e[3]` answers `VarGetType` "String", `IsNumber` 0,
+            // `StringLen` 0, and the same holds for the slots `ReDim` grows.
+            return Ok(Value::array(vec![Value::Str(String::new()); n]));
         }
         let mut rows = Vec::with_capacity(n);
         for _ in 0..n {
@@ -2978,4 +2993,36 @@ impl HostContext for HostBridge<'_> {
     fn option(&self, name: &str) -> Option<Value> {
         self.options.get(&var_key(name)).cloned()
     }
+}
+/// Copy a literal's values into a declared array, position by position.
+///
+/// A literal with more values in a dimension than the declaration has room for is
+/// the error AutoIt raises there — measured: both `Local $c[2] = [1, 2, 3]` and a
+/// 3x3 literal for a 2x2 declaration stop with "Array variable has incorrect number
+/// of subscripts or subscript dimension range exceeded".
+fn fill_from_literal(
+    target: &Value,
+    literals: &Value,
+    span: Span,
+) -> Result<(), RuntimeError> {
+    let (Value::Array(target), Value::Array(literals)) = (target, literals) else {
+        return Ok(());
+    };
+    let literals = literals.borrow();
+    let mut target = target.borrow_mut();
+    if literals.len() > target.len() {
+        return Err(RuntimeError::IndexOutOfBounds {
+            index: target.len() as i64,
+            len: target.len(),
+            span: Some(span),
+        });
+    }
+    for (slot, value) in target.iter_mut().zip(literals.iter()) {
+        if matches!(slot, Value::Array(_)) {
+            fill_from_literal(slot, value, span)?;
+        } else {
+            *slot = value.clone();
+        }
+    }
+    Ok(())
 }

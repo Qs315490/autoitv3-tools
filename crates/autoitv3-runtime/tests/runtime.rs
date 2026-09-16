@@ -2363,3 +2363,29 @@ fn isptr_answers_for_pointer_typed_slots_only() {
     );
 }
 
+
+
+#[test]
+fn a_declaration_keeps_its_dimensions_when_the_initializer_is_smaller() {
+    // Measured on the official x64 interpreter: the declared shape wins, and an
+    // element the literal does not name is an empty string - and so is every slot
+    // of a plain declaration.
+    let src = "Func F()\n\
+               \x20   Local $a[3][2] = [[7]]\n\
+               \x20   Local $b[4] = [9]\n\
+               \x20   Local $e[2]\n\
+               \x20   Return UBound($a, 1) & \"x\" & UBound($a, 2) & \":\" & $a[0][0] & \":\" \
+               & StringLen($a[0][1]) & \":\" & UBound($b, 1) & \":\" & $b[0] & \":\" & StringLen($b[1]) \
+               & \":\" & UBound($e, 1) & \":\" & StringLen($e[0]) & \":\" & IsNumber($e[0])\n\
+               EndFunc\n";
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "3x2:7:0:4:9:0:2:0:0");
+}
+
+#[test]
+fn an_initializer_larger_than_the_declaration_is_an_error() {
+    // Measured: AutoIt stops at the declaration with "Array variable has incorrect
+    // number of subscripts or subscript dimension range exceeded".
+    let src = "Func F()\n    Local $c[2] = [1, 2, 3]\n    Return 0\nEndFunc\n";
+    let mut rt = rt(src);
+    assert!(rt.call_function("F", vec![]).is_err(), "must not silently truncate");
+}
