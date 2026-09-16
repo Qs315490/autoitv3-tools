@@ -831,8 +831,13 @@ impl Runtime {
         // builtins, so a stale code cannot leak through one either.
         self.error = 0;
         self.extended = 0;
+        // `span` is the call and `self.frames.len()` the frame making it, so a
+        // catchpoint can show the call site even when the arguments were
+        // computed by calls of their own (the last statement to run would then
+        // be inside the callee).
+        let frame_depth = self.frames.len();
         let call_action = match self.debugger.as_mut() {
-            Some(dbg) => dbg.on_builtin_call(display, &args),
+            Some(dbg) => dbg.on_builtin_call(display, &args, span, frame_depth),
             None => DebugAction::Continue,
         };
         match call_action {

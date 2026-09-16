@@ -367,9 +367,11 @@ impl Debugger for SharedShell {
         &mut self,
         name: &str,
         args: &[autoitv3_runtime::Value],
+        span: Span,
+        frame_depth: usize,
     ) -> DebugAction {
         match self.0.try_borrow_mut() {
-            Ok(mut shell) => shell.on_builtin_call(name, args),
+            Ok(mut shell) => shell.on_builtin_call(name, args, span, frame_depth),
             Err(_) => DebugAction::Continue,
         }
     }
@@ -2174,7 +2176,10 @@ impl Debugger for Shell {
         args: &[autoitv3_runtime::Value],
     ) -> DebugAction {
         self.call_stack.push(name.to_ascii_lowercase());
-        self.catch_action(name, args)
+        // A script function is entered *from* the caller's statement, which is
+        // the one the debugger is already on (`on_statement` ran it), so there
+        // is no call site to correct.
+        self.catch_action(name, args, None)
     }
 
     fn on_call_exit(&mut self, name: &str, _result: Option<&autoitv3_runtime::Value>) {
@@ -2187,7 +2192,13 @@ impl Debugger for Shell {
         }
     }
 
-    fn on_builtin_call(&mut self, name: &str, args: &[autoitv3_runtime::Value]) -> DebugAction {
+    fn on_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[autoitv3_runtime::Value],
+        span: Span,
+        frame_depth: usize,
+    ) -> DebugAction {
         // A builtin has no entry line, so `untilcall GUICreate` watches the
         // resolved call instead (`GUICreate` still goes through the table and
         // reaches here as a function value). It also has no exit hook, so for
@@ -2196,7 +2207,7 @@ impl Debugger for Shell {
         if self.until_ret_matches(name) {
             self.until_hit = true;
         }
-        self.catch_action(name, args)
+        self.catch_action(name, args, Some((span, frame_depth)))
     }
 
     fn on_statement(&mut self, span: Span, depth: usize, host: &mut dyn DebugHost) -> DebugAction {
@@ -2323,7 +2334,12 @@ impl Shell {
     /// caller of this — at the builtin hook for a builtin, at the exit hook for
     /// a script function. Stops asked for from inside a stop are ignored —
     /// `print` runs calls too.
-    fn catch_action(&mut self, name: &str, args: &[autoitv3_runtime::Value]) -> DebugAction {
+    fn catch_action(
+        &mut self,
+        name: &str,
+        args: &[autoitv3_runtime::Value],
+        call_site: Option<(Span, usize)>,
+    ) -> DebugAction {
         if !self.paused {
             let one_shot = self
                 .until_call
@@ -2336,6 +2352,12 @@ impl Shell {
             if one_shot || persistent {
                 if one_shot {
                     self.until_call = None;
+                }
+                // Point the session at the *call site*: `self.current` is
+                // otherwise the last statement that ran, which for a builtin
+                // called as `DllCall($getter(), …)` is inside the getter.
+                if let Some((span, depth)) = call_site {
+                    self.current = Some((span, depth));
                 }
                 self.caught_call = Some(format_call(name, args));
                 return DebugAction::Pause;

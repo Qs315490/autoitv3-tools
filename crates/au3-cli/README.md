@@ -345,6 +345,8 @@ Breakpoint 1, line 69
 | `source <file>` | 把一个命令文件的命令插到队首执行，然后回到提示符 |
 | `quit` / `q` | 退出 |
 
+停在调用前的两种停法（`untilcall` / `stopat`）把会话的**当前行和当前帧设在调用点上**，而不是“最后执行过的那条语句”上：像 `DllCall($getter(), …)` 这种实参由另一个函数算出来的调用，`list` 会指向 `DllCall` 那条语句、`bt` 的 `#0` 是发起调用的那一帧（否则会落在 getter 的 `Return` 里）。
+
 **行表达式**（`break`/`tbreak`/`until`/`jmp`/`list` 的行号参数都接受）：
 
 | 写法 | 含义 |

@@ -718,7 +718,13 @@ fn a_debugger_sees_builtin_calls() {
     // way to know they ran (`untilcall GUICreate` relies on it).
     struct Recorder(Rc<RefCell<Vec<String>>>);
     impl Debugger for Recorder {
-        fn on_builtin_call(&mut self, name: &str, _args: &[Value]) -> DebugAction {
+        fn on_builtin_call(
+            &mut self,
+            name: &str,
+            _args: &[Value],
+            _span: autoitv3_ast::span::Span,
+            _depth: usize,
+        ) -> DebugAction {
             self.0.borrow_mut().push(name.to_string());
             DebugAction::Continue
         }
@@ -752,7 +758,13 @@ fn a_debugger_can_stop_a_builtin_before_it_runs() {
         seen: Seen,
     }
     impl Debugger for Catcher {
-        fn on_builtin_call(&mut self, name: &str, args: &[Value]) -> DebugAction {
+        fn on_builtin_call(
+            &mut self,
+            name: &str,
+            args: &[Value],
+            _span: autoitv3_ast::span::Span,
+            _depth: usize,
+        ) -> DebugAction {
             self.seen
                 .borrow_mut()
                 .push((name.to_string(), args.to_vec()));

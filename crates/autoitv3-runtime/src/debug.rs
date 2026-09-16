@@ -328,8 +328,19 @@ pub trait Debugger {
     /// call: it is then offered to [`Debugger::on_stop`] as
     /// [`StopReason::Builtin`], and the call runs as usual once that returns
     /// (unless the debugger aborts).
-    fn on_builtin_call(&mut self, name: &str, args: &[Value]) -> DebugAction {
-        let _ = (name, args);
+    ///
+    /// `span` is the call itself and `frame_depth` the frame making it: a
+    /// catchpoint shows the *call site*, and an argument computed by a call of
+    /// its own would otherwise leave the debugger's idea of the "current
+    /// statement" pointing into that callee.
+    fn on_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        span: Span,
+        frame_depth: usize,
+    ) -> DebugAction {
+        let _ = (name, args, span, frame_depth);
         DebugAction::Continue
     }
 

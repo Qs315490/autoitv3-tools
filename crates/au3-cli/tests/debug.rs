@@ -897,6 +897,26 @@ fn uc_and_ur_are_the_until_call_and_return_shorthands() {
     assert!(has_line(&out, "42"), "the result is readable:\n{out}");
 }
 
+/// A catchpoint stops on the **call site**. `ConsoleWrite(Get() & …)` computes
+/// its argument by calling `Get` first, so the statement that last ran is
+/// inside `Get` — the stop has to be shown where the call is written, not
+/// there, or the source line and the frame would be somebody else's.
+#[test]
+fn a_catchpoint_shows_the_call_site_and_the_calling_frame() {
+    const SRC: &str = "Func Get()\n    Return \"x\"\nEndFunc\n\nFunc Main()\n    ConsoleWrite(Get() & @CRLF)\nEndFunc\n\nMain()\n";
+    let path = script("catch-site", SRC);
+    let out = shell(
+        &path,
+        &["stopat ConsoleWrite", "run", "list", "bt", "info locals", "quit"],
+    );
+    assert!(out.contains("Catchpoint: ConsoleWrite(\"x\\r\\n\")"), "got:\n{out}");
+    // The call is on line 6 of `Main`, not on `Get`'s `Return` (line 2).
+    assert!(out.contains("=>      6"), "the call site is line 6:\n{out}");
+    assert!(!out.contains("=>      2"), "the callee must not be current:\n{out}");
+    // …and the frame that made the call is the one on screen.
+    assert!(out.contains("#0  Main() at script.au3:6"), "got:\n{out}");
+}
+
 /// For a script function the "after the call" stop is the caller's next
 /// statement, where the result is already there.
 #[test]
