@@ -906,7 +906,8 @@ Func C($s)
     Return StringStripCR($s)
 EndFunc
 "#;
-    let yes = |f: &str, s: &str| matches!(call(src, f, vec![Value::str(s)]), Value::Bool(true));
+    // The answer is an integer ("Success: 1, Failure: 0"), not a boolean.
+    let yes = |f: &str, s: &str| matches!(call(src, f, vec![Value::str(s)]), Value::Int(1));
     assert!(yes("A", "abc"));
     assert!(!yes("A", "aé"));
     assert!(yes("L", "abc"));
@@ -969,23 +970,23 @@ fn isbool_and_isfloat() {
     let src = "Func B($v)\n    Return IsBool($v)\nEndFunc\nFunc F($v)\n    Return IsFloat($v)\nEndFunc\n";
     assert!(matches!(
         call(src, "B", vec![Value::Bool(true)]),
-        Value::Bool(true)
+        Value::Int(1)
     ));
     assert!(matches!(
         call(src, "B", vec![Value::Int(1)]),
-        Value::Bool(false)
+        Value::Int(0)
     ));
     assert!(matches!(
         call(src, "F", vec![Value::Float(1.5)]),
-        Value::Bool(true)
+        Value::Int(1)
     ));
     assert!(matches!(
         call(src, "F", vec![Value::Float(1.0)]),
-        Value::Bool(false)
+        Value::Int(0)
     ));
     assert!(matches!(
         call(src, "F", vec![Value::str("2.25")]),
-        Value::Bool(true)
+        Value::Int(1)
     ));
 }
 
@@ -1102,7 +1103,7 @@ EndFunc
 "#;
     assert_eq!(
         call(src, "F", vec![]).to_autoit_string(),
-        "3:Integer 3:String 3:upper::TrueTrueFalse"
+        "3:Integer 3:String 3:upper::110"
     );
 }
 
@@ -1510,7 +1511,7 @@ fn concatenating_two_binaries_joins_their_bytes() {
     Local $c = $a & $b
     Return IsBinary($c) & "|" & BinaryLen($c) & "|" & String($c)
 EndFunc"#;
-    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "True|4|0x01020304");
+    assert_eq!(call(src, "F", vec![]).to_autoit_string(), "1|4|0x01020304");
 }
 
 #[test]

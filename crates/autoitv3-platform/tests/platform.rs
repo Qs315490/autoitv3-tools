@@ -260,12 +260,13 @@ fn dirgetsize_reports_the_extended_triple_with_flag_one() {
 fn dirgetsize_failure_is_a_scalar_even_for_the_array_form() {
     // Measured on the official 3.3.16: the documented failure (-1) is answered
     // for both forms, so a script that subscripts the flag-1 result has a
-    // non-array in hand.
+    // non-array in hand. `IsArray` is measured too (x64 interpreter): it answers
+    // an integer, so the tail prints `0`, not `False`.
     let body = r#"Local $plain = DirGetSize("/definitely/not/here")
     Local $plain_err = @error
     Local $array = DirGetSize("/definitely/not/here", 1)
     Return $plain & ":" & $plain_err & ":" & $array & ":" & @error & ":" & IsArray($array)"#;
-    assert_eq!(text(body), "-1:1:-1:1:False");
+    assert_eq!(text(body), "-1:1:-1:1:0");
 }
 
 #[test]
@@ -874,7 +875,7 @@ fn a_binary_file_read_hands_back_bytes() {
     Return IsBinary($d) & "|" & BinaryLen($d) & "|" & String($d)"#,
         p = path.display()
     );
-    assert_eq!(text(&body), "True|4|0x00FF1080");
+    assert_eq!(text(&body), "1|4|0x00FF1080");
 }
 
 #[test]

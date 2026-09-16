@@ -40,7 +40,7 @@ impl WindowsEmulation {
         };
         // The sample hands `phHash` a literal 0 and reads the handle out of
         // `$result[5]`, so the array slot is the only channel that matters.
-        Some(DllOutcome::with(Value::Bool(true), 4, Value::Int(handle)))
+        Some(DllOutcome::with(Value::Int(1), 4, Value::Int(handle)))
     }
 
     /// `CryptHashData(hHash, pbData, dwDataLen, flags)`.
@@ -55,7 +55,7 @@ impl WindowsEmulation {
         let bytes = self.read_buffer(buffer, len)?;
         let slot = self.crypto.hashes.get_mut(index)?.as_mut()?;
         slot.data.extend_from_slice(&bytes);
-        Some(DllOutcome::value(Value::Bool(true)))
+        Some(DllOutcome::value(Value::Int(1)))
     }
 
     /// `CryptGetHashParam(hHash, param, pbData, pdwDataLen, flags)`.
@@ -73,20 +73,20 @@ impl WindowsEmulation {
             4 => {
                 let size = Value::Int(alg.digest_len() as i64);
                 self.write_buffer(buffer, &(alg.digest_len() as u32).to_le_bytes());
-                Some(DllOutcome::with(Value::Bool(true), 2, size))
+                Some(DllOutcome::with(Value::Int(1), 2, size))
             }
             // HP_HASHVAL
             2 => {
                 let digest = alg.digest(&data);
                 self.write_buffer(buffer, &digest);
                 Some(DllOutcome::with(
-                    Value::Bool(true),
+                    Value::Int(1),
                     2,
                     Value::Binary(std::rc::Rc::new(digest)),
                 ))
             }
             // HP_ALGID
-            1 => Some(DllOutcome::with(Value::Bool(true), 2, Value::Int(0))),
+            1 => Some(DllOutcome::with(Value::Int(1), 2, Value::Int(0))),
             _ => None,
         }
     }
@@ -121,7 +121,7 @@ impl WindowsEmulation {
             self.crypto.keys.push(Some(KeyObject { alg, key, iv }));
             self.crypto.keys.len() as i64
         };
-        Some(DllOutcome::with(Value::Bool(true), 4, Value::Int(handle)))
+        Some(DllOutcome::with(Value::Int(1), 4, Value::Int(handle)))
     }
 
     /// `CryptDecrypt(hKey, hHash, final, flags, pbData, pdwDataLen)`.
@@ -149,7 +149,7 @@ impl WindowsEmulation {
             return None;
         }
         Some(DllOutcome::with(
-            Value::Bool(true),
+            Value::Int(1),
             5,
             Value::Int(plain.len() as i64),
         ))

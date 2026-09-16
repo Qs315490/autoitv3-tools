@@ -243,7 +243,7 @@ impl WindowsEmulation {
                     .push((addr, Rc::new(RefCell::new(vec![0u8; size]))));
                 Some(DllOutcome::value(Value::Int(addr as i64)))
             }
-            "virtualfree" | "heapfree" => Some(DllOutcome::value(Value::Bool(true))),
+            "virtualfree" | "heapfree" => Some(DllOutcome::value(Value::Int(1))),
             "getprocessheap" => Some(DllOutcome::value(Value::Int(0x1))),
 
             // ---------------- sandboxed files ----------------
@@ -288,7 +288,7 @@ impl WindowsEmulation {
                 if lpread != 0 {
                     self.memory_write(lpread, &(bytes.len() as u32).to_le_bytes());
                 }
-                Some(DllOutcome::value(Value::Bool(true)))
+                Some(DllOutcome::value(Value::Int(1)))
             }
             "writefile" => {
                 let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
@@ -304,7 +304,7 @@ impl WindowsEmulation {
                 if lpwritten != 0 {
                     self.memory_write(lpwritten, &(bytes.len() as u32).to_le_bytes());
                 }
-                Some(DllOutcome::value(Value::Bool(true)))
+                Some(DllOutcome::value(Value::Int(1)))
             }
             "getfilesize" => {
                 let handle = arg(0).map(|v| v.to_int()).unwrap_or(0);
@@ -326,9 +326,9 @@ impl WindowsEmulation {
                             self.sandbox_files
                                 .insert(normalise_sandbox_path(&f.path), f.content);
                         }
-                        Some(DllOutcome::value(Value::Bool(true)))
+                        Some(DllOutcome::value(Value::Int(1)))
                     }
-                    None => Some(DllOutcome::value(Value::Bool(true))),
+                    None => Some(DllOutcome::value(Value::Int(1))),
                 }
             }
 
@@ -376,7 +376,7 @@ impl WindowsEmulation {
                     self.pending_callbacks
                         .push((name.clone(), vec![Value::Int(hwnd), Value::Int(lparam)]));
                 }
-                Some(DllOutcome::value(Value::Bool(true)))
+                Some(DllOutcome::value(Value::Int(1)))
             }
 
             // ---------------- CryptoAPI ----------------
@@ -530,12 +530,12 @@ impl WindowsEmulation {
             }
             "cryptacquirecontexta" | "cryptacquirecontextw" => {
                 Some(DllOutcome::with(
-                    Value::Bool(true),
+                    Value::Int(1),
                     0,
                     Value::Int(0x0c00_0001),
                 ))
             }
-            "cryptreleasecontext" => Some(DllOutcome::value(Value::Bool(true))),
+            "cryptreleasecontext" => Some(DllOutcome::value(Value::Int(1))),
             "cryptcreatehash" => self.crypt_create_hash(&arg(1)?),
             "crypthashdata" => self.crypt_hash_data(&arg(0)?, &arg(1)?, &arg(2)?),
             "cryptgethashparam" => self.crypt_get_hash_param(&arg(0)?, &arg(1)?, &arg(2)?),
@@ -552,7 +552,7 @@ impl WindowsEmulation {
                     7 => {
                         self.write_buffer(&arg(2)?, &key.iv);
                         Some(DllOutcome::with(
-                            Value::Bool(true),
+                            Value::Int(1),
                             2,
                             Value::Binary(std::rc::Rc::new(key.iv)),
                         ))
@@ -567,7 +567,7 @@ impl WindowsEmulation {
                     if let Some(slot) = self.crypto.keys.get_mut(index).and_then(|k| k.as_mut()) {
                         slot.iv = value;
                     }
-                    Some(DllOutcome::value(Value::Bool(true)))
+                    Some(DllOutcome::value(Value::Int(1)))
                 } else {
                     None
                 }
@@ -575,12 +575,12 @@ impl WindowsEmulation {
             "cryptdestroyhash" => {
                 let index = usize::try_from(arg(0)?.to_int()).ok()?.checked_sub(1)?;
                 *self.crypto.hashes.get_mut(index)? = None;
-                Some(DllOutcome::value(Value::Bool(true)))
+                Some(DllOutcome::value(Value::Int(1)))
             }
             "cryptdestroykey" => {
                 let index = usize::try_from(arg(0)?.to_int()).ok()?.checked_sub(1)?;
                 *self.crypto.keys.get_mut(index)? = None;
-                Some(DllOutcome::value(Value::Bool(true)))
+                Some(DllOutcome::value(Value::Int(1)))
             }
 
             // ---------------- checksums ----------------

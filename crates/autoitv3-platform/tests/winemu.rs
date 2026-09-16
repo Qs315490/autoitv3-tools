@@ -315,8 +315,10 @@ fn dllcall_returns_an_array_like_autio() {
     // (`Local $r = DllCall(...)` / `If Not $r[0] Then ...`).
     let body = r#"Local $r = DllCall("kernel32.dll", "dword", "GetVersion")
     Return IsArray($r) & "|" & UBound($r) & "|" & $r[0]"#;
+    // `IsArray` answers an integer (measured on the official x64 interpreter),
+    // and so does a Win32 BOOL return.
     let expected = format!(
-        "True|1|{}",
+        "1|1|{}",
         WindowsVersion::Win10.packed_get_version()
     );
     assert_eq!(text(win10(), body), expected);
@@ -775,7 +777,7 @@ fn resources_extracted_next_to_the_script_answer_find_resource() {
     Local $err = @error
     Return $size[0] & "|" & BinaryToString(DllStructGetData($buf, 1)) & "|" & $s2[0] & "|" & IsArray($miss) & "|" & $err"#;
     let got = text(emu, body);
-    assert_eq!(got, "11|from a file|14|False|1");
+    assert_eq!(got, "11|from a file|14|0|1");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2284,7 +2286,8 @@ EndFunc
     rt.run_script().expect("script body");
     assert_eq!(
         rt.call_function("F", vec![]).expect("runs").to_autoit_string(),
-        "3:4099:True"
+        // The last field is EnumWindows' BOOL return: a Win32 TRUE is 1.
+        "3:4099:1"
     );
 }
 

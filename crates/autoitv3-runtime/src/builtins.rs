@@ -25,6 +25,14 @@ use crate::error::RuntimeError;
 use crate::interp::Runtime;
 use crate::value::{format_float, MapKey, Value};
 
+/// The answer of a predicate: AutoIt's `Is*` and `StringIs*` functions are
+/// documented as "Success: 1, Failure: 0", so they hand back an **integer**, not
+/// a boolean. A script that folds one into a string (`"flag=" & IsString($s)`)
+/// sees `1`/`0`; `True`/`False` is the answer of the newer Map predicates.
+fn flag(value: bool) -> Value {
+    Value::Int(i64::from(value))
+}
+
 /// Dispatch a builtin call. `Ok(None)` means "not a builtin I know".
 ///
 /// `key` is the caller's lower-cased lookup key, so the dispatch does not have
@@ -285,23 +293,23 @@ pub(crate) fn call(
 
         "stringisint" | "stringisdigit" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+            flag(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
         }
         "stringisfloat" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(s.parse::<f64>().is_ok())
+            flag(s.parse::<f64>().is_ok())
         }
         "stringisalnum" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()))
+            flag(!s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()))
         }
         "stringisalpha" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic()))
+            flag(!s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic()))
         }
         "stringisspace" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_whitespace()))
+            flag(!s.is_empty() && s.chars().all(|c| c.is_whitespace()))
         }
 
         // ---------------- regular expressions ----------------
@@ -502,8 +510,8 @@ pub(crate) fn call(
             args.first().unwrap_or(&Value::Null),
             args.get(1).map(|v| v.to_int()).unwrap_or(1),
         )),
-        "isarray" => Value::Bool(matches!(args.first(), Some(Value::Array(_)))),
-        "ismap" => Value::Bool(matches!(args.first(), Some(Value::Map(_)))),
+        "isarray" => flag(matches!(args.first(), Some(Value::Array(_)))),
+        "ismap" => flag(matches!(args.first(), Some(Value::Map(_)))),
         "map" => {
             let mut m: BTreeMap<MapKey, Value> = BTreeMap::new();
             let mut i = 0;
@@ -517,9 +525,9 @@ pub(crate) fn call(
             let (m, k) = (args.first().cloned(), args.get(1).cloned());
             match (m, k) {
                 (Some(Value::Map(m)), Some(k)) => {
-                    Value::Bool(m.borrow().contains_key(&MapKey::from_value(&k)))
+                    flag(m.borrow().contains_key(&MapKey::from_value(&k)))
                 }
-                _ => Value::Bool(false),
+                _ => flag(false),
             }
         }
         "mapkeys" => {
@@ -598,31 +606,31 @@ pub(crate) fn call(
         }
 
         // ---------------- type predicates ----------------
-        "isnumber" => Value::Bool(args.first().map(|v| v.is_number()).unwrap_or(false)),
-        "isint" => Value::Bool(matches!(
+        "isnumber" => flag(args.first().map(|v| v.is_number()).unwrap_or(false)),
+        "isint" => flag(matches!(
             args.first(),
             Some(Value::Int(_)) | Some(Value::Bool(_))
         )),
-        "isstring" => Value::Bool(matches!(args.first(), Some(Value::Str(_)))),
-        "isbinary" => Value::Bool(matches!(args.first(), Some(Value::Binary(_)))),
+        "isstring" => flag(matches!(args.first(), Some(Value::Str(_)))),
+        "isbinary" => flag(matches!(args.first(), Some(Value::Binary(_)))),
         // A pointer is a *base type* in AutoIt, not a number: the answer is
         // whether the value came out of a pointer-typed operation (a `ptr`-typed
         // `DllCall` return, a `ptr*` parameter written back, `Ptr`,
         // `DllStructGetPtr`, `DllCallbackGetPtr`), which the runtime records as
         // it happens. `IsHwnd` still answers 0: the HWnd base type is not
         // modelled (a GUI handle here is a plain integer).
-        "isptr" => Value::Bool(
+        "isptr" => flag(
             args.first()
                 .is_some_and(|v| v.is_number() && rt.is_pointer(v.to_int())),
         ),
-        "ishwnd" => Value::Bool(false),
-        "iskeyword" => Value::Bool(matches!(
+        "ishwnd" => flag(false),
+        "iskeyword" => flag(matches!(
             args.first(),
             Some(Value::Default) | Some(Value::Null)
         )),
         "isfunc" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(rt.has_function(&s))
+            flag(rt.has_function(&s))
         }
         "binarylen" => match args.first() {
             Some(Value::Binary(b)) => Value::Int(b.len() as i64),
@@ -809,7 +817,7 @@ pub(crate) fn call(
             let c = args.first().map(|v| v.to_int()).unwrap_or(0) as u32;
             Value::Str(char::from_u32(c).map(|c| c.to_string()).unwrap_or_default())
         }
-        "isbool" => Value::Bool(matches!(args.first(), Some(Value::Bool(_)))),
+        "isbool" => flag(matches!(args.first(), Some(Value::Bool(_)))),
         "isfloat" => {
             // AutoIt asks whether the value has a *fractional component*, so an
             // integral float (`1.0`) is not a float in this sense.
@@ -820,7 +828,7 @@ pub(crate) fn call(
                     .unwrap_or(false),
                 _ => false,
             };
-            Value::Bool(frac)
+            flag(frac)
         }
         "bitrotate" => {
             let value = args.first().map(|v| v.to_int()).unwrap_or(0);
@@ -868,11 +876,11 @@ pub(crate) fn call(
         // ---------------- more string tests ----------------
         "stringisascii" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(!s.is_empty() && s.chars().all(|c| (c as u32) <= 0x7f))
+            flag(!s.is_empty() && s.chars().all(|c| (c as u32) <= 0x7f))
         }
         "stringislower" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(
+            flag(
                 !s.is_empty()
                     && s.chars().any(|c| c.is_alphabetic())
                     && s.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_lowercase()),
@@ -880,7 +888,7 @@ pub(crate) fn call(
         }
         "stringisupper" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(
+            flag(
                 !s.is_empty()
                     && s.chars().any(|c| c.is_alphabetic())
                     && s.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase()),
@@ -888,7 +896,7 @@ pub(crate) fn call(
         }
         "stringisxdigit" => {
             let s = args.first().map(|v| v.to_autoit_string()).unwrap_or_default();
-            Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()))
+            flag(!s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()))
         }
         "stringstripcr" => Value::Str(
             args.first()
