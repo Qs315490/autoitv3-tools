@@ -157,6 +157,20 @@ fn x86_changes_the_architecture_and_the_pointer_size() {
     assert_eq!(text(WindowsEmulation::new(), body), "12");
 }
 
+#[test]
+fn a_zero_length_struct_field_is_zero_bytes() {
+    // Measured on the official x64 interpreter: `BYTE [0]` is a zero-length
+    // field, not one byte. A streaming file hash feeds the empty chunk it reads
+    // at EOF to `BCryptHashData` through exactly such a struct, so a stray
+    // null byte there adds one byte to every digest - which is what made a
+    // driver package's key check fail.
+    let body = r#"Local $z = DllStructCreate("BYTE [0]")
+    Local $o = DllStructCreate("BYTE [1]")
+    Local $b = DllStructCreate("byte buf[8]")
+    Return DllStructGetSize($z) & ":" & DllStructGetSize($o) & ":" & DllStructGetSize($b)"#;
+    assert_eq!(text(WindowsEmulation::new(), body), "0:1:8");
+}
+
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------

@@ -460,11 +460,16 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
             Some(rest) => {
                 let (n, c) = split_array(rest);
                 // `wchar CSDVersion[128]`: the count sits on the name.
-                (n.to_string(), if c > 1 { c } else { type_count })
+                (n.to_string(), c.or(type_count))
             }
             None => (String::new(), type_count),
         };
-        let count = count.max(1);
+        // No brackets at all is one element; an explicit `[0]` really is zero
+        // bytes long. Measured on the official x64 interpreter:
+        // `DllStructGetSize(DllStructCreate("BYTE [0]"))` is 0, and a hashing
+        // loop depends on it - the empty chunk it feeds a BCrypt context at EOF
+        // must add nothing, or every digest comes out one null byte too long.
+        let count = count.unwrap_or(1);
         // AutoIt's type keywords are case-insensitive: scripts write `BYTE`,
         // `BYTE [38]`, `ulong` and `ULong` interchangeably.
         let (elem_size, is_char, is_binary, is_wchar, is_float, signed) =
@@ -510,18 +515,19 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
     Ok(fields)
 }
 
-/// Split `name[count]` into its parts; `count` is `1` when absent.
-fn split_array(token: &str) -> (String, usize) {
+/// Split `name[count]` into its parts; the count is `None` when the token
+/// carries no brackets at all, which is not the same as an explicit `[0]`.
+fn split_array(token: &str) -> (String, Option<usize>) {
     match token.split_once('[') {
         Some((name, rest)) => {
             let count = rest
                 .trim_end_matches(']')
                 .trim()
                 .parse::<usize>()
-                .unwrap_or(1);
+                .ok();
             (name.to_string(), count)
         }
-        None => (token.to_string(), 1),
+        None => (token.to_string(), None),
     }
 }
 
