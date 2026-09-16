@@ -14,6 +14,7 @@ use autoitv3_platform::{
 use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
 use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::profile::{EffectKind, ExecutionProfile};
+use autoitv3_runtime::BuildFacts;
 use clap::Args;
 
 /// `-o FILE` output redirection, shared by the source-emitting commands.
@@ -372,6 +373,114 @@ fn note_once(text: impl std::fmt::Display) {
     }
 }
 
+/// What `@Compiled`, `@Unicode` and `@AutoItX64` answer for this input.
+///
+/// A build's own stub is the ground truth for `@AutoItX64`, so a `.exe`'s PE
+/// machine comes first; the wrapper directive that asked for x64 is the next
+/// best witness, and `None` leaves the answer to the platform, which reports
+/// the emulated machine (`--win-arch`).
+///
+/// `#AutoIt3Wrapper_UseAnsi` is deliberately not honoured: AutoIt dropped the
+/// ANSI interpreter in 3.3.14 and a modern wrapper skips the directive, so every
+/// build that still carries it is Unicode whatever the line says. It is still
+/// worth seeing, which is what [`note_wrapper_directives`] is for.
+pub fn build_facts(program: &Program, build_is_x64: Option<bool>, compiled: bool) -> BuildFacts {
+    BuildFacts {
+        compiled,
+        unicode: true,
+        autoit_x64: build_is_x64.or_else(|| wrapper_flag(program, "UseX64")),
+    }
+}
+
+/// A `#AutoIt3Wrapper_<name>=Y|N` setting, when the script carries one.
+fn wrapper_flag(program: &Program, wanted: &str) -> Option<bool> {
+    for (directive, argument) in autoitv3_preproc::directives(program) {
+        let Some((name, value)) = wrapper_setting(directive) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(wanted) {
+            return truthy_flag(if value.is_empty() { argument.trim() } else { value });
+        }
+    }
+    None
+}
+
+/// Split one `#AutoIt3Wrapper_<name>=<value>` directive.
+///
+/// The wrapper writes `Name=value` with no space, so the generic directive
+/// split — which cuts on whitespace, because `#include <file>` needs it to —
+/// leaves the value stuck to the name. Both spellings are accepted here.
+fn wrapper_setting(directive: &str) -> Option<(&str, &str)> {
+    const PREFIX: &str = "AutoIt3Wrapper_";
+    if !directive.get(..PREFIX.len())?.eq_ignore_ascii_case(PREFIX) {
+        return None;
+    }
+    let rest = &directive[PREFIX.len()..];
+    Some(match rest.split_once('=') {
+        Some((name, value)) => (name.trim(), value.trim()),
+        None => (rest.trim(), ""),
+    })
+}
+
+/// The spellings the wrapper accepts for `Y`/`N`.
+fn truthy_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" | "1" | "true" | "on" => Some(true),
+        "n" | "no" | "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Note the `#AutoIt3Wrapper_*` settings a script carries, once per process.
+///
+/// The wrapper consumed them at build time — that is where a build's resources,
+/// version info, x64 stub and UPX packing came from — so nothing here acts on
+/// them. They are the build's *fingerprint*, which is what an analyst wants to
+/// see: which packer knobs produced the thing in hand.
+fn note_wrapper_directives(program: &Program) {
+    /// Longest setting shown before the line would stop being readable.
+    const SHOWN: usize = 6;
+    /// Longest argument kept per setting (paths can be long).
+    const ARG: usize = 40;
+
+    let mut settings: Vec<String> = Vec::new();
+    for (directive, argument) in autoitv3_preproc::directives(program) {
+        let Some((name, value)) = wrapper_setting(directive) else {
+            continue;
+        };
+        // The real spelling keeps the wrapper's own capitalisation.
+        let mut shown = name.to_string();
+        let value = if value.is_empty() { argument } else { value };
+        let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !value.is_empty() {
+            let value = if value.chars().count() > ARG {
+                value.chars().take(ARG).collect::<String>() + "…"
+            } else {
+                value
+            };
+            shown.push('=');
+            shown.push_str(&value);
+        }
+        if !settings.contains(&shown) {
+            settings.push(shown);
+        }
+    }
+    if settings.is_empty() {
+        return;
+    }
+    let count = settings.len();
+    let hidden = count.saturating_sub(SHOWN);
+    settings.truncate(SHOWN);
+    if hidden > 0 {
+        settings.push(format!("…(+{hidden})"));
+    }
+    note_once(msg!(
+        "# AutoIt3Wrapper settings ({count}): {list}",
+        count = count,
+        list = settings.join(", ")
+    ));
+}
+
 impl WinEmuArgs {
     /// Build the platform stack these arguments select.
     ///
@@ -540,6 +649,12 @@ pub struct Input {
     /// The PE image the script's resources live in — the build itself when the
     /// input *was* a build; `None` for a plain `.au3`.
     pub resource_module: Option<PathBuf>,
+    /// Whether that build is a 64-bit one, read from its PE header.
+    ///
+    /// A build's stub is the ground truth for `@AutoItX64`: it was compiled for
+    /// one machine, and the script branched on that. `None` for a `.au3` input,
+    /// where only the wrapper directive or the emulated machine can say.
+    pub build_is_x64: Option<bool>,
 }
 
 /// Read and parse the AutoIt program at `path`.
@@ -556,7 +671,9 @@ pub fn load_input(path: &str) -> CliResult<Input> {
     let bytes = std::fs::read(path)
         .map_err(|e| CliError::io(msg!("cannot read {path}: {e}", path = path, e = e)))?;
     if is_compiled_build(&bytes) {
-        return load_compiled(path);
+        let input = load_compiled(path)?;
+        note_wrapper_directives(&input.program);
+        return Ok(input);
     }
     let source = autoitv3_preproc::decode(&bytes).ok_or_else(|| {
         CliError::io(msg!(
@@ -567,10 +684,12 @@ pub fn load_input(path: &str) -> CliResult<Input> {
     })?;
     let program = parse(&source)
         .map_err(|e| CliError::failure(msg!("parse error in {path}: {e}", path = path, e = e)))?;
+    note_wrapper_directives(&program);
     Ok(Input {
         source,
         program,
         resource_module: None,
+        build_is_x64: None,
     })
 }
 
@@ -646,6 +765,12 @@ fn load_compiled(path: &str) -> CliResult<Input> {
         source,
         program,
         resource_module: Some(PathBuf::from(path)),
+        // The stub's machine type, which is what this build's `@AutoItX64`
+        // answered. A build whose headers cannot be read falls back to the
+        // directive, then to the emulated machine.
+        build_is_x64: autoitv3_platform::PeImage::load(path)
+            .ok()
+            .map(|image| image.is_x64()),
     })
 }
 

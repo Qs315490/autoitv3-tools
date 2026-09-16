@@ -13,6 +13,29 @@ fn a_non_pe_file_is_rejected() {
 }
 
 #[test]
+fn the_machine_type_says_whether_the_build_is_x64() {
+    // `@AutoItX64` for a script pulled out of a `.exe` is this field: the stub
+    // was compiled for one machine, and every branch on the macro took that
+    // answer.
+    let dir = std::env::temp_dir().join(format!("au3-pe-machine-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let x64 = dir.join("x64.exe");
+    std::fs::write(&x64, tiny_pe(b"payload")).unwrap();
+    let image = PeImage::load(&x64).expect("loads");
+    assert_eq!(image.machine, MACHINE_AMD64);
+    assert!(image.is_x64(), "an amd64 header is an x64 build");
+
+    let mut bytes = tiny_pe(b"payload");
+    bytes[0x44..0x46].copy_from_slice(&MACHINE_I386.to_le_bytes());
+    let x86 = dir.join("x86.exe");
+    std::fs::write(&x86, &bytes).unwrap();
+    assert!(!PeImage::load(&x86).expect("loads").is_x64());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn selector_matching_is_case_insensitive_for_names() {
     let sel = Selector::name("payload");
     assert!(sel.matches(None, Some("PAYLOAD")));

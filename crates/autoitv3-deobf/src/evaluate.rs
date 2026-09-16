@@ -31,7 +31,7 @@ use autoitv3_ast::span::Span;
 use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
 use autoitv3_runtime::profile::ExecutionProfile;
 use autoitv3_runtime::value::MapKey;
-use autoitv3_runtime::{Runtime, Value};
+use autoitv3_runtime::{BuildFacts, Runtime, Value};
 
 /// What an [`evaluate`] run achieved.
 #[derive(Debug, Default, Clone)]
@@ -178,25 +178,27 @@ pub fn evaluate_with_platform(
         platform,
         SubstituteOptions::default(),
         DEFAULT_MAX_STEPS,
-        false,
+        BuildFacts::default(),
     )
 }
 
 /// [`evaluate_with_platform`] with explicit [`SubstituteOptions`] and an
 /// interpreter step budget (`max_steps`; `0` means no limit).
 ///
-/// `compiled` is what `@Compiled` answers for the run. `false` is right for a
-/// `.au3` input; pass `true` when the script came out of a build, or it takes
-/// the source-side branch of every `@Compiled` test it contains.
+/// `facts` is what the script's build macros answer for the run
+/// ([`BuildFacts`]): `@Compiled`, `@Unicode` and `@AutoItX64`. A `.au3` input
+/// wants [`BuildFacts::default`]; a script that came out of a build wants that
+/// build's facts, or it takes the source-side branch of every `@Compiled` /
+/// `@AutoItX64` test it contains.
 pub fn evaluate_with_options(
     prog: &mut Program,
     profile: ExecutionProfile,
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
     options: SubstituteOptions,
     max_steps: u64,
-    compiled: bool,
+    facts: BuildFacts,
 ) -> EvaluateReport {
-    evaluate_inner(prog, profile, platform, options, max_steps, compiled, None)
+    evaluate_inner(prog, profile, platform, options, max_steps, facts, None)
 }
 
 /// [`evaluate_with_options`] with a [`Debugger`](autoitv3_runtime::debug::Debugger)
@@ -213,7 +215,7 @@ pub fn evaluate_with_debugger(
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
     options: SubstituteOptions,
     max_steps: u64,
-    compiled: bool,
+    facts: BuildFacts,
     debugger: Box<dyn autoitv3_runtime::debug::Debugger>,
 ) -> EvaluateReport {
     evaluate_inner(
@@ -222,7 +224,7 @@ pub fn evaluate_with_debugger(
         platform,
         options,
         max_steps,
-        compiled,
+        facts,
         Some(debugger),
     )
 }
@@ -233,7 +235,7 @@ fn evaluate_inner(
     platform: Box<dyn autoitv3_runtime::platform::Platform>,
     options: SubstituteOptions,
     max_steps: u64,
-    compiled: bool,
+    facts: BuildFacts,
     debugger: Option<Box<dyn autoitv3_runtime::debug::Debugger>>,
 ) -> EvaluateReport {
     let mut report = EvaluateReport::default();
@@ -246,8 +248,9 @@ fn evaluate_inner(
     rt.set_max_steps(max_steps);
     // The payload a build decodes is stored on the compiled side of every
     // `@Compiled` test, so evaluating one as a source script reads the wrong
-    // file/resource and gets the wrong tables.
-    rt.set_compiled(compiled);
+    // file/resource and gets the wrong tables — and `@AutoItX64` picks which
+    // payload drops, which is the same problem one macro over.
+    rt.set_build_facts(facts);
     if let Some(debugger) = debugger {
         rt.set_debugger(debugger);
     }

@@ -6,7 +6,7 @@
 
 use autoitv3_ast::ast::ExprKind;
 use autoitv3_ast::parse;
-use autoitv3_deobf::{evaluate, evaluate_with_options, SubstituteOptions};
+use autoitv3_deobf::{evaluate, evaluate_with_options, BuildFacts, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
 use autoitv3_runtime::interp::DEFAULT_MAX_STEPS;
 use autoitv3_runtime::ExecutionProfile;
@@ -43,7 +43,10 @@ fn run_with_compiled(
         autoitv3_platform::host_platform(),
         options,
         DEFAULT_MAX_STEPS,
-        compiled,
+        BuildFacts {
+            compiled,
+            ..BuildFacts::default()
+        },
     );
     (render(&prog), report)
 }
@@ -593,7 +596,10 @@ fn sample_evaluate(module: Option<&std::path::Path>) -> Option<autoitv3_deobf::E
         autoitv3_platform::host_platform_with(emu),
         SubstituteOptions::default(),
         DEFAULT_MAX_STEPS,
-        true,
+        BuildFacts {
+            compiled: true,
+            ..BuildFacts::default()
+        },
     ))
 }
 
@@ -656,7 +662,7 @@ fn a_debugger_installed_for_the_run_sees_every_statement() {
         autoitv3_platform::host_platform(),
         SubstituteOptions::default(),
         DEFAULT_MAX_STEPS,
-        false,
+        BuildFacts::default(),
         Box::new(Counter(seen.clone())),
     );
     assert!(report.completed, "stopped at: {:?}", report.stopped);

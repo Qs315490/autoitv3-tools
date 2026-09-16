@@ -91,6 +91,35 @@ struct Frame {
     extended_set: bool,
 }
 
+/// What the build under analysis tells the script about itself.
+///
+/// The three macros a script uses to ask "who am I running as" — `@Compiled`,
+/// `@Unicode`, `@AutoItX64` — are not properties of the machine emulating it
+/// now; they are properties of the interpreter the script was built for. A
+/// `.exe` analysed through its extracted source has to keep answering them the
+/// way it did when it ran, or every branch on them goes the wrong way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildFacts {
+    /// `@Compiled`: the script came out of a `.exe`/`.a3x`.
+    pub compiled: bool,
+    /// `@Unicode`: the interpreter is a Unicode build. AutoIt dropped ANSI in
+    /// 3.3.14, so this is `true` for everything modern.
+    pub unicode: bool,
+    /// `@AutoItX64`, when the build says; `None` leaves it to the platform,
+    /// which answers from the emulated machine (`--win-arch`).
+    pub autoit_x64: Option<bool>,
+}
+
+impl Default for BuildFacts {
+    fn default() -> Self {
+        Self {
+            compiled: false,
+            unicode: true,
+            autoit_x64: None,
+        }
+    }
+}
+
 /// The AutoIt interpreter.
 pub struct Runtime {
     globals: HashMap<String, Value>,
@@ -175,6 +204,15 @@ pub struct Runtime {
     /// run under `AutoIt3.exe` answers `0`. Matching that keeps a script that
     /// branches on `@Compiled` on the path it actually took.
     compiled: bool,
+    /// Whether the interpreter is a Unicode build (`@Unicode`).
+    ///
+    /// AutoIt dropped the ANSI build in 3.3.14 and added the macro to report
+    /// which one is running, so a modern build answers `1`; only an embedder
+    /// replaying something older has a reason to turn this off.
+    unicode: bool,
+    /// Which `@AutoItX64` answers, when the build under analysis says something
+    /// other than the platform's own machine. `None` asks the platform.
+    autoit_x64: Option<bool>,
     /// Top-level (script) statements, executed by [`Runtime::run_script`].
     script: Vec<Stmt>,
     /// The function `#OnAutoItStartRegister` names, if the program carries the
@@ -359,6 +397,8 @@ impl Runtime {
             adlib_handlers: Vec::new(),
             profile: ExecutionProfile::default(),
             compiled: false,
+            unicode: true,
+            autoit_x64: None,
             script: Vec::new(),
             start_register: None,
             options: HashMap::new(),
@@ -602,6 +642,29 @@ impl Runtime {
     /// command line takes the branch its build would have taken.
     pub fn set_compiled(&mut self, compiled: bool) {
         self.compiled = compiled;
+    }
+
+    /// Install the build facts the script observes through its macros.
+    ///
+    /// This is the seam for "the script did not run under *this* interpreter,
+    /// it ran under the build these facts describe": a `.exe` analysed through
+    /// its extracted source answered `@AutoItX64` from its own PE header, not
+    /// from whatever machine is emulating it now.
+    pub fn set_build_facts(&mut self, facts: BuildFacts) {
+        self.compiled = facts.compiled;
+        self.unicode = facts.unicode;
+        self.autoit_x64 = facts.autoit_x64;
+    }
+
+    /// Set `@Unicode`: whether the interpreter is a Unicode build.
+    pub fn set_unicode(&mut self, unicode: bool) {
+        self.unicode = unicode;
+    }
+
+    /// Set `@AutoItX64` to the build's own answer; `None` leaves it to the
+    /// platform (the emulated machine).
+    pub fn set_autoit_x64(&mut self, x64: Option<bool>) {
+        self.autoit_x64 = x64;
     }
 
     /// The code passed to `Exit`, if the script exited.
@@ -1659,8 +1722,15 @@ impl Runtime {
             "numparams" => Value::Int(
                 self.frames.last().map(|f| f.arg_count as i64).unwrap_or(0),
             ),
-            // Script state: whether this is running as a compiled build.
+            // Script state: which interpreter the script is (or was) running
+            // under. See [`BuildFacts`].
             "compiled" => Value::Int(self.compiled as i64),
+            "unicode" => Value::Int(self.unicode as i64),
+            "autoitx64" => match self.autoit_x64 {
+                Some(x64) => Value::Int(x64 as i64),
+                // No build to ask: the emulated machine answers.
+                None => self.platform_macro(&key),
+            },
             // The clock. AutoIt reports local time; this reports the fixed
             // instant the deterministic profile runs at, or the host's time
             // otherwise (see [`Runtime::clock_parts`]).
@@ -1673,10 +1743,19 @@ impl Runtime {
             "lf" => Value::Str("\n".into()),
             "tab" => Value::Str("\t".into()),
             // Everything else is environment-dependent.
-            _ => match self.platform.as_ref().and_then(|p| p.macro_value(&key)) {
-                Some(v) => v,
-                None => Value::Null,
-            },
+            _ => self.platform_macro(&key),
+        }
+    }
+
+    /// The installed platform's answer for one macro.
+    ///
+    /// OS identity, the emulated machine and the directory macros live there;
+    /// a macro nobody answers is empty rather than an error, which is what
+    /// AutoIt does for a macro it does not know.
+    fn platform_macro(&self, key: &str) -> Value {
+        match self.platform.as_ref().and_then(|p| p.macro_value(key)) {
+            Some(v) => v,
+            None => Value::Null,
         }
     }
 

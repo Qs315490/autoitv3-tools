@@ -95,6 +95,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("parse error in {path}: {e}", "解析 {path} 时出错：{e}"),
     ("# #include: read {files} files ({included} included)", "# #include：读取了 {files} 个文件（包含 {included} 个）"),
     ("# input build: {path} (compiled script {version}, {files} embedded file(s))", "# 输入构建：{path}（编译脚本 {version}，嵌入 {files} 个文件）"),
+    ("# AutoIt3Wrapper settings ({count}): {list}", "# AutoIt3Wrapper 设置（{count} 项）：{list}"),
     ("parse error in the script unpacked from {path}: {e}", "解析从 {path} 解包出的脚本时出错：{e}"),
     // clap writes these itself (help headings, usage errors); `i18n_cli` replaces them after rendering.
     ("Usage:", "用法:"),

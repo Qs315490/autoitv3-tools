@@ -225,7 +225,7 @@ AutoIt 是 Windows 工具，真实的 Windows 主机上 `windows/` 才是正解�
 
 | 区域 | 行为 |
 | ---- | ---- |
-| OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`、`@AutoItX64` |
+| OS 身份 | `WindowsVersion` 决定 `@OSVersion`、`@OSType`、`@OSBuild`、`@OSServicePack`、`@OSArch`/`@ProcessorArch`/`@CPUArch`（`@AutoItX64` 只在运行时没给构建事实时才回落到这里的 `--win-arch`） |
 | 路径 | 宏与文件参数是两个方向：`@ScriptDir`/`@ScriptName`/`@ScriptFullPath` 描述被分析的脚本，路径宏与文件函数之间按 `C:` ↔ 宿主根翻译（见下文「盘符映射」；`AU3_WIN_DRIVE_MAP`/`--win-drive-map`/`without_path_map()` 可关） |
 | 目录 | `WindowsPaths` 给出传统 `C:` 布局：`@WindowsDir`、`@SystemDir`、`@ProgramFilesDir`、`@HomeDrive`、`@TempDir`、`@AppDataDir`、`@LocalAppDataDir`、`@UserProfileDir`、`@StartMenuDir`、`@StartupDir`…… |
 | 原生结构 | `DllStructCreate`/`GetData`/`SetData`/`GetSize`/`GetPtr`/`IsDllStruct`——定义解析器支持 `struct;…;endstruct`、常见整型/浮点/指针、`char`/`wchar` 数组、无名段、`align N`；句柄指向一块本层持有的字节缓冲 |

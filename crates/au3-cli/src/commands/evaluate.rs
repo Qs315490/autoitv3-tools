@@ -25,7 +25,7 @@ use clap::Args;
 
 use crate::args::{
     CliResult, CompiledArgs, EffectArgs, IncludeArgs, OutputArgs, ProfileArgs, ProgressArgs,
-    StepArgs, SubstituteArgs, WinEmuArgs, load_input_included,
+    StepArgs, SubstituteArgs, WinEmuArgs, build_facts, load_input_included,
 };
 
 use crate::output::write_output;
@@ -140,8 +140,13 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
         inline_declarations: args.substitute.inline_tables,
     };
     // A build's script saw `@Compiled = 1`; evaluating it as a source script
-    // would take the wrong branch wherever the macro is tested.
-    let compiled = args.compiled.resolve(input.resource_module.is_some());
+    // would take the wrong branch wherever the macro is tested. The other build
+    // facts (`@Unicode`, `@AutoItX64`) travel with it.
+    let facts = build_facts(
+        &prog,
+        input.build_is_x64,
+        args.compiled.resolve(input.resource_module.is_some()),
+    );
     let outcome = match reporter(args.progress.no_progress) {
         Some(debugger) => evaluate_with_debugger(
             &mut prog,
@@ -149,7 +154,7 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
             platform,
             options,
             args.steps.max_steps,
-            compiled,
+            facts,
             debugger,
         ),
         None => evaluate_with_options(
@@ -158,7 +163,7 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
             platform,
             options,
             args.steps.max_steps,
-            compiled,
+            facts,
         ),
     };
     report(&outcome);

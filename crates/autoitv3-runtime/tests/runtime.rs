@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason, TracingDebugger};
 use autoitv3_runtime::host::{HostContext, NativeHost};
-use autoitv3_runtime::{Runtime, Value};
+use autoitv3_runtime::{BuildFacts, Runtime, Value};
 
 fn rt(src: &str) -> Runtime {
     let prog = autoitv3_ast::parse(src).unwrap();
@@ -710,6 +710,20 @@ fn compiled_macro_reflects_how_the_script_was_loaded() {
     assert_eq!(rt.call_function("F", vec![]).unwrap().to_int(), 0);
     rt.set_compiled(true);
     assert_eq!(rt.call_function("F", vec![]).unwrap().to_int(), 1);
+}
+
+#[test]
+fn build_macros_come_from_the_build_facts() {
+    // A script extracted from a build has to answer the three macros the way
+    // its own stub did, not the way the machine emulating it now would.
+    let mut rt = rt("Func F()\n    Return @Compiled & \"|\" & @Unicode & \"|\" & @AutoItX64\nEndFunc\n");
+    assert_eq!(rt.call_function("F", vec![]).unwrap().to_autoit_string(), "0|1|");
+    rt.set_build_facts(BuildFacts {
+        compiled: true,
+        unicode: true,
+        autoit_x64: Some(false),
+    });
+    assert_eq!(rt.call_function("F", vec![]).unwrap().to_autoit_string(), "1|1|0");
 }
 
 #[test]

@@ -30,6 +30,10 @@ pub use evaluate::{
     evaluate, evaluate_with_debugger, evaluate_with_options, evaluate_with_platform,
     EvaluateReport, SubstituteOptions, SubstitutionCount, Tables,
 };
+// The build facts an evaluation runs under (`@Compiled`, `@Unicode`,
+// `@AutoItX64`) belong to the runtime; they are re-exported so a caller of
+// [`evaluate_with_options`] can name them without a second dependency.
+pub use autoitv3_runtime::BuildFacts;
 pub use orchestrator::{deobfuscate, DeobfReport, Deobfuscator, Pass};
 pub use rename::{rename_program, rename_program_with, RenameOptions, RenameReport};
 pub use simplify::{simplify_program, SimplifyReport};

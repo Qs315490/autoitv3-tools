@@ -92,7 +92,9 @@ au3 evaluate sample.au3               # 分析：默认就是确定性配置
 `$CmdLine`/`$CmdLineRaw`；写了函数时 `--arg` 是该函数的入参，`--cmdline` 仍供
 `--init` 跑的脚本体读取。
 
-`@Compiled` 由 `Runtime::set_compiled` 决定：CLI 以 `.exe`/`.a3x` 为输入时是 1、
+`@Compiled`/`@Unicode`/`@AutoItX64` 由 `Runtime::set_build_facts`（单独设置用
+`set_compiled`/`set_unicode`/`set_autoit_x64`）决定——它们说的是"脚本当初跑在哪个构建
+下"，不是"现在哪台机器在仿真它"。CLI 以 `.exe`/`.a3x` 为输入时 `@Compiled` 是 1、
 `.au3` 是 0，脚本据此选择"重开 x64 进程 / 剥离自身命令行"的分支时与真实产物一致。
 解出来的 `.au3` 想按产物那一侧跑（或反过来）时，`run`/`debug`/`evaluate`/`deobf`
 都接受 `--compiled` / `--no-compiled` 覆盖这个默认值。

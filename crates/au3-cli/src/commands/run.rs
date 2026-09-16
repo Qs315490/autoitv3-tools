@@ -28,7 +28,7 @@ use clap::Args;
 
 use crate::args::{
     CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
-    StepArgs, WinEmuArgs, load_input_included, native_gui_backend, parse_arg_value,
+    StepArgs, WinEmuArgs, build_facts, load_input_included, native_gui_backend, parse_arg_value,
 };
 
 use crate::output::format_value;
@@ -228,7 +228,12 @@ fn execute(
     // A `.exe`/`.a3x` input is a compiled build, so `@Compiled` answers 1 the
     // way it did for the program the script came out of; `--compiled` /
     // `--no-compiled` override that when comparing a source against a build.
-    rt.set_compiled(args.compiled.resolve(input.resource_module.is_some()));
+    // `@Unicode`/`@AutoItX64` come from the same build facts.
+    rt.set_build_facts(build_facts(
+        &prog,
+        input.build_is_x64,
+        args.compiled.resolve(input.resource_module.is_some()),
+    ));
     rt.set_max_steps(args.steps.max_steps);
     rt.set_profile(profile);
 

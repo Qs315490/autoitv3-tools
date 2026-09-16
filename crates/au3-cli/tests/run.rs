@@ -169,6 +169,30 @@ fn gui_rejects_an_unknown_mode() {
     );
 }
 
+/// `#AutoIt3Wrapper_*` lines were consumed at build time, so nothing acts on
+/// them — but the macros a script can check are answered from what they say,
+/// and the settings themselves are the build's fingerprint.
+#[test]
+fn build_directives_answer_the_macros_and_show_up_in_the_notes() {
+    let body = "#AutoIt3Wrapper_UseX64=N\n\
+                #AutoIt3Wrapper_UseUpx=Y\n\
+                #AutoIt3Wrapper_Res_FileVersion=1.2.3.4\n\
+                ConsoleWrite(\"x64=\" & @AutoItX64 & \" unicode=\" & @Unicode & @CRLF)\n";
+    let path = script("wrapper-facts", body);
+    let out = au3(&["run", path.to_str().unwrap()]);
+    assert!(out.contains("x64=0 unicode=1"), "the build says x86: got:\n{out}");
+    assert!(out.contains("AutoIt3Wrapper settings (3)"), "got:\n{out}");
+    assert!(out.contains("UseUpx=Y"), "got:\n{out}");
+
+    // Without a directive the emulated machine answers `@AutoItX64`, which is
+    // what `--win-arch` selects.
+    let plain = script("wrapper-default", "ConsoleWrite(\"x64=\" & @AutoItX64 & @CRLF)\n");
+    let out = au3(&["run", plain.to_str().unwrap()]);
+    assert!(out.contains("x64=1"), "the default machine is x64: got:\n{out}");
+    let out = au3(&["run", plain.to_str().unwrap(), "--win-arch", "x86"]);
+    assert!(out.contains("x64=0"), "got:\n{out}");
+}
+
 /// `--gui egui` needs the eframe-backed build; without the feature the CLI has
 /// to say how to get one rather than failing obscurely.
 #[cfg(not(feature = "gui-egui"))]

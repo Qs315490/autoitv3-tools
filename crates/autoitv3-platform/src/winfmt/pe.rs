@@ -20,6 +20,13 @@
 
 use autoitv3_i18n::{msg, tr};
 
+/// `IMAGE_FILE_MACHINE_AMD64`: an x64 build.
+pub const MACHINE_AMD64: u16 = 0x8664;
+/// `IMAGE_FILE_MACHINE_ARM64`: an ARM64 build, also 64-bit.
+pub const MACHINE_ARM64: u16 = 0xaa64;
+/// `IMAGE_FILE_MACHINE_I386`: a 32-bit x86 build.
+pub const MACHINE_I386: u16 = 0x014c;
+
 /// A `FindResourceW` selector: either an integer id or a string name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selector {
@@ -73,6 +80,13 @@ pub struct Resource {
 pub struct PeImage {
     /// The file the image was read from, for diagnostics.
     pub path: String,
+    /// The COFF machine type (`0x14c` i386, `0x8664` amd64, `0xaa64` arm64).
+    ///
+    /// This is what tells an x64 build from an x86 one, which is how a script
+    /// extracted from a `.exe` still answers `@AutoItX64` the way its own stub
+    /// did (`0` when the header is unreadable: every AutoIt build before the
+    /// macro existed was 32-bit).
+    pub machine: u16,
     /// Every resource leaf, in directory order.
     pub resources: Vec<Resource>,
 }
@@ -85,8 +99,14 @@ impl PeImage {
         let resources = parse(&bytes)?;
         Ok(Self {
             path: path.display().to_string(),
+            machine: machine_type_of(&bytes).unwrap_or(0),
             resources,
         })
+    }
+
+    /// Whether the image is a 64-bit build (amd64 or arm64).
+    pub fn is_x64(&self) -> bool {
+        matches!(self.machine, MACHINE_AMD64 | MACHINE_ARM64)
     }
 
     /// The first resource matching a `FindResourceW(name, type)` lookup.
@@ -377,6 +397,18 @@ fn read_name(image: &[u8], off: usize) -> Option<String> {
 
 fn read_u16(image: &[u8], off: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(off..off + 2)?.try_into().ok()?))
+}
+
+/// The COFF machine type of an image in memory, when its headers are readable.
+///
+/// The field is the first `u16` of the COFF header, which follows the `PE\0\0`
+/// signature the DOS stub points at.
+fn machine_type_of(image: &[u8]) -> Option<u16> {
+    let nt = read_u32(image, 0x3c)? as usize;
+    if image.get(nt..nt + 4) != Some(b"PE\0\0") {
+        return None;
+    }
+    read_u16(image, nt + 4)
 }
 
 fn read_u32(image: &[u8], off: usize) -> Option<u32> {

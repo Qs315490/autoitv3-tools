@@ -53,7 +53,7 @@ use autoitv3_ast::Program;
 use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, FrameInfo, StopReason};
 use autoitv3_runtime::profile::EffectKind;
 use autoitv3_runtime::RuntimeError;
-use autoitv3_runtime::Runtime;
+use autoitv3_runtime::{BuildFacts, Runtime};
 use autoitv3_i18n::{msg, tr};
 use clap::Args;
 use rustyline::completion::{Completer, Pair};
@@ -66,7 +66,7 @@ use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
     CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
-    StepArgs, WinEmuArgs, load_input_included, native_gui_backend,
+    StepArgs, WinEmuArgs, build_facts, load_input_included, native_gui_backend,
 };
 
 use crate::output::format_value;
@@ -325,7 +325,21 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
         args,
         file_commands,
     )));
-    let mut rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), &gui);
+    // The build the script came out of is the same for every `run`, so the
+    // facts are computed once and handed to each runtime.
+    let facts = build_facts(
+        &prog,
+        input.build_is_x64,
+        args.compiled.resolve(resource_module.is_some()),
+    );
+    let mut rt = build_runtime(
+        &prog,
+        args,
+        shell.clone(),
+        resource_module.as_deref(),
+        &gui,
+        facts,
+    );
 
     // The outer loop. A `Resume` here means "start the script body"; the same
     // answer at a breakpoint means "give control back to the interpreter",
@@ -342,7 +356,14 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
         // Start a run. `run` typed at a stop asks for a fresh one: the request
         // unwinds the current run first, which is what `take_restart` reports.
         loop {
-            rt = build_runtime(&prog, args, shell.clone(), resource_module.as_deref(), &gui);
+            rt = build_runtime(
+                &prog,
+                args,
+                shell.clone(),
+                resource_module.as_deref(),
+                &gui,
+                facts,
+            );
             shell.borrow_mut().restore_breakpoints(&mut rt);
             shell.borrow_mut().begin_run();
             let result = rt.run_script();
@@ -363,6 +384,7 @@ fn build_runtime(
     shell: Rc<RefCell<Shell>>,
     resource_module: Option<&Path>,
     gui: &Option<GuiFactory>,
+    facts: BuildFacts,
 ) -> Runtime {
     let mut rt = Runtime::with_program(prog);
     // A factory, not a backend: each runtime gets its own handle to the window.
@@ -389,7 +411,8 @@ fn build_runtime(
     }
     // The build the script came out of answered `@Compiled = 1`; the flags
     // override that when a `.au3` is being compared against its build.
-    rt.set_compiled(args.compiled.resolve(resource_module.is_some()));
+    // `@Unicode`/`@AutoItX64` come from the same facts.
+    rt.set_build_facts(facts);
     rt.set_max_steps(args.steps.max_steps);
     match args
         .effects
