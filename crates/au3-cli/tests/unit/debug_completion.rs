@@ -76,6 +76,15 @@ fn arguments_complete_from_the_command_word() {
         replacements(data.candidates(Some("untilcall"), "GUI")),
         vec!["GUICreate".to_string()]
     );
+    // …and so do the short aliases.
+    assert_eq!(
+        replacements(data.candidates(Some("uc"), "GUI")),
+        vec!["GUICreate".to_string()]
+    );
+    assert_eq!(
+        replacements(data.candidates(Some("ur"), "M")),
+        vec!["Main".to_string()]
+    );
     // `print`/`set`/`eval` offer variables and macros.
     assert_eq!(
         replacements(data.candidates(Some("print"), "$")),

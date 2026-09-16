@@ -375,7 +375,8 @@ impl Debugger for SharedShell {
 /// completion matches what can actually be typed.
 const COMMAND_WORDS: &[&str] = &[
     "run", "restart", "continue", "c", "step", "s", "next", "n", "finish", "fin", "until", "u",
-    "untilcall", "untilc", "untilret", "untilr", "untilgui", "gui", "stopat", "sa", "break",
+    "untilcall", "untilc", "uc", "untilret", "untilr", "ur", "untilgui", "gui", "stopat", "sa",
+    "break",
     "b", "tbreak", "tb",
     "jmp", "j", "frame", "f", "up", "down",
     "delete", "d", "del", "enable", "disable", "print", "p", "set", "info", "i", "backtrace",
@@ -439,7 +440,7 @@ impl CompletionData {
                 "break" | "b" | "tbreak" | "tb" | "until" | "u" | "jmp" | "j" => {
                     pool.extend(self.functions.iter().cloned())
                 }
-                "untilcall" | "untilc" | "untilret" | "untilr" | "stopat" | "sa" => {
+                "untilcall" | "untilc" | "uc" | "untilret" | "untilr" | "ur" | "stopat" | "sa" => {
                     pool.extend(self.builtins.iter().cloned());
                     pool.extend(self.functions.iter().cloned());
                 }
@@ -907,8 +908,8 @@ impl Shell {
             "until" | "u" => self.tbreak_command(rest.trim(), host),
             // `untilcall` is the builtin counterpart: builtins have no entry
             // line, so it watches the resolved call instead.
-            "untilcall" | "untilc" => self.until_call_command(rest.trim()),
-            "untilret" | "untilr" => self.until_ret_command(rest.trim()),
+            "untilcall" | "untilc" | "uc" => self.until_call_command(rest.trim()),
+            "untilret" | "untilr" | "ur" => self.until_ret_command(rest.trim()),
             "stopat" | "sa" => self.stop_at_command(rest.trim()),
             "untilgui" | "gui" => self.until_call_command("GUICreate"),
             "b" | "break" => self.break_command(rest.trim(), host),
@@ -1979,8 +1980,8 @@ Commands (`help <cmd>` describes one)
   next [n], n            run n statements in this frame (default 1)
   finish, fin            run until the current function returns
   until <line-expr>      alias of `tbreak <line-expr>`
-  untilcall <func>       run until <func> is called, stopping *before* it runs
-  untilret <func>        run until <func> has returned (stop after the call)
+  untilcall <func>, uc   run until <func> is called, stopping *before* it runs
+  untilret <func>, ur    run until <func> has returned (stop after the call)
   untilgui, gui          untilcall GUICreate
   stopat <func>..., sa   stop *before* any of these are called — a builtin
                          before it runs (`stopat MsgBox DllOpen` shows a
@@ -2436,10 +2437,10 @@ fn help_for(topic: &str) -> String {
         }
         "finish" => "finish — run until the current function returns".to_string(),
         "until" | "u" => "until <line-expr> — alias of `tbreak <line-expr>`".to_string(),
-        "untilcall" | "untilc" => {
+        "untilcall" | "untilc" | "uc" => {
             "untilcall <func> — run until <func> is called, stopping before it runs (builtins too); one-shot".to_string()
         }
-        "untilret" | "untilr" => {
+        "untilret" | "untilr" | "ur" => {
             "untilret <func> — run until <func> has returned, stopping on the statement after the call".to_string()
         }
         "untilgui" | "gui" => "untilgui — run until GUICreate is called".to_string(),

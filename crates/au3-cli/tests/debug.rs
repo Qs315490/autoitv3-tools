@@ -873,6 +873,29 @@ Main()
     assert!(out.contains("Stopped at line 3"), "got:\n{out}");
 }
 
+/// The short aliases have to land on the same stop as the long spellings —
+/// they are what gets typed in a session.
+#[test]
+fn uc_and_ur_are_the_until_call_and_return_shorthands() {
+    let path = script(
+        "until-aliases",
+        "Func Double($n)\n    Return $n * 2\nEndFunc\n\nLocal $v = Double(21)\nConsoleWrite($v & @CRLF)\n",
+    );
+    // `uc` stops on the call, before it runs (the caller's line 5).
+    let out = shell(&path, &["uc Double", "list", "quit"]);
+    assert!(
+        out.contains("running until Double is called (stopping before it runs)"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("Catchpoint: Double(21)"), "got:\n{out}");
+    assert!(out.contains("=>      5"), "line 5 is current:\n{out}");
+    // `ur` stops after it has returned, in the caller.
+    let out = shell(&path, &["ur Double", "print $v", "quit"]);
+    assert!(out.contains("running until Double returns"), "got:\n{out}");
+    assert!(out.contains("Stopped at line 6"), "the caller's next statement:\n{out}");
+    assert!(has_line(&out, "42"), "the result is readable:\n{out}");
+}
+
 /// For a script function the "after the call" stop is the caller's next
 /// statement, where the result is already there.
 #[test]
