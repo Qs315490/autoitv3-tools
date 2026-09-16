@@ -61,6 +61,33 @@ fn chinese_help_is_chinese() {
 }
 
 #[test]
+fn the_help_lists_the_languages_lang_accepts() {
+    // `--lang` validates against a fixed set, so clap prints it — in both the
+    // summary (`-h`) and the long form, and in the selected language.
+    let en = stdout(&au3(&["--lang", "en", "-h"], &[]));
+    assert!(
+        en.contains("[possible values: auto, en, zh-CN]"),
+        "got:\n{en}"
+    );
+    let zh = stdout(&au3(&["--lang", "zh-CN", "-h"], &[]));
+    assert!(zh.contains("[可选值：auto, en, zh-CN]"), "got:\n{zh}");
+    assert!(zh.contains("[默认值：auto]"), "got:\n{zh}");
+}
+
+#[test]
+fn an_unknown_language_lists_the_ones_it_knows() {
+    let out = au3(&["--lang", "zh-CNN", "parse", "x.au3"], &[]);
+    assert_eq!(out.status.code(), Some(2));
+    let text = stderr(&out);
+    assert!(text.contains("错误: 无效的取值"), "got:\n{text}");
+    assert!(text.contains("zh-CNN"), "got:\n{text}");
+    assert!(
+        text.contains("[可选值：auto, en, zh-CN]"),
+        "got:\n{text}"
+    );
+}
+
+#[test]
 fn without_a_locale_the_tool_speaks_english() {
     let out = au3(&["--help"], &[]);
     let text = stdout(&out);

@@ -9,7 +9,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     // clap help surface (`cli.rs` and the shared `Args` types in `args.rs`).
     ("AutoIt v3 analysis toolkit: parse, format, deobfuscate and run scripts", "AutoIt v3 分析工具包：解析、格式化、反混淆与运行脚本"),
     ("Language for messages, help and diagnostics", "消息、帮助和诊断所用的语言"),
-    ("Language for messages, help and diagnostics\n\n`en` (English), `zh-CN` (Simplified Chinese), or `auto` to follow the environment: `AU3_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG`, with `zh*` meaning Chinese and anything else English. Defaults to `auto`, so an unset environment behaves exactly as before.", "消息、帮助和诊断所用的语言\n\n`en`（英语）、`zh-CN`（简体中文），或 `auto` 以跟随环境变量：依次为 `AU3_LANG`、`LC_ALL` / `LC_MESSAGES` / `LANG`，其中 `zh*` 表示中文，其他一律表示英语。默认为 `auto`，因此未设置环境变量时行为与以往完全一致。"),
+    ("Language for messages, help and diagnostics\n\n`auto` follows the environment and then the host: `AU3_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG` (`zh*` is Chinese, anything else English), and on Windows the user's UI language when none of those is set. `en` and `zh-CN` force one instead. Defaults to `auto`.", "消息、帮助和诊断所用的语言\n\n`auto` 依次看环境与本机：`AU3_LANG`，然后是 `LC_ALL` / `LC_MESSAGES` / `LANG`（`zh*` 为中文，其他一律英文），两者都没设置时在 Windows 上看用户的界面语言。`en` 与 `zh-CN` 则直接指定。默认为 `auto`。"),
     ("(internal) Attach to the console of the process that started us", "（内部）附加到启动我们的进程的控制台"),
     ("(internal) Attach to the console of the process that started us\n\nThe elevated copy an `#RequireAdmin` run starts is given a console of its own by the shell, so the script's output would appear in a second window. The launcher passes its own process id so the copy can attach to the console the command was typed in. Not meant to be used by hand: see `autoitv3-platform`'s `elevate` module.", "（内部）附加到启动我们的进程的控制台\n\n`#RequireAdmin` 运行所启动的提权副本会被 shell 分配一个独立控制台，脚本输出就会出现在另一个窗口中。启动器传入自己的进程 ID，使该副本能够附加到输入命令的那个控制台。不供手工使用：参见 `autoitv3-platform` 的 `elevate` 模块。"),
     ("Parse a script and report top-level item / function counts", "解析脚本并报告顶层条目/函数数量"),
@@ -98,6 +98,8 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("parse error in the script unpacked from {path}: {e}", "解析从 {path} 解包出的脚本时出错：{e}"),
     // clap writes these itself (help headings, usage errors); `i18n_cli` replaces them after rendering.
     ("Usage:", "用法:"),
+    ("[possible values: ", "[可选值："),
+    ("[default: ", "[默认值："),
     ("Commands:", "子命令:"),
     ("Options:", "选项:"),
     ("Arguments:", "参数:"),
@@ -142,5 +144,4 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("Print help (see more with '--help')", "打印帮助（用 '--help' 查看更多）"),
     ("Print help (see a summary with '-h')", "打印帮助（用 '-h' 看摘要）"),
     ("Print version", "打印版本"),
-    ("unknown language '{value}' (expected auto, en or zh-CN)", "未知语言 '{value}'（可用：auto、en、zh-CN）"),
 ];

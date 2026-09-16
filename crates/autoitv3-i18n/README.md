@@ -21,7 +21,10 @@ println!("{}", msg!("literal text"));                            // 返回 Strin
   需要 `Debug`（例如给字符串加引号）时先自己格式化：`let shown = format!("{x:?}");`。
 - `set_lang(Lang)` / `lang()`：进程级全局，和 locale 一样。
 - `resolve(Option<&str>)` / `lang_from_env()`：`--lang` > `AU3_LANG` > `LC_ALL` /
-  `LC_MESSAGES` / `LANG`；`auto`、空值、未设置都走环境；`zh*` → `zh-CN`，其它 → 英文。
+  `LC_MESSAGES` / `LANG` > **本机语言**；`auto`、空值、未设置都走环境；
+  `zh*` → `zh-CN`，其它 → 英文。最后那一步在 Windows 上是
+  `GetUserDefaultLocaleName()`（`src/windows_locale.rs`）——Windows 没有 `LANG`，
+  不问系统的话中文 Windows 会一直显示英文。
 - `AU3_I18N_STRICT=1` 时，每个**没有译文**的键会往 stderr 打一行
   `[i18n] no zh-CN translation: …`，用来手工跑一遍中文会话查漏。
 

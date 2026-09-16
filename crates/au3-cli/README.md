@@ -138,12 +138,18 @@ AU3_LANG=zh-CN au3 debug some.au3
 au3 debug some.au3 --lang en     # 单次强制英文
 ```
 
-- `--lang` 是全局参数，可以放在子命令前后（`au3 run f.au3 --lang zh-CN` 也行）。
-- 不写 `--lang` 时默认 `auto`：看 `AU3_LANG`，没有再看 `LC_ALL` / `LC_MESSAGES` /
-  `LANG`，`zh*`（`zh_CN.UTF-8`、`zh-Hans`…）用中文，其它一律英文。所以
-  `LANG=zh_CN.UTF-8` 的环境里默认就是中文，`LANG=C` 或 `CI` 里默认英文。
+- `--lang` 是全局参数，可以放在子命令前后（`au3 run f.au3 --lang zh-CN` 也行），
+  取值只有三个：`auto` / `en` / `zh-CN`——`au3 --help`（以及 `-h`）里会列出来，
+  写错时会当作用法错误报出来并再列一次：
+  `--lang <LANG> … [默认值：auto] [可选值：auto, en, zh-CN]`。
+- 不写 `--lang` 时默认 `auto`，依次看：
+  `AU3_LANG` → `LC_ALL` / `LC_MESSAGES` / `LANG` → **本机语言**。
+  前两个里 `zh*`（`zh_CN.UTF-8`、`zh-Hans`…）算中文、其它一律英文；
+  **Windows 上没有 `LANG` 这类变量**，所以最后一个来源是系统的用户界面语言
+  （`GetUserDefaultLocaleName`），中文 Windows 不设任何环境变量也是中文。
+  `LANG=C` 或 `CI` 里则是英文。
 - 缺翻译时**静默退回英文**，不会漏掉消息；`AU3_I18N_STRICT=1` 会把还没翻译的键
-  逐条打到 stderr，方便补。`--lang` 的取值写错会当作用法错误报出来。
+  逐条打到 stderr，方便补。
 
 译文在 [`autoitv3-i18n`](../autoitv3-i18n/README.md) 的
 `src/catalog/*.rs` 里，按 `(英文, 中文)` 一条一条加；英文侧留在调用点上，

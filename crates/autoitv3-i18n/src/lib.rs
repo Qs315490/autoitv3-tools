@@ -42,6 +42,10 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 pub mod catalog;
 
+/// The Windows UI language (`#[cfg(windows)]`; see the file's own docs).
+#[cfg(windows)]
+mod windows_locale;
+
 /// A language the toolkit can print in.
 ///
 /// Only English and Simplified Chinese exist; the enum is the place to add
@@ -142,7 +146,23 @@ pub fn lang_from_env() -> Lang {
             }
         }
     }
-    Lang::En
+    // Windows has no `LANG`: ask the OS for the user's UI language instead.
+    host_language().unwrap_or(Lang::En)
+}
+
+/// The language this *host* is set to, when the environment does not say.
+///
+/// On Windows that is `GetUserDefaultLocaleName()`; on every other host the
+/// POSIX variables above are the whole story, so this is `None`.
+fn host_language() -> Option<Lang> {
+    #[cfg(windows)]
+    {
+        windows_locale::locale_tag()?.parse().ok()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// The language to use for an explicit `--lang VALUE`, if one was given.

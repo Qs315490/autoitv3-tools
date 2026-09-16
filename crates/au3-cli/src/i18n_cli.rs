@@ -27,23 +27,6 @@ use autoitv3_i18n::{msg, resolve, tr, tr_owned, Lang};
 
 use crate::cli::Cli;
 
-/// `--lang` value parser: accepts a language tag or `auto`, and reports the
-/// known ones. Runs after the language has been installed, so the message is
-/// translated like every other.
-pub fn lang_value(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    if value.eq_ignore_ascii_case("auto") {
-        return Ok("auto".to_string());
-    }
-    match value.parse::<Lang>() {
-        Ok(lang) => Ok(lang.tag().to_string()),
-        Err(()) => Err(msg!(
-            "unknown language '{value}' (expected auto, en or zh-CN)",
-            value = value
-        )),
-    }
-}
-
 /// The language named on the command line, or by the environment.
 ///
 /// This runs before clap, so it only understands the two spellings `--lang V`
@@ -146,7 +129,11 @@ fn localize_arg(arg: Arg) -> Arg {
 /// Headings and trailing hints clap writes itself, keyed by their English text
 /// in the catalog. Placeholder names (`<FILE>`, `--output <FILE>`) stay as they
 /// are: they are identifiers, not prose.
-const HEADINGS: &[&str] = &[
+pub(crate) const HEADINGS: &[&str] = &[
+    // clap's own annotations: `--lang`'s value list, and every argument's
+    // default.
+    "[possible values: ",
+    "[default: ",
     "Usage:",
     "Commands:",
     "Options:",

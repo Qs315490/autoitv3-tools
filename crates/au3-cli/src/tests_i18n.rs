@@ -71,6 +71,19 @@ fn list_clap_strings() {
 }
 
 #[test]
+fn clap_scaffolding_fragments_are_translated() {
+    // The headings and annotations clap writes itself: `[possible values: …]`
+    // and `[default: …]` come from the argument's own definition, so they are
+    // not in the command tree the walk above collects.
+    for fragment in crate::i18n_cli::HEADINGS {
+        assert!(
+            catalog::lookup(fragment).is_some(),
+            "{fragment:?} has no zh-CN translation"
+        );
+    }
+}
+
+#[test]
 fn clap_strings_are_translated() {
     let mut strings = Vec::new();
     command_strings(&built_command(), &mut strings);

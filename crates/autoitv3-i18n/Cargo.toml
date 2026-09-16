@@ -6,6 +6,11 @@ description = "Runtime message localisation for the AutoIt v3 toolkit (English +
 
 [dependencies]
 
+# The Windows UI language, for `auto`: Windows has no `LANG`, so the OS is
+# asked instead (see `src/windows_locale.rs`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
+
 [lib]
 name = "autoitv3_i18n"
 path = "src/lib.rs"

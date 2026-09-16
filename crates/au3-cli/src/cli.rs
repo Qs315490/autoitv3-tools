@@ -27,12 +27,12 @@ use crate::commands;
 pub struct Cli {
     /// Language for messages, help and diagnostics
     ///
-    /// `en` (English), `zh-CN` (Simplified Chinese), or `auto` to follow the
-    /// environment: `AU3_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG`, with
-    /// `zh*` meaning Chinese and anything else English. Defaults to `auto`, so
-    /// an unset environment behaves exactly as before.
+    /// `auto` follows the environment and then the host: `AU3_LANG`, then
+    /// `LC_ALL` / `LC_MESSAGES` / `LANG` (`zh*` is Chinese, anything else
+    /// English), and on Windows the user's UI language when none of those is
+    /// set. `en` and `zh-CN` force one instead. Defaults to `auto`.
     #[arg(long, global = true, value_name = "LANG", default_value = "auto",
-          value_parser = crate::i18n_cli::lang_value)]
+          value_parser = clap::builder::PossibleValuesParser::new(["auto", "en", "zh-CN"]))]
     pub lang: String,
 
     /// (internal) Attach to the console of the process that started us
