@@ -169,15 +169,26 @@ fn gui_rejects_an_unknown_mode() {
     );
 }
 
-/// `--gui window` needs the eframe-backed build; without the feature the CLI
-/// has to say how to get one rather than failing obscurely.
-#[cfg(not(feature = "gui-window"))]
+/// `--gui egui` needs the eframe-backed build; without the feature the CLI has
+/// to say how to get one rather than failing obscurely.
+#[cfg(not(feature = "gui-egui"))]
 #[test]
-fn gui_window_without_the_feature_says_how_to_build_it() {
-    let path = script("gui-window-off", SCRIPT);
-    let out = au3(&["run", path.to_str().unwrap(), "--gui", "window"]);
-    assert!(out.contains("gui-window"), "got:\n{out}");
-    assert!(out.contains("--features gui-window"), "got:\n{out}");
+fn gui_egui_without_the_feature_says_how_to_build_it() {
+    let path = script("gui-egui-off", SCRIPT);
+    let out = au3(&["run", path.to_str().unwrap(), "--gui", "egui"]);
+    assert!(out.contains("gui-egui"), "got:\n{out}");
+    assert!(out.contains("--features gui-egui"), "got:\n{out}");
+}
+
+/// `--gui native` names the real Win32 backend, which only a Windows host has;
+/// elsewhere the CLI has to say so rather than failing obscurely.
+#[cfg(not(windows))]
+#[test]
+fn gui_native_needs_a_windows_host() {
+    let path = script("gui-native-off", SCRIPT);
+    let out = au3(&["run", path.to_str().unwrap(), "--gui", "native"]);
+    assert!(out.contains("--gui native"), "got:\n{out}");
+    assert!(out.contains("Windows host"), "got:\n{out}");
 }
 
 /// `FileWrite` takes "the text or binary data to write": a `Binary` value has to

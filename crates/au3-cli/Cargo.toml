@@ -13,7 +13,7 @@ autoitv3-runtime = { path = "../autoitv3-runtime" }
 autoitv3-platform = { path = "../autoitv3-platform" }
 autoitv3-deobf = { path = "../autoitv3-deobf" }
 autoitv3-unpack = { path = "../autoitv3-unpack" }
-# `au3 run --gui window`: a real window driven by the emulated GUI model.
+# `au3 run --gui egui`: a real window driven by the emulated GUI model.
 autoitv3-gui-egui = { path = "../autoitv3-gui-egui", optional = true }
 
 # CLI parsing: subcommand aliases + unambiguous abbreviations (`au3 deob`).
@@ -26,9 +26,10 @@ rustyline = "14"
 
 [features]
 default = []
-# Enable `au3 run --gui window` (pulls the eframe/winit stack):
-#   cargo build --release -p au3-cli --features gui-window
-gui-window = [
+# Enable `au3 run --gui egui` / `au3 debug --gui egui` (pulls the eframe/winit
+# stack):
+#   cargo build --release -p au3-cli --features gui-egui
+gui-egui = [
     "dep:autoitv3-gui-egui",
     "autoitv3-gui-egui/window",
     "autoitv3-platform/gui-window",

@@ -33,6 +33,8 @@ fn auto_is_headless_under_the_deterministic_profile() {
     assert_eq!(GuiMode::Auto.resolve(false), GuiMode::Auto);
     // An explicit mode is never second-guessed.
     assert_eq!(GuiMode::Headless.resolve(false), GuiMode::Headless);
-    assert_eq!(GuiMode::Window.resolve(true), GuiMode::Window);
-    assert_eq!(GuiMode::Window.resolve(false), GuiMode::Window);
+    assert_eq!(GuiMode::Native.resolve(true), GuiMode::Native);
+    assert_eq!(GuiMode::Native.resolve(false), GuiMode::Native);
+    assert_eq!(GuiMode::Egui.resolve(true), GuiMode::Egui);
+    assert_eq!(GuiMode::Egui.resolve(false), GuiMode::Egui);
 }

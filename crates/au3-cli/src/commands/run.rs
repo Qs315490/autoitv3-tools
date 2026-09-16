@@ -7,15 +7,17 @@
 //! [`Debugger`](autoitv3_runtime::debug::Debugger) to show the statement stream
 //! the future debug module consumes.
 //!
-//! `--gui` picks what draws the GUI the script creates. The default, `auto`,
-//! leaves the choice to the platform: on Windows the emulation drives real Win32
-//! controls, so the script's window is a native one, while elsewhere nothing is
-//! drawn. `--gui headless` forces the in-memory model on every host — the mode
-//! to use when the GUI is only there to be analysed. `--gui window` (build with
-//! `--features gui-window`) hands the emulation a backend that owns an eframe
-//! window instead, so a GUI script can be seen on a host with no native path to
-//! it; winit insists on the main thread, so that mode runs the script on a
-//! worker driven by `LiveBackend::run` and blocks here until the window closes.
+//! `--gui` picks what draws the GUI the script creates, by naming the backend.
+//! The default, `auto`, leaves the choice to the platform: on Windows the
+//! emulation drives real Win32 controls, so the script's window is a native one,
+//! while elsewhere nothing is drawn. `--gui headless` forces the in-memory model
+//! on every host — the mode to use when the GUI is only there to be analysed.
+//! `--gui native` asks for that same Win32 backend by name, and so needs a
+//! Windows host. `--gui egui` (build with `--features gui-egui`) hands the
+//! emulation a backend that owns an eframe window instead, so a GUI script can
+//! be seen on a host with no native path to it; winit insists on the main
+//! thread, so that mode runs the script on a worker driven by `LiveBackend::run`
+//! and blocks here until the window closes.
 
 use autoitv3_i18n::{msg, tr};
 use autoitv3_platform::winemu::HeadlessBackend;
@@ -26,7 +28,7 @@ use clap::Args;
 
 use crate::args::{
     CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
-    StepArgs, WinEmuArgs, load_input_included, parse_arg_value,
+    StepArgs, WinEmuArgs, load_input_included, native_gui_backend, parse_arg_value,
 };
 
 use crate::output::format_value;
@@ -68,8 +70,9 @@ pub struct RunArgs {
     /// controls on Windows, nothing drawn elsewhere — except under the
     /// deterministic profile, where it means `headless` (an analysis must not
     /// open windows or dialogs that wait for somebody); `headless` never draws;
-    /// `window` opens an eframe window (needs a build with the `gui-window`
-    /// feature)
+    /// `native` is the Windows-native backend (real Win32 windows and controls,
+    /// needs a Windows host); `egui` opens an eframe window (needs a build with
+    /// the `gui-egui` feature)
     #[arg(long = "gui", value_name = "MODE", default_value = "auto")]
     pub gui: GuiMode,
 
@@ -125,16 +128,17 @@ pub fn run(args: &RunArgs) -> CliResult<()> {
     match gui {
         GuiMode::Auto => execute(args, None),
         GuiMode::Headless => execute(args, Some(Box::new(HeadlessBackend::new()))),
-        GuiMode::Window => run_windowed(args),
+        GuiMode::Native => execute(args, Some(native_gui_backend()?)),
+        GuiMode::Egui => run_windowed(args),
     }
 }
 
-/// `--gui window`: open a real window and run the script under it.
+/// `--gui egui`: open a real window and run the script under it.
 ///
 /// The window owns the main thread (winit insists on it), so the script runs on
 /// the worker `LiveBackend::run` starts; it returns once the script is done or
 /// the user closes the window.
-#[cfg(feature = "gui-window")]
+#[cfg(feature = "gui-egui")]
 fn run_windowed(args: &RunArgs) -> CliResult<()> {
     let title = Path::new(&args.input)
         .file_name()
@@ -150,11 +154,11 @@ fn run_windowed(args: &RunArgs) -> CliResult<()> {
         .map_err(|e| CliError::failure(msg!("opening the GUI window failed: {e}", e = e)))
 }
 
-/// `--gui window` without the feature: say how to get it.
-#[cfg(not(feature = "gui-window"))]
+/// `--gui egui` without the feature: say how to get it.
+#[cfg(not(feature = "gui-egui"))]
 fn run_windowed(_args: &RunArgs) -> CliResult<()> {
     Err(CliError::failure(tr(
-        "--gui window needs a build with the `gui-window` feature (cargo build --release -p au3-cli --features gui-window)",
+        "--gui egui needs a build with the `gui-egui` feature (cargo build --release -p au3-cli --features gui-egui)",
     )))
 }
 
@@ -181,8 +185,8 @@ fn execute(
     // profile exists to refuse. The script is told it is an administrator
     // (`IsAdmin()` answers 1) so its admin path is the one being analysed.
     //
-    // `--gui window` is the exception to the hand-over: the window lives in
-    // this process, so there is nothing to hand over, and the directive is only
+    // `--gui egui` is the exception to the hand-over: the window lives in this
+    // process, so there is nothing to hand over, and the directive is only
     // reported.
     let spawn_denied = args
         .effects
@@ -194,11 +198,11 @@ fn execute(
         crate::elevate::simulates(&prog, deterministic, args.no_elevate, spawn_denied);
     if simulate_elevation {
         crate::elevate::note_simulated_elevation();
-    } else if args.gui == GuiMode::Window {
+    } else if args.gui == GuiMode::Egui {
         if crate::elevate::is_required(&prog) {
             eprintln!(
                 "{}",
-                tr("note: #RequireAdmin: --gui window keeps this process, so the script runs without administrator rights")
+                tr("note: #RequireAdmin: --gui egui keeps this process, so the script runs without administrator rights")
             );
         }
     } else if let crate::elevate::Handover::Elevated(code) = crate::elevate::relaunch_if_required(

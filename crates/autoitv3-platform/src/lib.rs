@@ -88,26 +88,41 @@ use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::value::Value;
 use autoitv3_runtime::Runtime;
 
-/// The GUI backend a fresh [`WindowsEmulation`] starts with.
+/// The Windows-native GUI backend, when this host has one.
 ///
-/// On Windows that is the native one: the GUI *semantics* still come from the
-/// emulation layer — every host runs the same 165 functions — but the window
-/// and its controls are real Win32 ones, drawn and hit-tested by the OS. There
-/// is no toolkit to pull in and nothing to opt into: a script's GUI looks
-/// native because it *is* native.
+/// That is the real Win32 one: a script's window is an ordinary native window
+/// and its controls are real Win32 children, drawn and hit-tested by the OS.
+/// The GUI *semantics* still come from the emulation layer — every host runs
+/// the same 165 functions — but there is no toolkit to pull in and nothing to
+/// opt into: a script's GUI looks native because it *is* native.
 ///
-/// Elsewhere the default stays headless (no window system is assumed), and a
-/// renderer is installed on request: `autoitv3-gui-egui`'s offscreen
-/// `EguiBackend` (`gui-egui`) or live window (`gui-window`), or
-/// `WindowsEmulation::with_gui_backend` with an embedder's own backend.
-pub(crate) fn default_gui_backend() -> Box<dyn winemu::GuiBackend> {
+/// `Some` on Windows, where `auto` already installs it and a caller can ask for
+/// it by name (`au3 run --gui native`); `None` elsewhere, where there is no
+/// native Win32 to draw on. The alternatives off Windows are
+/// `autoitv3-gui-egui`'s offscreen `EguiBackend` (`gui-egui`), its live window
+/// (`gui-window`), or an embedder's own backend through
+/// [`WindowsEmulation::with_gui_backend`].
+pub fn native_gui_backend() -> Option<Box<dyn winemu::GuiBackend>> {
     #[cfg(windows)]
     {
-        Box::new(windows::gui::Win32Backend::new())
+        Some(Box::new(windows::gui::Win32Backend::new()))
     }
     #[cfg(not(windows))]
     {
-        Box::new(winemu::HeadlessBackend::new())
+        None
+    }
+}
+
+/// The GUI backend a fresh [`WindowsEmulation`] starts with.
+///
+/// [`native_gui_backend`] where there is one, and
+/// [`HeadlessBackend`](winemu::HeadlessBackend) where there is not: off Windows
+/// no window system is assumed, so nothing is drawn until a renderer is
+/// installed with [`WindowsEmulation::with_gui_backend`].
+pub(crate) fn default_gui_backend() -> Box<dyn winemu::GuiBackend> {
+    match native_gui_backend() {
+        Some(backend) => backend,
+        None => Box::new(winemu::HeadlessBackend::new()),
     }
 }
 

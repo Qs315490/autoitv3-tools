@@ -5,8 +5,8 @@
 //! matters as the first layer of the stack.
 
 use autoitv3_platform::{
-    host_platform, host_platform_with, CompositePlatform, LinuxPlatform, CommonPlatform,
-    WindowsEmulation,
+    host_platform, host_platform_with, native_gui_backend, CompositePlatform, LinuxPlatform,
+    CommonPlatform, WindowsEmulation,
 };
 use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
@@ -62,6 +62,13 @@ fn host_platform_stacks_emulation_common_and_system() {
         "winemu+common+linux"
     };
     assert_eq!(p.name(), expected);
+}
+
+/// `auto` installs the native backend on Windows and `--gui native` asks for it
+/// by name; everywhere else there is no native Win32 to draw on.
+#[test]
+fn the_native_gui_backend_is_windows_only() {
+    assert_eq!(native_gui_backend().is_some(), cfg!(windows));
 }
 
 #[test]

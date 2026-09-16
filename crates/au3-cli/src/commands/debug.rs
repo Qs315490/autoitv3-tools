@@ -37,8 +37,9 @@
 //! The emulated GUI answers its 165 functions on every host; what draws them is
 //! the backend, and by default that is the platform's own — real Win32 controls
 //! on Windows, nothing at all elsewhere. `--gui headless` forces the in-memory
-//! model for a session that only has to be stepped through, and `--gui window`
-//! (build with `--features gui-window`) puts the session under an eframe window
+//! model for a session that only has to be stepped through, `--gui native` asks
+//! for the Win32 backend by name (and so needs a Windows host), and `--gui egui`
+//! (build with `--features gui-egui`) puts the session under an eframe window
 //! instead: winit takes the main thread, so the shell, the interpreter and the
 //! prompt all move to `LiveBackend`'s worker, and stdin keeps working there.
 
@@ -65,7 +66,7 @@ use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
     CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
-    StepArgs, WinEmuArgs, load_input_included,
+    StepArgs, WinEmuArgs, load_input_included, native_gui_backend,
 };
 
 use crate::output::format_value;
@@ -130,9 +131,10 @@ pub struct DebugArgs {
     /// controls on Windows, nothing drawn elsewhere — except under the
     /// deterministic profile, where it means `headless` (an analysis must not
     /// open windows or dialogs that wait for somebody); `headless` answers the
-    /// GUI functions without drawing anything on any host; `window` runs the
-    /// session under an eframe window (needs a build with the `gui-window`
-    /// feature)
+    /// GUI functions without drawing anything on any host; `native` is the
+    /// Windows-native backend (real Win32 windows and controls, needs a Windows
+    /// host); `egui` runs the session under an eframe window (needs a build with
+    /// the `gui-egui` feature)
     #[arg(long = "gui", value_name = "MODE", default_value = "auto")]
     pub gui: GuiMode,
 
@@ -168,15 +170,15 @@ pub struct DebugArgs {
 ///
 /// The session builds a runtime more than once — every `run` asks for a new one
 /// — but a backend is handed to the platform stack by value, so the session
-/// keeps a factory instead of a backend. `--gui window`'s factory hands out
-/// clones of one `LiveBackend`, which all describe the same window; the other
-/// modes build a fresh backend each time, which is just as good because they own
-/// no window.
+/// keeps a factory instead of a backend. `--gui egui`'s factory hands out
+/// clones of one `LiveBackend`, which all describe the same window; `headless`
+/// and `native` build a fresh backend each time, which is just as good because
+/// the one owns nothing and the other owns only the windows of its own run.
 type GuiFactory = Box<dyn Fn() -> Box<dyn autoitv3_platform::winemu::GuiBackend>>;
 
 /// Entry point for the `debug` subcommand.
 ///
-/// The session runs on this thread by default. `--gui window` has to hand the
+/// The session runs on this thread by default. `--gui egui` has to hand the
 /// main thread to the window loop (winit insists on it), so it moves the whole
 /// session — shell included — onto `LiveBackend`'s worker instead.
 pub fn run(args: &DebugArgs) -> CliResult<()> {
@@ -196,17 +198,29 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
                 Box::new(autoitv3_platform::winemu::HeadlessBackend::new())
             })),
         ),
-        GuiMode::Window => run_windowed(args),
+        GuiMode::Native => {
+            // Whether the host has the native backend is the same answer for
+            // every `run`, so ask once here: a session on a host without one
+            // fails before it starts, and each run then gets its own instance.
+            native_gui_backend()?;
+            session(
+                args,
+                Some(Box::new(|| {
+                    native_gui_backend().expect("checked before the session started")
+                })),
+            )
+        }
+        GuiMode::Egui => run_windowed(args),
     }
 }
 
-/// `--gui window`: run the whole debug session under a real window.
+/// `--gui egui`: run the whole debug session under a real window.
 ///
 /// The window owns the main thread, so everything below — shell, interpreter
 /// and all — happens on the worker thread `LiveBackend::run` starts. The shell
 /// still reads stdin there, which is what makes the prompt usable while the
 /// window is on screen.
-#[cfg(feature = "gui-window")]
+#[cfg(feature = "gui-egui")]
 fn run_windowed(args: &DebugArgs) -> CliResult<()> {
     let title = Path::new(&args.input)
         .file_name()
@@ -223,12 +237,12 @@ fn run_windowed(args: &DebugArgs) -> CliResult<()> {
         .map_err(|e| CliError::failure(msg!("opening the GUI window failed: {e}", e = e)))
 }
 
-/// `--gui window` without the feature: say how to get one.
-#[cfg(not(feature = "gui-window"))]
+/// `--gui egui` without the feature: say how to get one.
+#[cfg(not(feature = "gui-egui"))]
 fn run_windowed(_args: &DebugArgs) -> CliResult<()> {
     Err(CliError::failure(tr(
-        "--gui window needs a build with the `gui-window` feature \
-         (cargo build --release -p au3-cli --features gui-window)",
+        "--gui egui needs a build with the `gui-egui` feature \
+         (cargo build --release -p au3-cli --features gui-egui)",
     )))
 }
 
@@ -248,7 +262,7 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
     // what keeps an interactive session usable there. Two cases stay here and
     // say so — a session whose input or output is not a terminal has no console
     // to hand over (and handing over would move a redirected log onto the
-    // screen), and `--gui window` owns the window in this process.
+    // screen), and `--gui egui` owns the window in this process.
     let spawn_denied = args
         .effects
         .deny
@@ -256,7 +270,7 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
         .any(|kind| EffectKind::from_name(kind) == Some(EffectKind::Spawn));
     let hand_over = std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
-        && args.gui != GuiMode::Window;
+        && args.gui != GuiMode::Egui;
     // A deterministic session simulates the elevation (see `run.rs`): asking
     // the OS for a second process is exactly what the profile refuses, and the
     // script is told it is an administrator so its admin path is what gets

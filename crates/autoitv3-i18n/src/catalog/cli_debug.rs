@@ -16,7 +16,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     (", nostop (logpoint)", "，不停止（日志点）"),
     (", skipping {functions}", "，跳过 {functions}"),
     (", skips next {skip}", "，跳过接下来 {skip} 次"),
-    ("--gui window needs a build with the `gui-window` feature (cargo build --release -p au3-cli --features gui-window)", "--gui window 需要启用 `gui-window` 特性构建（cargo build --release -p au3-cli --features gui-window）"),
+    ("--gui egui needs a build with the `gui-egui` feature (cargo build --release -p au3-cli --features gui-egui)", "--gui egui 需要启用 `gui-egui` 特性构建（cargo build --release -p au3-cli --features gui-egui）"),
     ("... {count} more", "... 还有 {count} 个"),
     ("Breakpoint {id} at line {line}", "断点 {id}，位于第 {line} 行"),
     ("Breakpoint {id} at {label} (line {line})", "断点 {id}，位于 {label}（第 {line} 行）"),

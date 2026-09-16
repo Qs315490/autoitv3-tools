@@ -1077,15 +1077,26 @@ fn deterministic_debug_makes_auto_headless() {
 // GUI backend selection
 // ---------------------------------------------------------------------------
 
-/// `--gui window` needs the eframe-backed build; without the feature the shell
+/// `--gui egui` needs the eframe-backed build; without the feature the shell
 /// has to say how to get one rather than failing obscurely.
-#[cfg(not(feature = "gui-window"))]
+#[cfg(not(feature = "gui-egui"))]
 #[test]
-fn gui_window_without_the_feature_says_how_to_build_it() {
-    let path = script("gui-window-off", SCRIPT);
-    let out = shell_with(&path, &["--gui", "window"], &["quit"]);
-    assert!(out.contains("gui-window"), "got:\n{out}");
-    assert!(out.contains("--features gui-window"), "got:\n{out}");
+fn gui_egui_without_the_feature_says_how_to_build_it() {
+    let path = script("gui-egui-off", SCRIPT);
+    let out = shell_with(&path, &["--gui", "egui"], &["quit"]);
+    assert!(out.contains("gui-egui"), "got:\n{out}");
+    assert!(out.contains("--features gui-egui"), "got:\n{out}");
+}
+
+/// `--gui native` names the real Win32 backend, which only a Windows host has;
+/// elsewhere the shell has to say so rather than failing obscurely.
+#[cfg(not(windows))]
+#[test]
+fn gui_native_needs_a_windows_host() {
+    let path = script("gui-native-off", SCRIPT);
+    let out = shell_with(&path, &["--gui", "native"], &["quit"]);
+    assert!(out.contains("--gui native"), "got:\n{out}");
+    assert!(out.contains("Windows host"), "got:\n{out}");
 }
 
 #[test]

@@ -34,12 +34,12 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("error: {message}", "错误：{message}"),
     ("opening the GUI window failed: {e}", "打开 GUI 窗口失败：{e}"),
     (
-        "note: #RequireAdmin: --gui window keeps this process, so the script runs without administrator rights",
-        "注意：#RequireAdmin：--gui window 保留当前进程，因此脚本以非管理员权限运行",
+        "note: #RequireAdmin: --gui egui keeps this process, so the script runs without administrator rights",
+        "注意：#RequireAdmin：--gui egui 保留当前进程，因此脚本以非管理员权限运行",
     ),
     (
-        "--gui window needs a build with the `gui-window` feature (cargo build --release -p au3-cli --features gui-window)",
-        "--gui window 需要启用 `gui-window` 特性构建（cargo build --release -p au3-cli --features gui-window）",
+        "--gui egui needs a build with the `gui-egui` feature (cargo build --release -p au3-cli --features gui-egui)",
+        "--gui egui 需要启用 `gui-egui` 特性构建（cargo build --release -p au3-cli --features gui-egui）",
     ),
     ("script body returned {value}", "脚本主体返回 {value}"),
     ("script body exited with code {code}", "脚本主体以退出码 {code} 退出"),

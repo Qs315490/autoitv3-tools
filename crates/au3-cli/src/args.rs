@@ -27,27 +27,22 @@ pub struct OutputArgs {
     pub output: Option<String>,
 }
 
-/// Windows-emulation selection, shared by the commands that install a platform.
-///
-/// Off Windows the platform stack starts with the emulation layer described in
-/// `autoitv3_platform::winemu`; these flags choose what machine it presents.
-/// When a flag is omitted the matching environment variable is consulted
-/// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`, `AU3_RESOURCE_MODULE`,
-/// `AU3_WIN_DRIVE_MAP`),
-/// and then the default — **Windows 10 x64**.
 /// How the emulated GUI is presented while the script runs.
 ///
 /// The GUI *semantics* (165 functions) are answered by the emulation layer on
 /// every host — every backend sees the same windows, controls, events and
-/// return values. The mode only decides what draws them.
+/// return values. The mode only decides what draws them, and each value names
+/// the backend it selects, so another one (gtk, qt, …) is a new value beside
+/// these plus a build feature, not a new mode.
 ///
 /// `auto` is the default because the right answer is the platform's: on Windows
 /// the emulation runs the real Win32 controls, so the window a script creates is
 /// an ordinary native window, hit-tested and redrawn by the OS. Elsewhere no
 /// window system is assumed and nothing is drawn. `headless` forces that
 /// no-drawing behaviour on every host, which is what an analysis run or a CI job
-/// wants — nothing to open, nothing to leak, identical output. `window` replaces
-/// whatever the platform chose with the eframe-backed
+/// wants — nothing to open, nothing to leak, identical output. `native` asks for
+/// the Win32 backend by name (the same one `auto` picks on Windows), and `egui`
+/// replaces whatever the platform chose with the eframe-backed
 /// `autoitv3_gui_egui::LiveBackend`, for seeing a script's GUI on a host that
 /// has no native path to it.
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -59,9 +54,27 @@ pub enum GuiMode {
     /// Always the in-memory model: GUI calls return their real results and
     /// nothing is drawn, on every host.
     Headless,
+    /// The Windows-native backend: real Win32 windows and controls, drawn and
+    /// hit-tested by the OS (needs a Windows host).
+    Native,
     /// A real window driven by `autoitv3_gui_egui::LiveBackend` (needs a build
-    /// with the `gui-window` feature).
-    Window,
+    /// with the `gui-egui` feature).
+    Egui,
+}
+
+/// The Windows-native GUI backend, or the error that says this host has none.
+///
+/// `--gui native` names the backend `auto` already picks on Windows: real Win32
+/// windows and controls. Whether it exists is a host question, not a build one —
+/// every Windows build has it (the platform's `native_gui_backend` returns it
+/// there) and no other host does — so the message is about the host, not about
+/// features to enable.
+pub fn native_gui_backend() -> CliResult<Box<dyn autoitv3_platform::winemu::GuiBackend>> {
+    autoitv3_platform::native_gui_backend().ok_or_else(|| {
+        CliError::failure(tr(
+            "--gui native needs a Windows host: the native backend is the real Win32 one",
+        ))
+    })
 }
 
 impl GuiMode {
@@ -80,6 +93,14 @@ impl GuiMode {
     }
 }
 
+/// Windows-emulation selection, shared by the commands that install a platform.
+///
+/// Off Windows the platform stack starts with the emulation layer described in
+/// `autoitv3_platform::winemu`; these flags choose what machine it presents.
+/// When a flag is omitted the matching environment variable is consulted
+/// (`AU3_WIN_VERSION`, `AU3_WIN_ARCH`, `AU3_WIN_EMU`, `AU3_RESOURCE_MODULE`,
+/// `AU3_WIN_DRIVE_MAP`),
+/// and then the default — **Windows 10 x64**.
 #[derive(Args, Debug, Clone, Default)]
 pub struct WinEmuArgs {
     /// Emulated Windows version: xp, vista, 7, 8, 81, 10, 11
@@ -348,10 +369,11 @@ impl WinEmuArgs {
     /// `gui` is the GUI backend to install on the emulation layer. `None` keeps
     /// the emulation's own — the host's native one on Windows, the headless
     /// default elsewhere — which is what `--gui auto` (the default) wants;
-    /// `Some` replaces it, which is how the other two modes are implemented.
-    /// They pass a backend here rather than letting the emulation choose one
-    /// because the choice is the CLI's: `--gui headless` must not draw even on a
-    /// Windows host, and `--gui window` draws through eframe wherever it runs.
+    /// `Some` replaces it, which is how every other mode is implemented. They
+    /// pass a backend here rather than letting the emulation choose one because
+    /// the choice is the CLI's: `--gui headless` must not draw even on a Windows
+    /// host, `--gui native` asks for that same Win32 backend explicitly, and
+    /// `--gui egui` draws through eframe wherever it runs.
     ///
     /// [`GuiBackend`]: autoitv3_platform::winemu::GuiBackend
     pub fn platform(
