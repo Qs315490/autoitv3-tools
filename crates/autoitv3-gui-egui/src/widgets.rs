@@ -9,12 +9,13 @@
 //! # Fidelity
 //!
 //! AutoIt's real controls are Win32 (or scripts' own) widgets, so this is an
-//! approximation, not a clone. Two deliberate simplifications:
+//! approximation, not a clone:
 //!
-//! * The widget model has no parent links (AutoIt passes a parent handle to
-//!   `GUICtrlCreateMenuItem`/`GUICtrlCreateTabItem`, which the model does not
-//!   retain), so a `Menu` lists the window's `MenuItem` controls — every menu
-//!   shows every item. Tab items are drawn as a row of tabs.
+//! * The menu structure comes from the model's parent links: the bar holds the
+//!   top-level `Menu`s, and each one shows the `MenuItem`s and submenus whose
+//!   `parent` names it. A script therefore has to hand `GUICtrlCreateMenuItem`
+//!   the menu handle the item belongs to — AutoIt requires `menuID` too — or the
+//!   item reaches no renderer at all. Tab items are drawn as a row of tabs.
 //! * Colors are read as AutoIt documents them, `0xRRGGBB`.
 
 use autoitv3_gui_model::{Control, ControlKind, DrawCmd, GuiUpdate, Window, WindowState};
