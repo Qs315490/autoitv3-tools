@@ -201,13 +201,15 @@ fn execute(
                 tr("note: #RequireAdmin: --gui window keeps this process, so the script runs without administrator rights")
             );
         }
-    } else if crate::elevate::relaunch_if_required(
+    } else if let crate::elevate::Handover::Elevated(code) = crate::elevate::relaunch_if_required(
         &prog,
         args.elevated_copy,
         args.no_elevate,
         spawn_denied,
     )? {
-        return Ok(());
+        // The copy ran the script; this process is only its launcher, so it
+        // stops with the same code instead of reporting a success of its own.
+        return crate::elevate::stop_like_copy(code);
     }
     // Install the platform layer for this OS so OS-specific builtins can be
     // reached (see `autoitv3-platform`); off Windows the Windows emulation

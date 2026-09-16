@@ -20,6 +20,10 @@ pub static ENTRIES: &[(&str, &str)] = &[
         "#RequireAdmin：提升权限的副本已结束，退出码为 {code}",
     ),
     (
+        "#RequireAdmin: the elevated copy exited with code {code}",
+        "#RequireAdmin：提升权限的副本以退出码 {code} 结束",
+    ),
+    (
         "#RequireAdmin: the elevation prompt was dismissed, running without administrator rights",
         "#RequireAdmin：权限提升提示已被关闭，以非管理员权限运行",
     ),

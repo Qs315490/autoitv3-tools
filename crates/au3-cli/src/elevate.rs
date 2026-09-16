@@ -117,11 +117,22 @@ fn action(required: bool, admin: bool, no_elevate: bool, spawn_denied: bool) -> 
     Action::Relaunch
 }
 
+/// What `#RequireAdmin` left the caller to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handover {
+    /// Nothing was handed over: this process runs the script.
+    Here,
+    /// An elevated copy ran the script and this process must stop without
+    /// running anything, with the exit code the copy finished with.
+    Elevated(u32),
+}
+
 /// Honour `#RequireAdmin`, if it applies here.
 ///
-/// Returns `true` when an elevated copy ran the script and this process must
-/// stop without executing it. Every reason *not* to elevate is reported once on
-/// stderr and leaves the script to run in this process.
+/// Every reason *not* to elevate is reported once on stderr and leaves the
+/// script to run in this process ([`Handover::Here`]). When a copy did run the
+/// script, the answer is [`Handover::Elevated`] with the code it finished
+/// with, and the caller stops: see [`stop_like_copy`].
 ///
 /// `spawn_denied` is the caller's own decision — `au3 run --deny spawn` — not
 /// the preset profile's: that profile refuses what the *script* may do, while
@@ -131,9 +142,9 @@ pub fn relaunch_if_required(
     elevated_copy: bool,
     no_elevate: bool,
     spawn_denied: bool,
-) -> CliResult<bool> {
+) -> CliResult<Handover> {
     if !is_required(program) {
-        return Ok(false);
+        return Ok(Handover::Here);
     }
     // The copy our own launcher started is elevated by construction, so the OS
     // does not have to be asked. Everything else asks *this* process's token:
@@ -142,10 +153,10 @@ pub fn relaunch_if_required(
     // to say about skipping it either.
     let admin = elevated_copy || elevate::is_admin();
     match action(true, admin, no_elevate, spawn_denied) {
-        Action::Nothing => return Ok(false),
+        Action::Nothing => return Ok(Handover::Here),
         Action::Skip(reason) => {
             note(tr(reason));
-            return Ok(false);
+            return Ok(Handover::Here);
         }
         Action::Relaunch => {}
     }
@@ -158,26 +169,59 @@ pub fn relaunch_if_required(
     let dir = std::env::current_dir().ok();
     match elevate::relaunch_elevated(&exe, &args, dir.as_deref()) {
         Ok(Elevated::Finished(code)) => {
-            note(&msg!(
-                "#RequireAdmin: the elevated copy finished with exit code {code}",
-                code = code
-            ));
-            Ok(true)
+            // A copy that worked is worth one line saying so; one that failed
+            // gets the error path instead, where the note would only be in the
+            // way (see `stop_like_copy`).
+            if code == 0 {
+                note(&msg!(
+                    "#RequireAdmin: the elevated copy finished with exit code {code}",
+                    code = code
+                ));
+            }
+            Ok(Handover::Elevated(code))
         }
         Ok(Elevated::Declined) => {
             note(tr(
                 "#RequireAdmin: the elevation prompt was dismissed, running without administrator rights",
             ));
-            Ok(false)
+            Ok(Handover::Here)
         }
         Ok(Elevated::Unsupported) => {
             note(tr(
                 "#RequireAdmin: elevation is a Windows mechanism and this host has none, running without administrator rights",
             ));
-            Ok(false)
+            Ok(Handover::Here)
         }
         Err(e) => Err(CliError::failure(msg!("#RequireAdmin: {e}", e = e))),
     }
+}
+
+/// Stop this process the way the elevated copy stopped.
+///
+/// The copy is a whole `au3` run, so `0` means it worked and this process is
+/// done. Anything else is a failure that must not come back as *this* process's
+/// success: whatever started the tool would take a crash for a clean run.
+///
+/// The copy's code travels on **unchanged**, a crash's Windows status code
+/// (`0xC0000374`, `STATUS_HEAP_CORRUPTION`) included — what Windows made of the
+/// copy's death is what the caller sees, so a crash can still be told from an
+/// ordinary failure. Mind the high bit when checking it: read as signed, that
+/// status code is a negative number, and a batch file's `if errorlevel 1` takes
+/// it for success. The line the message is built on spells the code both ways,
+/// decimal and hex, for looking it up either way.
+pub fn stop_like_copy(code: u32) -> CliResult<()> {
+    if code == 0 {
+        return Ok(());
+    }
+    let shown = format!("{code} (0x{code:08X})");
+    Err(CliError {
+        // The exit code is the copy's own, bit for bit.
+        code: code as i32,
+        message: msg!(
+            "#RequireAdmin: the elevated copy exited with code {code}",
+            code = shown
+        ),
+    })
 }
 
 /// This process's own arguments, with the two flags the copy needs.
@@ -279,5 +323,34 @@ mod tests {
         assert!(is_required(&parse("#requireadmin\n").unwrap()));
         assert!(!is_required(&parse("#NoTrayIcon\n").unwrap()));
         assert!(!is_required(&parse("Func F()\n    #RequireAdmin\nEndFunc\n").unwrap()));
+    }
+
+    #[test]
+    fn a_copy_that_succeeded_stops_this_process_cleanly() {
+        assert!(stop_like_copy(0).is_ok());
+    }
+
+    #[test]
+    fn a_copy_that_failed_the_ordinary_way_hands_its_code_on() {
+        for code in [1, 2, 7] {
+            let error = stop_like_copy(code).expect_err("a non-zero copy exit must fail here");
+            assert_eq!(error.code as u32, code);
+        }
+    }
+
+    #[test]
+    fn a_crash_status_code_is_handed_on_unchanged() {
+        // `0xC0000374` is STATUS_HEAP_CORRUPTION, and it is what the caller
+        // sees: a crash can still be told from an ordinary `1`/`2` failure.
+        // Both spellings are on the line because a high-bit code reads as a
+        // negative number wherever the code is read as signed.
+        let error = stop_like_copy(0xC000_0374).expect_err("a crash is always a failure");
+        assert_eq!(error.code as u32, 0xC000_0374, "the status code travels on");
+        assert!(
+            error.message.contains(&0xC000_0374u32.to_string()),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("0xC0000374"), "{}", error.message);
     }
 }

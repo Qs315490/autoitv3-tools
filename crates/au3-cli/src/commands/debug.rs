@@ -282,13 +282,16 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
                  to match"
             )
         );
-    } else if crate::elevate::relaunch_if_required(
+    } else if let crate::elevate::Handover::Elevated(code) = crate::elevate::relaunch_if_required(
         &prog,
         args.elevated_copy,
         args.no_elevate,
         spawn_denied,
     )? {
-        return Ok(());
+        // The session lived in the copy; this process only waited for it, so it
+        // stops the way the copy did — a copy that died abnormally must not
+        // look like a clean end to whatever script ran the debugger.
+        return crate::elevate::stop_like_copy(code);
     }
 
     let mut file_commands = Vec::new();
