@@ -63,6 +63,11 @@ pub mod winemu;
 #[cfg(any(windows, test))]
 pub(crate) mod abi;
 
+/// The files a resource lookup can fall back to when the image is not at hand
+/// ([`ResourceFiles`](resources::ResourceFiles)), and the layer that answers the
+/// chain from them on Windows.
+pub(crate) mod resources;
+
 /// Pure Windows file-format / binary-layout machinery (DllStruct layouts,
 /// PE resources, RT_VERSION, Shell Links) shared by the answering layers.
 pub mod winfmt;
@@ -359,16 +364,13 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
             // the host `au3` process, or the script's own resources vanish.
             native = native.with_resource_module(path);
         }
-        let mut layers: Vec<Box<dyn Platform>> = vec![Box::new(native), Box::new(common)];
-        if emulated {
-            layers.push(Box::new(emulation));
-        }
-        let name = if emulated {
-            "windows+common+winemu"
-        } else {
-            "windows+common"
-        };
-        Box::new(CompositePlatform::new(name, layers))
+        // With no image to map, the resource chain is answered from the files
+        // next to the script. That layer goes *in front of* the native one,
+        // whose real `FindResourceW` only knows about mapped images and would
+        // otherwise look in `au3`'s own image and find nothing.
+        let file_layer = file_resource_layer(&emulation);
+        let emulation = emulated.then(|| Box::new(emulation) as Box<dyn Platform>);
+        windows_stack(Box::new(native), Box::new(common), file_layer, emulation)
     }
     #[cfg(not(windows))]
     {
@@ -385,6 +387,50 @@ pub fn host_platform_with(emulation: WindowsEmulation) -> Box<dyn Platform> {
         };
         Box::new(CompositePlatform::new(name, layers))
     }
+}
+
+/// The layer that answers a script's resource chain from files.
+///
+/// Only when there is no image to map — an image goes through the native
+/// layer's real `FindResourceW` — and something to answer from at all, so an
+/// ordinary run keeps going straight to Win32.
+#[cfg(any(windows, test))]
+fn file_resource_layer(emulation: &WindowsEmulation) -> Option<Box<dyn Platform>> {
+    if emulation.module_path().is_some() {
+        return None;
+    }
+    resources::file_layer::FileResourceLayer::new(emulation.resource_files().clone())
+        .map(|layer| Box::new(layer) as Box<dyn Platform>)
+}
+
+/// The Windows stack: the file-backed resource layer when there is one, then
+/// the native layer, the common one, and the emulation last when it is
+/// installed.
+#[cfg(any(windows, test))]
+fn windows_stack(
+    native: Box<dyn Platform>,
+    common: Box<dyn Platform>,
+    file_layer: Option<Box<dyn Platform>>,
+    emulation: Option<Box<dyn Platform>>,
+) -> Box<dyn Platform> {
+    let has_file_layer = file_layer.is_some();
+    let has_emulation = emulation.is_some();
+    let mut layers: Vec<Box<dyn Platform>> = Vec::new();
+    if let Some(layer) = file_layer {
+        layers.push(layer);
+    }
+    layers.push(native);
+    layers.push(common);
+    if let Some(emulation) = emulation {
+        layers.push(emulation);
+    }
+    let name = match (has_file_layer, has_emulation) {
+        (true, true) => "file-resources+windows+common+winemu",
+        (true, false) => "file-resources+windows+common",
+        (false, true) => "windows+common+winemu",
+        (false, false) => "windows+common",
+    };
+    Box::new(CompositePlatform::new(name, layers))
 }
 
 /// Fine-grained platform-stack options.
@@ -535,16 +581,9 @@ pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform>
                 declined: declined.clone(),
             })
         };
-        let mut layers: Vec<Box<dyn Platform>> = vec![native, Box::new(common)];
-        if emulated {
-            layers.push(Box::new(emulation));
-        }
-        let name = if emulated {
-            "windows+common+winemu"
-        } else {
-            "windows+common"
-        };
-        Box::new(CompositePlatform::new(name, layers))
+        let file_layer = file_resource_layer(&emulation);
+        let emulation = emulated.then(|| Box::new(emulation) as Box<dyn Platform>);
+        windows_stack(native, Box::new(common), file_layer, emulation)
     }
     #[cfg(not(windows))]
     {
@@ -574,3 +613,10 @@ pub fn runtime_with_platform(prog: &autoitv3_ast::Program) -> Runtime {
     rt.set_platform(host_platform());
     rt
 }
+
+/// The Windows stack's arrangement is plain data — which layers, in which
+/// order, under which name — so it is checked on every host, not only on the
+/// one that builds it in production.
+#[cfg(all(test, not(windows)))]
+#[path = "../tests/unit/stack.rs"]
+mod stack_tests;

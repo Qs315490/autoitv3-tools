@@ -71,6 +71,27 @@ fn the_native_gui_backend_is_windows_only() {
     assert_eq!(native_gui_backend().is_some(), cfg!(windows));
 }
 
+/// On Windows the native `FindResourceW` is a real Win32 call, so files standing
+/// in for an image need a layer of their own in front of it — and only when
+/// there is something to answer from, so an ordinary run is untouched.
+#[cfg(windows)]
+#[test]
+fn the_file_layer_joins_the_windows_stack_only_when_there_are_files() {
+    let empty = host_platform_with(WindowsEmulation::new());
+    assert_eq!(empty.name(), "windows+common+winemu");
+
+    let dir = std::env::temp_dir().join(format!("au3-stack-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(dir.join("__PAYLOAD"), b"payload").expect("write payload");
+    let with_files = host_platform_with(WindowsEmulation::new().with_resource_dirs([dir.clone()]));
+    assert!(
+        with_files.name().starts_with("file-resources+windows"),
+        "got {}",
+        with_files.name()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The resource image is read by the emulation everywhere, and by the native
 /// layer on Windows as well — which is what keeps it meaningful there when the
 /// emulation is left out (`--no-win-emu`).

@@ -88,6 +88,8 @@ pub use gui::{
 pub use paths::WindowsPaths;
 pub use crypto::{CipherAlg, HashAlg};
 pub use crate::winfmt::{PeImage, Resource, Selector};
+
+use crate::resources::ResourceFiles;
 pub use crate::winfmt::{DllStruct, FieldSelector, Shortcut};
 pub use registry::{FileRegistry, MemoryRegistry, RegistryData, RegistryStore};
 pub use version::WindowsVersion;
@@ -431,11 +433,10 @@ pub struct WindowsEmulation {
     module_path: Option<PathBuf>,
     /// Directories searched for resources staged as files (see
     /// [`PeImage::find_resource_file`]) before the PE image is consulted.
-    resource_dirs: Vec<PathBuf>,
-    /// The script's own resource names: `(name, file as written)` from
-    /// `#AutoIt3Wrapper_Res_File_Add`. Checked before the staging names, because
-    /// it is the build script saying exactly what it put where.
-    resource_aliases: Vec<(String, String)>,
+    /// The files a resource lookup falls back to when the image has nothing:
+    /// the script's own `_Res_File_Add` table and the resources unpacked next
+    /// to it. See `resources::ResourceFiles`.
+    resource_files: ResourceFiles,
     /// Resources handed out by `FindResourceW`/`LoadResource`, 1-based.
     handles: Vec<Option<ResourceHandle>>,
     /// Resource bytes materialised by `LockResource`, keyed by their address.
@@ -523,8 +524,7 @@ impl WindowsEmulation {
             script_path: None,
             module: None,
             module_path: None,
-            resource_dirs: Vec::new(),
-            resource_aliases: Vec::new(),
+            resource_files: ResourceFiles::default(),
             handles: Vec::new(),
             blobs: Vec::new(),
             sandbox_files: BTreeMap::new(),
@@ -881,13 +881,24 @@ impl WindowsEmulation {
         mut self,
         dirs: impl IntoIterator<Item = impl Into<PathBuf>>,
     ) -> Self {
-        self.resource_dirs = dirs.into_iter().map(Into::into).collect();
+        self.resource_files.with_dirs(dirs);
         self
     }
 
     /// The directories searched for staged resource files.
     pub fn resource_dirs(&self) -> &[PathBuf] {
-        &self.resource_dirs
+        self.resource_files.dirs()
+    }
+
+    /// The file-backed half of the resource chain.
+    ///
+    /// The CLI hands the same table to the native Windows layer, which answers
+    /// the chain itself when there is no image to map (see
+    /// `resources::file_layer`). Only that layer reads it here, so off Windows
+    /// the accessor is unused outside the tests.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn resource_files(&self) -> &ResourceFiles {
+        &self.resource_files
     }
 
     /// Install the script's own resource names.
@@ -901,48 +912,8 @@ impl WindowsEmulation {
         mut self,
         aliases: impl IntoIterator<Item = (String, String)>,
     ) -> Self {
-        self.resource_aliases = aliases.into_iter().collect();
+        self.resource_files.with_aliases(aliases);
         self
-    }
-
-    /// The file the script's own `_Res_File_Add` table maps this name to.
-    ///
-    /// A name is whatever the script asked `FindResourceW` for, so only string
-    /// selectors can match; the file is tried as written, with `\` read as a
-    /// separator, and relative to the resource search directories — a build
-    /// script's path does not exist on the analysing host, but the file it
-    /// named usually sits next to the script.
-    fn resource_alias(&self, name: &Selector) -> Option<Vec<u8>> {
-        let wanted = name.name.as_deref()?;
-        for (resource, file) in &self.resource_aliases {
-            if !resource.eq_ignore_ascii_case(wanted) {
-                continue;
-            }
-            for candidate in [file.clone(), file.replace('\\', "/")] {
-                if let Some(bytes) = self.read_alias_file(&candidate) {
-                    return Some(bytes);
-                }
-            }
-        }
-        None
-    }
-
-    /// Read one candidate path, relative to the search directories when it is
-    /// not absolute. Case-insensitive, like the resource lookup it serves.
-    fn read_alias_file(&self, file: &str) -> Option<Vec<u8>> {
-        if let Some(path) = crate::winfmt::pe::resolve_ci(std::path::Path::new(file)) {
-            if let Ok(bytes) = std::fs::read(&path) {
-                return Some(bytes);
-            }
-        }
-        for dir in &self.resource_dirs {
-            if let Some(path) = crate::winfmt::pe::resolve_ci(&dir.join(file)) {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    return Some(bytes);
-                }
-            }
-        }
-        None
     }
 
     /// Read one resource the way `FindResourceW` does.
@@ -953,10 +924,7 @@ impl WindowsEmulation {
     /// the same function, so a `FileInstall` and a `FindResourceW` of one name
     /// can never disagree about where the bytes come from.
     fn read_resource(&self, name: &Selector, kind: &Selector) -> Option<(Vec<u8>, bool)> {
-        if let Some(bytes) = self.resource_alias(name) {
-            return Some((bytes, true));
-        }
-        if let Some(bytes) = PeImage::find_resource_file(&self.resource_dirs, name) {
+        if let Some(bytes) = self.resource_files.find(name) {
             return Some((bytes, true));
         }
         self.module

@@ -172,9 +172,15 @@ UDF 正是这么用它的（传 `""` 当输出参数，再从 `$r[n]` 取回被�
   返回它，于是 `FindResource*`/`LoadResource`/`LockResource`/`RtlMoveMemory` 全走真实
   Win32 语义、真实指针。
 
-**没有镜像时，仿真层也能从落盘文件回答**（原生层不行——它的 `FindResourceW` 是真
-Win32 调用，只认映射进来的镜像）。`FindResourceW` 与 `FileInstall` 走同一条链，
-按顺序试：
+**没有镜像时，两个宿主都能从落盘文件回答**。非 Windows 走仿真层；Windows 上
+原生层的 `FindResourceW` 是真实 Win32 调用、只认映射进来的镜像，所以在它**前面**
+插一层 `FileResourceLayer`（`resources/file_layer.rs`）：`GetModuleHandleW(NULL)`
+返回一个哨兵"模块"、`FindResourceW` 从文件取字节、`SizeofResource`/`LoadResource`
+发句柄、`LockResource` 给**真指针**（脚本那条链最后是原生 `RtlMoveMemory`，仿真地址
+过不去）。不带哨兵的调用一律放行给原生层，所以别的模块里的资源仍走真 Win32；没有
+文件可答时这一层根本不装，普通运行与以前完全一致。
+
+`FindResourceW` 与 `FileInstall` 走同一条查找链，按顺序试：
 
 1. 脚本自己的 `#AutoIt3Wrapper_Res_File_Add=file[, section[, name[, language]]]`
    表（`with_resource_aliases`：资源名 → 构建时那个文件，先按原样、再把 `\` 当分隔符，

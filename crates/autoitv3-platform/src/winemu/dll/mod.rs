@@ -149,7 +149,7 @@ impl WindowsEmulation {
                 // Either source can answer `FindResourceW`: the image, or
                 // resources already extracted next to the script. Failing
                 // here when neither exists keeps the boundary visible.
-                if self.module.is_none() && self.resource_dirs.is_empty() {
+                if self.module.is_none() && self.resource_files.dirs().is_empty() {
                     return None;
                 }
                 Some(DllOutcome::value(Value::Int(EMULATED_IMAGE_BASE)))

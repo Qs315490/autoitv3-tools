@@ -652,24 +652,25 @@ impl WinEmuArgs {
                 emu = emu.with_module_file(found);
             }
         }
-        if !self.no_win_emu {
-            // Resources already extracted next to the script answer before the
-            // image does, so the payload alone is enough to analyse a build.
-            let dirs = resource_search_dirs(script);
-            if emu.module_path().is_none()
-                && !has_staged_resources(&dirs)
-                && resource_aliases.is_empty()
-            {
-                note_once(tr(
-                    "# no resource image, __* files or _Res_File_Add entry found: resource calls may fail",
-                ));
-            }
-            emu = emu.with_resource_dirs(dirs);
-            // The script's own names for the files the wrapper embedded: the
-            // lookup tries them before the staging convention, and like the
-            // staging names this is a service of the emulation layer.
-            emu = emu.with_resource_aliases(resource_aliases.iter().cloned());
+        // Resources already extracted next to the script answer before the
+        // image does, so the payload alone is enough to analyse a build. Like
+        // the image these are read by *both* hosts — the emulation off Windows,
+        // the native layer's file-resource layer on it — so the emulation
+        // switch does not decide whether they are installed.
+        let dirs = resource_search_dirs(script);
+        if !self.no_win_emu
+            && emu.module_path().is_none()
+            && !has_staged_resources(&dirs)
+            && resource_aliases.is_empty()
+        {
+            note_once(tr(
+                "# no resource image, __* files or _Res_File_Add entry found: resource calls may fail",
+            ));
         }
+        emu = emu.with_resource_dirs(dirs);
+        // The script's own names for the files the wrapper embedded: the lookup
+        // tries them before the staging convention.
+        emu = emu.with_resource_aliases(resource_aliases.iter().cloned());
         if let Some(backend) = gui {
             emu = emu.with_gui_backend(backend);
         }
