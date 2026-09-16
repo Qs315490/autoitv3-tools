@@ -291,7 +291,7 @@ Breakpoint 1, line 69
 | `untilcall <函数>` / `untilc` / `uc` | 跑到下一次调用该函数，**在它执行之前**停下（内置函数也行，`tbreak` 对内置函数无效）；一次性，停完就清掉 |
 | `untilret <函数>` / `untilr` / `ur` | 跑到下一次调用该函数**返回**，停在调用之后的那条语句（想问"它返回了什么""框点掉之后"用这个） |
 | `untilgui` / `gui` | `untilcall GUICreate` 的简写，停在建窗口之前 |
-| `stopat <函数>...` / `sa` | 和 `untilcall` 停在同一处，但**每次都停**、而且可以一次给多个（像 gdb 的 `catch`，累加）：内置函数停在它执行前（`stopat MsgBox DllOpen` 把要弹的对话框内容和它要开的 DLL 名先打出来，两者都不会发生），脚本函数停在它的入口（参数已经绑定，`print $x` 直接能读）。`stopat` 单独用是列出，`stopat off` 全清 |
+| `stopat <函数>...` / `sa` | 和 `untilcall` 停在同一处，但**每次都停**、而且可以一次给多个（带目标名的 catchpoint，一个目标一条命令、可累加，像 gdb 的 `catch syscall <名>`／`catch load <库>`）：内置函数停在它执行前（`stopat MsgBox DllOpen` 把要弹的对话框内容和它要开的 DLL 名先打出来，两者都不会发生），脚本函数停在它的入口（参数已经绑定，`print $x` 直接能读）。`stopat` 单独用是列出，`stopat off` 全清 |
 | | 一句话：`untilcall` = 停在调用前（一次），`stopat` = 停在调用前（一直），`untilret` = 停在调用后（一次） |
 | `break <行表达式> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
 | `jmp <行表达式>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |
@@ -385,6 +385,19 @@ x = 10
 - `catch off`（或命令行 `--no-catch`）关掉它，错误就只作为 `[script stopped: …]` 报出。
 - 调试器主动中止（`quit`、在停点敲 `run` 重启）走的是独立的 `RuntimeError::Aborted`，
   **不会**被当成脚本异常，所以不会反过来弹出一个 post-mortem 停点。
+
+**和 gdb 的对应**：gdb 的 `catch` 是**一族**事件 catchpoint（`catch throw`、`catch catch`、
+`catch syscall <名>`、`catch load <库>`、`catch fork`、`catch signal` ……），不是单个命令。
+这里的两组各对上其中一支：
+
+| 本调试器 | gdb 里对应的一支 | 差别 |
+| ---- | ---- | ---- |
+| `catch on\|off` | `catch throw`：停在抛出点、栈还没展开（gdb 是停在 `__cxa_throw` 这类抛出坝上） | gdb 用"装一个 catchpoint / `delete` 撤掉"来管；这里是常驻开关（默认开，`--no-catch` 关），不进断点编号列表 |
+| `stopat <函数>...` | 带目标名的那一类：`catch syscall <名>`、`catch load <库>`，一个目标一条命令、累加 | 目标是 AutoIt 的内置/脚本函数名，不是 syscall 号或库名 |
+| `untilcall` / `untilret` | `tcatch <事件>`：一次性的 catchpoint | 停在调用前 / 调用后（`untilret` 是 gdb 没有的"返回后"这一侧） |
+
+pdb 这边没有可对应的别名：原版 pdb 没有异常 catchpoint（同类功能是 Visual Studio 的
+"break when thrown"、windbg 的 `sxe eh`/`sxe clr`），所以 `catch` 不能拿来当 `stopat` 的短写。
 
 ### 停止是怎么实现的
 

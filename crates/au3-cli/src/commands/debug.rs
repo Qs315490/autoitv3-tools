@@ -610,8 +610,11 @@ struct Shell {
     /// `stopat <name>...`: stop *before* every call to any of these
     /// builtin/functions (lower-case), so their arguments — a dialog's text, a
     /// DLL name — can be read without the call running. Several targets may be
-    /// given; `stopat off` clears them all. Like gdb's `catch`, they
-    /// accumulate.
+    /// given and they accumulate, one `stopat` command per target, the way
+    /// gdb's target-taking catchpoints work (`catch syscall <name>`,
+    /// `catch load <lib>`). gdb's bare `catch` is the whole family of event
+    /// catchpoints; its error-side member, `catch throw`, is what this
+    /// debugger's `catch on|off` corresponds to. `stopat off` clears them all.
     stop_at: Vec<String>,
     /// The call a catchpoint is stopping on, formatted for the banner.
     caught_call: Option<String>,
@@ -1219,8 +1222,9 @@ impl Shell {
     /// builtins included, so what the call is about to do can be read first.
     /// The point of it is a dialog's text and a DLL's name: `stopat MsgBox
     /// DllOpen` shows both without either happening, and `continue` then runs
-    /// the call. Targets accumulate (like gdb's `catch`), `stopat off` clears
-    /// them all, and `stopat` alone lists them.
+    /// the call. Targets accumulate (`catch syscall <name>` style: one command
+    /// per target), `stopat off` clears them all, and `stopat` alone lists
+    /// them.
     fn stop_at_command(&mut self, rest: &str) -> Outcome {
         let names: Vec<&str> = rest.split_whitespace().collect();
         if names.is_empty() {
@@ -2493,7 +2497,10 @@ fn help_for(topic: &str) -> String {
             "trace on|off | trace depth <n> | trace skip <func> — echo statements, optionally filtered".to_string()
         }
         "catch" => {
-            "catch on|off — stop where an uncaught error is raised, before it unwinds".to_string()
+            "catch on|off — stop where an uncaught error is raised, before it unwinds. \
+             gdb's equivalent is `catch throw`; its target-taking catchpoints \
+             (`catch syscall <name>`, `catch load <lib>`) are what `stopat` is like"
+                .to_string()
         }
         "source" => "source <file> — queue the commands in a file, one per line".to_string(),
         "quit" | "q" => "quit — leave the session".to_string(),

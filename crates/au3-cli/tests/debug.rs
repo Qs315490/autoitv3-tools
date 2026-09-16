@@ -112,8 +112,9 @@ fn stopat_holds_a_call_before_it_runs() {
     assert!(out.contains("after"), "the call ran on continue:\n{out}");
 }
 
-/// Several targets at once: they accumulate (like gdb's `catch`), each fires,
-/// and `stopat off` clears the lot.
+/// Several targets at once: they accumulate (one command per target, the way
+/// gdb's target-taking catchpoints do), each fires, and `stopat off` clears
+/// the lot.
 #[test]
 fn stopat_takes_several_targets() {
     let path = script(
