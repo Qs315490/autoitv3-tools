@@ -112,6 +112,38 @@ fn stopat_holds_a_call_before_it_runs() {
     assert!(out.contains("after"), "the call ran on continue:\n{out}");
 }
 
+/// Several targets at once: they accumulate (like gdb's `catch`), each fires,
+/// and `stopat off` clears the lot.
+#[test]
+fn stopat_takes_several_targets() {
+    let path = script(
+        "stopat-many",
+        "Local $n = StringLen(\"abc\")\nDllOpen(\"Advapi32.dll\")\nConsoleWrite($n & @CRLF)\n",
+    );
+    let out = shell(
+        &path,
+        &[
+            "stopat StringLen DllOpen",
+            "run",
+            "continue",
+            "continue",
+            "stopat",
+            "stopat off",
+            "quit",
+        ],
+    );
+    assert!(out.contains("Catchpoint: StringLen(\"abc\")"), "got:\n{out}");
+    assert!(
+        out.contains("Catchpoint: DllOpen(\"Advapi32.dll\")"),
+        "got:\n{out}"
+    );
+    assert!(
+        out.contains("stopping before every stringlen, dllopen call"),
+        "the list:\n{out}"
+    );
+    assert!(out.contains("stop-at cleared (was stringlen, dllopen)"), "got:\n{out}");
+}
+
 /// A script function stops at its entry, where the parameters are bound.
 #[test]
 fn stopat_stops_at_a_script_functions_entry() {
@@ -130,7 +162,8 @@ fn stopat_stops_at_a_script_functions_entry() {
 fn stopat_can_be_read_and_cleared() {
     let path = script("stopat-off", "MsgBox(0, \"t\", \"b\")\n");
     let out = shell(&path, &["stopat MsgBox", "stopat", "stopat off", "stopat", "quit"]);
-    assert!(out.contains("stopping before every MsgBox call"), "got:\n{out}");
+    // Targets are remembered lower-cased, so they are listed that way.
+    assert!(out.contains("stopping before every msgbox call"), "got:\n{out}");
     assert!(out.contains("stop-at cleared (was msgbox)"), "got:\n{out}");
     assert!(out.contains("no stop-at set"), "got:\n{out}");
 }

@@ -290,7 +290,7 @@ Breakpoint 1, line 69
 | `untilcall <函数>` / `untilc` | 跑到下一次调用该函数，**在它执行之前**停下（内置函数也行，`tbreak` 对内置函数无效）；一次性，停完就清掉 |
 | `untilret <函数>` / `untilr` | 跑到下一次调用该函数**返回**，停在调用之后的那条语句（想问"它返回了什么""框点掉之后"用这个） |
 | `untilgui` / `gui` | `untilcall GUICreate` 的简写，停在建窗口之前 |
-| `stopat <函数>` / `sa` | 和 `untilcall` 停在同一处，但**每次都停**：内置函数停在它执行前（`stopat MsgBox` 把要弹的对话框内容连同它所在的行先打出来，对话框不会弹），脚本函数停在它的入口（参数已经绑定，`print $x` 直接能读）。`stopat` 单独用是查看，`stopat off` 是取消 |
+| `stopat <函数>...` / `sa` | 和 `untilcall` 停在同一处，但**每次都停**、而且可以一次给多个（像 gdb 的 `catch`，累加）：内置函数停在它执行前（`stopat MsgBox DllOpen` 把要弹的对话框内容和它要开的 DLL 名先打出来，两者都不会发生），脚本函数停在它的入口（参数已经绑定，`print $x` 直接能读）。`stopat` 单独用是列出，`stopat off` 全清 |
 | | 一句话：`untilcall` = 停在调用前（一次），`stopat` = 停在调用前（一直），`untilret` = 停在调用后（一次） |
 | `break <行表达式> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>]` / `b` | 断点：条件、命中规则（先消费 skip，再按 every-n 触发；hits 含被 skip 的命中）、`nostop` 纯打印模式（logpoint）、`do` 命中动作（调试命令，命中即执行）；`break <func>` 停在函数第一条语句 |
 | `jmp <行表达式>` / `j` | **无条件跳转**：跳过当前帧内直到目标行的语句（不执行），循环条件照常推进；目标行必须是当前帧内的语句起始行 |

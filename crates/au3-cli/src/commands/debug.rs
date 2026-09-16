@@ -602,10 +602,12 @@ struct Shell {
     /// `untilret <name>`: stop at the statement after the next call to this
     /// builtin/function returns (lower-case). One-shot.
     until_ret: Option<String>,
-    /// `stopat <name>`: stop *before* every call to this builtin/function
-    /// (lower-case), so its arguments — a dialog's text — can be read without
-    /// it opening.
-    stop_at: Option<String>,
+    /// `stopat <name>...`: stop *before* every call to any of these
+    /// builtin/functions (lower-case), so their arguments — a dialog's text, a
+    /// DLL name — can be read without the call running. Several targets may be
+    /// given; `stopat off` clears them all. Like gdb's `catch`, they
+    /// accumulate.
+    stop_at: Vec<String>,
     /// The call a catchpoint is stopping on, formatted for the banner.
     caught_call: Option<String>,
     /// The `untilcall` target has been seen; stop at the next statement.
@@ -673,7 +675,7 @@ impl Shell {
             call_stack: Vec::new(),
             until_call: None,
             until_ret: None,
-            stop_at: None,
+            stop_at: Vec::new(),
             caught_call: None,
             until_hit: false,
             editor,
@@ -1199,30 +1201,38 @@ impl Shell {
         Outcome::Resume
     }
 
-    /// `stopat <func>` — stop *before* a call to that function, builtins
-    /// included, so what the call is about to do can be read first. The point
-    /// of it is a dialog: `stopat MsgBox` shows the message (and the line it
-    /// came from) without the dialog opening, and `continue` then lets it run.
-    /// `stopat off` clears it, `stopat` alone shows it.
-    fn stop_at_command(&mut self, name: &str) -> Outcome {
-        if name.is_empty() {
-            match &self.stop_at {
-                Some(func) => println!("stopping before every {func} call"),
-                None => {
-                    println!("no stop-at set (usage: stopat <function>, e.g. `stopat MsgBox`)")
-                }
+    /// `stopat <func>...` — stop *before* a call to any of these functions,
+    /// builtins included, so what the call is about to do can be read first.
+    /// The point of it is a dialog's text and a DLL's name: `stopat MsgBox
+    /// DllOpen` shows both without either happening, and `continue` then runs
+    /// the call. Targets accumulate (like gdb's `catch`), `stopat off` clears
+    /// them all, and `stopat` alone lists them.
+    fn stop_at_command(&mut self, rest: &str) -> Outcome {
+        let names: Vec<&str> = rest.split_whitespace().collect();
+        if names.is_empty() {
+            if self.stop_at.is_empty() {
+                println!("no stop-at set (usage: stopat <function>..., e.g. `stopat MsgBox`)")
+            } else {
+                println!("stopping before every {} call", self.stop_at.join(", "));
             }
             return Outcome::Stay;
         }
-        if name.eq_ignore_ascii_case("off") || name.eq_ignore_ascii_case("clear") {
-            match self.stop_at.take() {
-                Some(func) => println!("stop-at cleared (was {func})"),
-                None => println!("no stop-at was set"),
+        if names.len() == 1 && (names[0].eq_ignore_ascii_case("off") || names[0].eq_ignore_ascii_case("clear")) {
+            if self.stop_at.is_empty() {
+                println!("no stop-at was set");
+            } else {
+                println!("stop-at cleared (was {})", self.stop_at.join(", "));
+                self.stop_at.clear();
             }
             return Outcome::Stay;
         }
-        self.stop_at = Some(name.to_ascii_lowercase());
-        println!("stopping before every {name} call");
+        for name in names {
+            let lower = name.to_ascii_lowercase();
+            if !self.stop_at.contains(&lower) {
+                self.stop_at.push(lower);
+            }
+        }
+        println!("stopping before every {} call", self.stop_at.join(", "));
         Outcome::Stay
     }
 
@@ -1831,10 +1841,11 @@ Commands (`help <cmd>` describes one)
   untilcall <func>       run until <func> is called, stopping *before* it runs
   untilret <func>        run until <func> has returned (stop after the call)
   untilgui, gui          untilcall GUICreate
-  stopat <func>, sa      stop *before* every <func> call — a builtin before it
-                         runs (`stopat MsgBox` shows a dialog's text without
-                         opening it), a script function at its entry
-  stopat                 report what is set; `stopat off` clears it
+  stopat <func>..., sa   stop *before* any of these are called — a builtin
+                         before it runs (`stopat MsgBox DllOpen` shows a
+                         dialog's text and a DLL's name without either
+                         happening), a script function at its entry
+  stopat                 list the targets; `stopat off` clears them all
   break <line-expr> [if E]   set a breakpoint, optionally conditional
   jmp <line-expr>        skip statements up to the target line
   delete [id]            remove one breakpoint, or all of them
@@ -2045,8 +2056,8 @@ impl Shell {
                 .is_some_and(|target| target.eq_ignore_ascii_case(name));
             let persistent = self
                 .stop_at
-                .as_deref()
-                .is_some_and(|target| target.eq_ignore_ascii_case(name));
+                .iter()
+                .any(|target| target.eq_ignore_ascii_case(name));
             if one_shot || persistent {
                 if one_shot {
                     self.until_call = None;
@@ -2287,9 +2298,10 @@ fn help_for(topic: &str) -> String {
         }
         "untilgui" | "gui" => "untilgui — run until GUICreate is called".to_string(),
         "stopat" | "sa" => {
-            "stopat <func> — stop before <func> is called: a builtin before it runs, a \
-             script function at its entry (parameters bound). `stopat MsgBox` reads a \
-             dialog's text without opening it; `stopat off` clears it"
+            "stopat <func>... — stop before any of these are called: a builtin before it \
+             runs, a script function at its entry (parameters bound). `stopat MsgBox \
+             DllOpen` reads a dialog's text and a DLL's name without either happening; \
+             `stopat` lists them, `stopat off` clears them"
                 .to_string()
         }
         "break" | "b" => {
