@@ -2382,6 +2382,42 @@ fn a_declaration_keeps_its_dimensions_when_the_initializer_is_smaller() {
 }
 
 #[test]
+fn an_empty_bracket_takes_its_extent_from_the_initializer() {
+    // Measured on the official x64 interpreter: a bracket that names a size
+    // keeps it and an empty one (`[]`) takes its extent from the literal, at
+    // every level. `Local $a[][2] = [[1,2],[3,4],[5,6]]` is 3x2,
+    // `Local $a[2][] = [[1,2],[3,4]]` is 2x2, and
+    // `Local $a[][][] = [[[1,2],[3,4]],[[5,6],[7,8]]]` is 2x2x2. A dimension
+    // the literal does not fill is padded with empty strings
+    // (`Local $a[][3] = [[1,2,3],[4]]` is 2x3), and `Local $a[] = 5` - a
+    // scalar initializer with nothing but empty brackets - is an empty array.
+    let src = "Func F()\n\
+               \x20   Local $a[][2] = [[1, 2], [3, 4], [5, 6]]\n\
+               \x20   Local $b[2][] = [[1, 2], [3, 4]]\n\
+               \x20   Local $c[][3] = [[1, 2, 3], [4]]\n\
+               \x20   Local $e[][][] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]\n\
+               \x20   Local $d[] = 5\n\
+               \x20   Return UBound($a, 1) & \"x\" & UBound($a, 2) & \":\" & $a[2][1] & \":\" \
+               & UBound($b, 1) & \"x\" & UBound($b, 2) & \":\" & UBound($c, 1) & \"x\" \
+               & UBound($c, 2) & \":\" & StringLen($c[1][2]) & \":\" & UBound($e, 1) & \"x\" \
+               & UBound($e, 2) & \"x\" & UBound($e, 3) & \":\" & $e[1][1][1] & \":\" & UBound($d, 1)\n\
+               EndFunc\n";
+    assert_eq!(
+        call(src, "F", vec![]).to_autoit_string(),
+        "3x2:6:2x2:2x3:0:2x2x2:8:0"
+    );
+}
+
+#[test]
+fn a_scalar_initializer_for_a_sized_declaration_is_an_error() {
+    // Measured: `Local $a[3] = 5` stops the script, so the declaration cannot
+    // quietly hand back three empty elements.
+    let src = "Func F()\n    Local $a[3] = 5\n    Return 0\nEndFunc\n";
+    let mut rt = rt(src);
+    assert!(rt.call_function("F", vec![]).is_err(), "must not accept a scalar");
+}
+
+#[test]
 fn an_initializer_larger_than_the_declaration_is_an_error() {
     // Measured: AutoIt stops at the declaration with "Array variable has incorrect
     // number of subscripts or subscript dimension range exceeded".

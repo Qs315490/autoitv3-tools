@@ -2106,32 +2106,46 @@ impl Runtime {
             if item.dims.is_empty() {
                 return Ok(literals);
             }
-            // Every bracket empty (`[]`, `[][]`): the initializer decides the shape.
-            let auto = item
-                .dims
-                .iter()
-                .all(|d| matches!(d.kind, ExprKind::Lit(Lit { kind: LitKind::Null, .. })));
-            if auto {
-                // A
-                // nested literal makes it *rectangular* - rows are the sub-arrays,
-                // the longest row sets the width, and a cell a short row does not
-                // fill is an empty string. Measured on the official x64
-                // interpreter: ``[[1], [2, 3], [4, 5, 6]]`` is 3x3 with
-                // `VarGetType($a[0][1])` "String", `StringLen` 0.
-                return Ok(rectangular(&literals));
+            // Every bracket that names a size keeps it, and every empty bracket
+            // (`[]`) takes its extent from the initializer. Measured on the
+            // official x64 interpreter: `Local $a[][2] = [[1,2],[3,4],[5,6]]` is
+            // 3x2, `Local $a[2][] = [[1,2],[3,4]]` is 2x2, `Local $a[][][] =
+            // [[[1,2],[3,4]],[[5,6],[7,8]]]` is 2x2x2, a literal shorter than a
+            // declared dimension is padded with empty strings
+            // (`Local $a[][3] = [[1,2,3],[4]]` is 2x3, `Local $b[4] = [9]` has
+            // `$b[0] = 9` and `StringLen($b[1]) = 0`), and `Local $a[] = 5` is
+            // an empty array.
+            let extents = literal_extents(&literals, item.dims.len());
+            let mut shape = Vec::with_capacity(item.dims.len());
+            let mut auto = false;
+            for (depth, dim) in item.dims.iter().enumerate() {
+                if dim_is_empty(dim) {
+                    auto = true;
+                    shape.push(extents.get(depth).copied().unwrap_or(0));
+                    continue;
+                }
+                let n = self.eval_expr(dim)?.to_int();
+                if n < 0 {
+                    return Err(RuntimeError::IndexOutOfBounds {
+                        index: n,
+                        len: 0,
+                        span: Some(span),
+                    });
+                }
+                shape.push(n as usize);
             }
-            if !item.dims.is_empty() && !is_empty_brackets(&item.dims) {
-                // Both given: the *declared dimensions* are the shape, the literal
-                // only fills the elements it names, and the rest stay empty strings.
-                // Measured on the official x64 interpreter: `Local $b[4] = [9]` is
-                // four elements with `$b[0] = 9` and `$b[1] = ""` (VarGetType
-                // "String", IsNumber 0, StringLen 0), and `Local $a[3][2] = [[7]]` is
-                // 3x2 with the same empty tail.
-                let target = self.array_with_dims(&item.dims, span)?;
-                fill_from_literal(&target, &literals, span)?;
-                return Ok(target);
+            if !auto && !matches!(literals, Value::Array(_)) {
+                // A scalar initializer for a fixed shape stops the script -
+                // measured: `Local $a[3] = 5` never reaches the next statement.
+                return Err(RuntimeError::Type {
+                    expected: "Array",
+                    got: literals.type_name().to_string(),
+                    span: Some(span),
+                });
             }
-            return Ok(literals);
+            let target = self.array_from_shape(&shape, span)?;
+            fill_from_literal(&target, &literals, span)?;
+            return Ok(target);
         }
         if !item.dims.is_empty() {
             if is_empty_brackets(&item.dims) {
@@ -2165,6 +2179,37 @@ impl Runtime {
     /// nests the extra dimensions, and scripts index them with `$a[$i][$j]`.
     fn array_with_dims(&mut self, dims: &[Expr], span: Span) -> Result<Value, RuntimeError> {
         self.array_with_dims_total(dims, span, 1)
+    }
+
+    /// Build an array of empty strings from already-resolved dimensions.
+    ///
+    /// `[3]` is a flat array, `[3, 4]` is three arrays of four — the same
+    /// nesting [`array_with_dims`](Self::array_with_dims) builds, without
+    /// evaluating anything. A cell nothing has written is an empty string, not
+    /// 0: measured, `VarGetType($e[0])` of `Local $e[3]` is "String" with
+    /// `StringLen` 0.
+    fn array_from_shape(&self, shape: &[usize], span: Span) -> Result<Value, RuntimeError> {
+        let elements = shape.iter().try_fold(1i64, |acc, n| acc.checked_mul(*n as i64));
+        match elements {
+            Some(n) if n <= MAX_ARRAY_ELEMENTS => {}
+            _ => {
+                return Err(RuntimeError::ArrayTooLarge {
+                    elements: elements.unwrap_or(i64::MAX),
+                    limit: MAX_ARRAY_ELEMENTS,
+                    span: Some(span),
+                })
+            }
+        }
+        fn build(shape: &[usize]) -> Value {
+            match shape.split_first() {
+                None => Value::Str(String::new()),
+                Some((n, rest)) if rest.is_empty() => {
+                    Value::array(vec![Value::Str(String::new()); *n])
+                }
+                Some((n, rest)) => Value::array((0..*n).map(|_| build(rest)).collect()),
+            }
+        }
+        Ok(build(shape))
     }
 
     /// [`array_with_dims`](Self::array_with_dims) with the element count the
@@ -3065,40 +3110,41 @@ fn fill_from_literal(
     Ok(())
 }
 
-/// The array an auto-sized declaration builds from its initializer.
+/// True for one `[]` bracket — the parser records it as a `Null` literal
+/// dimension.
+fn dim_is_empty(dim: &Expr) -> bool {
+    matches!(dim.kind, ExprKind::Lit(Lit { kind: LitKind::Null, .. }))
+}
+
+/// The extents an initializer offers, one per nesting level.
 ///
-/// A flat literal is used as it is. A nested one becomes **rectangular**: the rows
-/// are the sub-arrays, the longest one sets the width, and a cell a short row does
-/// not fill is an empty string (measured - see `decl_value`).
-fn rectangular(literals: &Value) -> Value {
-    let Value::Array(rows) = literals else {
-        return literals.clone();
+/// `[[1, 2], [3, 4]]` offers two rows of up to two cells, so `[2, 2]`: a short
+/// row does not lower the count (measured — `Local $a[][3] = [[1,2,3],[4]]` is
+/// 2x3), and a level the initializer does not reach counts as 0 (measured —
+/// `Local $a[] = 5` is an empty array). The count of a level is the longest
+/// run at that level, which is what makes the literal *rectangular*: rows are
+/// the sub-arrays, and a cell a short row does not fill is an empty string.
+fn literal_extents(value: &Value, dims: usize) -> Vec<usize> {
+    let mut out = Vec::with_capacity(dims);
+    let mut current = match value {
+        Value::Array(items) => Some(Rc::clone(items)),
+        _ => None,
     };
-    let rows = rows.borrow();
-    if !rows.iter().any(|row| matches!(row, Value::Array(_))) {
-        return literals.clone();
+    for _ in 0..dims {
+        let Some(items) = current.take() else {
+            out.push(0);
+            continue;
+        };
+        let items = items.borrow();
+        out.push(items.len());
+        current = items
+            .iter()
+            .filter_map(|cell| match cell {
+                Value::Array(row) => Some(row),
+                _ => None,
+            })
+            .max_by_key(|row| row.borrow().len())
+            .map(Rc::clone);
     }
-    let width = rows
-        .iter()
-        .map(|row| match row {
-            Value::Array(items) => items.borrow().len(),
-            _ => 1,
-        })
-        .max()
-        .unwrap_or(0);
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows.iter() {
-        let mut cells = vec![Value::Str(String::new()); width];
-        match row {
-            Value::Array(items) => {
-                for (slot, value) in cells.iter_mut().zip(items.borrow().iter()) {
-                    *slot = value.clone();
-                }
-            }
-            other if width > 0 => cells[0] = other.clone(),
-            _ => {}
-        }
-        out.push(Value::array(cells));
-    }
-    Value::array(out)
+    out
 }
