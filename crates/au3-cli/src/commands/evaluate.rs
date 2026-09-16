@@ -119,7 +119,9 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let input = load_input_included(&args.input, &args.includes)?;
     let mut prog = input.program;
 
-    let profile = args.effects.apply(args.profile.profile())?;
+    let profile = args
+        .effects
+        .apply(args.profile.profile(crate::args::Preset::Deterministic))?;
     // Evaluating a script is analysis, not a run: never open a window, not even
     // the native one a Windows host would pick by itself.
     let platform = args.win.platform(

@@ -18,7 +18,22 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("Write the result to FILE instead of stdout (use `-` for stdout)", "将结果写入 FILE 而非 stdout（使用 `-` 表示 stdout）"),
     ("Constant-fold, resolve the function table, rename identifiers", "常量折叠、解析函数表、重命名标识符"),
     ("Run the script body first and inline the table values it computed, then apply the syntactic passes", "先运行脚本主体并内联其计算出的表值，然后应用语法处理"),
-    ("Run with AutoIt semantics (real delays, entropy, side effects) instead of the deterministic analysis profile", "使用 AutoIt 语义（真实延时、熵、副作用）运行，而非确定性分析配置"),
+    (
+        "Run with AutoIt's own semantics: real delays, real entropy and real side effects",
+        "按 AutoIt 自己的语义运行：真实延时、真实熵、真实副作用",
+    ),
+    (
+        "Run with AutoIt's own semantics: real delays, real entropy and real side effects\n\nThe default for `run` and `debug` — running a script should do what the script says. The analysis commands (`evaluate`, `deobfuscate --evaluate`) default to `--deterministic` instead.",
+        "按 AutoIt 自己的语义运行：真实延时、真实熵、真实副作用\n\n`run` 与 `debug` 的默认值——跑脚本就该做脚本说的事。分析类命令（`evaluate`、`deobfuscate --evaluate`）默认走 `--deterministic`。",
+    ),
+    (
+        "Run with the deterministic analysis profile: `Sleep` skipped, `Random` from a fixed seed, every side effect refused",
+        "按确定性分析配置运行：跳过 `Sleep`、`Random` 用固定种子、拒绝一切副作用",
+    ),
+    (
+        "Run with the deterministic analysis profile: `Sleep` skipped, `Random` from a fixed seed, every side effect refused\n\nA refused side effect returns its failure value with `@error = 1` and is reported once per kind on stderr. The default for `evaluate` and `deobfuscate --evaluate`, which analyse a sample without letting it touch the machine; `run` and `debug` default to `--faithful`.",
+        "按确定性分析配置运行：跳过 `Sleep`、`Random` 用固定种子、拒绝一切副作用\n\n被拒绝的副作用会返回失败值并置 `@error = 1`，同时在 stderr 上按类别各报一次。这是 `evaluate` 与 `deobfuscate --evaluate` 的默认值——它们分析样本而不让它碰这台机器；`run` 与 `debug` 默认是 `--faithful`。",
+    ),
     ("Allow one class of side effect in the deterministic profile. Repeatable. Kinds: file, env, registry, clipboard, spawn, shutdown, net, process", "在确定性配置中允许某一类副作用。可重复。类别：file、env、registry、clipboard、spawn、shutdown、net、process"),
     ("Deny one class of side effect, even in the faithful profile. Repeatable", "拒绝某一类副作用，即使在保真配置中也是如此。可重复"),
     ("Rename identifiers: give every script-defined variable and function a deterministic `$l_str_003` / `f042` alias. Off by default, so the output keeps the names the script was written with", "重命名标识符：为脚本定义的每个变量和函数赋予确定性的 `$l_str_003` / `f042` 别名。默认关闭，因此输出保留脚本编写时使用的名称"),

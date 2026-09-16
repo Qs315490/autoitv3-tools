@@ -72,7 +72,7 @@ au3 deobfuscate some.au3 -o -
 # evaluate：跑一遍脚本主体，把它运行时算出来的表值内联回源码
 #           （唯一能解开字符串表的途径；撞到平台边界时会报告并保留已求出的值）
 au3 evaluate some.au3 -o resolved.au3
-au3 evaluate some.au3 --faithful          # 按 AutoIt 语义真跑
+au3 evaluate some.au3 --faithful          # 分析默认不写盘；这一条按 AutoIt 语义真跑
 # 也可以一步到位：先求值再做常规反混淆
 au3 deobfuscate some.au3 --evaluate -o clean.au3
 
@@ -84,7 +84,8 @@ au3 evaluate some.au3 --no-win-emu        # 关掉仿真，停在第一个 Windo
 # run：执行整个脚本，或调用其中一个函数
 #      --cmdline 始终是脚本的 $CmdLine/$CmdLineRaw；--arg 是函数入参，
 #      没写函数时也归入 $CmdLine
-au3 run some.au3                          # 不写函数 = 执行整个脚本体
+au3 run some.au3                          # 不写函数 = 执行整个脚本体（按 AutoIt 语义真跑）
+au3 run some.au3 --deterministic          # 改回分析配置：不写盘、不联网、Sleep 跳过
 au3 run some.au3 --arg a --arg b          # 脚本里读 $CmdLine[0]/[1]/[2]…
 au3 run some.au3 Add --arg 2 --arg 3
 au3 run some.au3 Add --cmdline s1 --arg 2 # 脚本拿 --cmdline，函数拿 --arg
@@ -101,8 +102,8 @@ au3 run some.au3 SomeFunc --trace
 #                    窗口归主线程（winit 要求），脚本跑在它的工作线程上，
 #                    关闭窗口或脚本结束即退出。不带该 feature 构建时会明确报错。
 au3 run some-gui.au3                     # Windows：真窗口、真对话框；别处：不画
-au3 run some-gui.au3 --gui headless      # 确定性地跑：窗口不画，MsgBox/InputBox 也
-                                         # 只按脚本化答案回答（不等人），分析/CI 用这个
+au3 run some-gui.au3 --gui headless      # 不画窗口：MsgBox/InputBox 只按脚本化答案回答
+                                         # （不等人）；分析/CI 再加 --deterministic
 au3 run some-gui.au3 --gui window        # 没有原生路径的主机也能看窗口
 
 # --lang：消息/帮助/诊断用哪种语言（en 英文、zh-CN 简体中文、auto 跟随环境，默认 auto）
@@ -224,8 +225,12 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 | `--no-win-emu` | `AU3_WIN_EMU=0` | 启用（非 Windows 主机） |
 | `--emulate <AREA>` | — | 不启用；`AREA`=`registry`（Reg*）/`clipboard`（Clip*）/具体函数名，可重复 |
 
-**细粒度行为控制**。两个预设（`--faithful` / 确定性）保持不变，
-`--allow <KIND>` / `--deny <KIND>`（可重复）在其上叠加**按效果类型**的开关：
+**两个预设，默认按命令分**。`run` 与 `debug` 默认 `--faithful`（AutoIt 自己的语义：
+真实延时、真实熵、真实副作用）——跑脚本就该做脚本说的事；`evaluate` 与
+`deobfuscate --evaluate` 默认 `--deterministic`（跳过 `Sleep`、`Random` 固定种子、
+拒绝一切副作用）——那是分析，不该动这台机器。两个开关都能显式给出（互斥），
+覆盖命令自己的默认。
+`--allow <KIND>` / `--deny <KIND>`（可重复）在预设之上叠加**按效果类型**的开关：
 
 | KIND | 覆盖的效果 |
 | ---- | ---------- |
@@ -278,8 +283,8 @@ evaluated: 120 globals, 4 tables, 1800 values inlined, 420 calls resolved
 | `pretty <FILE> [-o FILE]` | `fmt`, `format` | 规范化重打印，保留注释 |
 | `deobfuscate <FILE> [-o FILE]` | `deobf`, `deob` | 反混淆流水线，去除注释（`--evaluate` 先做运行时求值；`--inline-tables` 顺带把表声明换成字面量；`--rename` 做标识符重命名，默认关闭；`--win-version` 等选仿真版本） |
 | `evaluate <FILE> [-o FILE]` | `eval`, `e` | 跑脚本主体并内联其算出的表值（`--inline-tables` 顺带把表声明换成字面量；`--faithful` 按 AutoIt 语义；`--win-version`/`--no-win-emu` 控制仿真） |
-| `run <FILE> [FUNC] [--cmdline V]… [--arg V]… [--init] [--trace]` | `r`, `exec` | 执行整个脚本；给了 `FUNC` 则调用该函数。`--cmdline` 始终是脚本的 `$CmdLine`/`$CmdLineRaw`；`--arg` 是 `FUNC` 的入参，未给 `FUNC` 时也并入 `$CmdLine`（同样接受 `--win-*` 开关） |
-| `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停） |
+| `run <FILE> [FUNC] [--cmdline V]… [--arg V]… [--init] [--trace]` | `r`, `exec` | 执行整个脚本；给了 `FUNC` 则调用该函数。`--cmdline` 始终是脚本的 `$CmdLine`/`$CmdLineRaw`；`--arg` 是 `FUNC` 的入参，未给 `FUNC` 时也并入 `$CmdLine`（同样接受 `--win-*` 开关）；默认按 AutoIt 语义**真跑**，`--deterministic` 改回分析配置） |
+| `debug <FILE> [-c CMD]… [-x FILE]…` | `dbg` | 交互式调试 shell：断点、单步、**未捕获异常时 post-mortem**、查看帧/变量、表达式求值（`--stop-at-start` 在第一条语句停下，`--no-catch` 关掉异常停）；同样默认 `--faithful` 真跑 |
 | `unpack <PATH> [-o FILE]` | `unp` | 取回编译产物里的载荷：`--script` 输出编译进去的 `.au3` 源码（`AU3!EA05`/`AU3!EA06`；PE、裸 chunk 都行）；默认解资源打包的载荷（目录或 PE 都行，自动认角色，`--raw` 输出整段文本） |
 | `help` | | 帮助（或 `au3 <CMD> --help` 看单个命令） |
 

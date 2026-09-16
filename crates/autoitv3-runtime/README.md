@@ -74,13 +74,15 @@ clipboard / spawn / shutdown / net / process 八类，`ExecutionProfile::with_ef
 平台层的每个副作用门控点都经 `HostContext::effect_allowed(kind)` 查询该决策。
 CLI 对应 `au3 run --allow <KIND>` / `--deny <KIND>`。
 
-CLI 的 `au3 run` 面向"探查混淆样本"，因此默认用确定性配置；需要按 AutoIt 语义真跑时加
-`--faithful`：
+CLI 按命令选默认：`au3 run` / `au3 debug` 是 `faithful()`——跑脚本就该做脚本说的事；
+`au3 evaluate` / `au3 deobfuscate --evaluate` 是 `deterministic()`——那是分析。
+两个开关都能显式给出（互斥），覆盖命令自己的默认：
 
 ```bash
-au3 run sample.au3                # 执行整个脚本体
-au3 run sample.au3 F              # 调用函数 F（快速、可复现、不改磁盘）
-au3 run sample.au3 F --faithful   # 真的 Sleep、真的随机、真的写文件
+au3 run sample.au3                    # 执行整个脚本体：真的 Sleep、真的随机、真的写文件
+au3 run sample.au3 F                  # 调用函数 F
+au3 run sample.au3 F --deterministic  # 改回分析配置：快速、可复现、不改磁盘
+au3 evaluate sample.au3               # 分析：默认就是确定性配置
 ```
 
 `--cmdline`（以及没写函数时的 `--arg`）由 `Runtime::set_cmdline` 变成脚本的

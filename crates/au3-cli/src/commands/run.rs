@@ -157,10 +157,12 @@ fn execute(
 ) -> CliResult<()> {
     let input = load_input_included(&args.input, &args.includes)?;
     let prog = input.program;
-    // Probing a script wants reproducibility and no side effects; `--faithful`
-    // switches to AutoIt's own semantics instead. `--allow`/`--deny` then
-    // fine-tune individual effects on top of either preset.
-    let profile = args.effects.apply(args.profile.profile())?;
+    // Running a script means AutoIt's own semantics — real delays, entropy and
+    // side effects; `--deterministic` swaps in the analysis profile instead.
+    // `--allow`/`--deny` then fine-tune individual effects on top of either.
+    let profile = args
+        .effects
+        .apply(args.profile.profile(crate::args::Preset::Faithful))?;
     // `#RequireAdmin` is about the *process*, not the script: an unelevated run
     // starts an elevated copy of this program and stops here, before the first
     // statement (see `crate::elevate`). The preset profiles do not enter into

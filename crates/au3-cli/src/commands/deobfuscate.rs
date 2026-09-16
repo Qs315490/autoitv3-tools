@@ -112,7 +112,9 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
     };
     let mut tables = None;
     if args.evaluate {
-        let profile = args.effects.apply(args.profile.profile())?;
+        let profile = args
+            .effects
+            .apply(args.profile.profile(crate::args::Preset::Deterministic))?;
         // Evaluation here is analysis, not a run: never open a window, not
         // even the native one a Windows host would pick by itself.
         let platform = args.win.platform(

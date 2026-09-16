@@ -1,10 +1,10 @@
-//! The execution profile's refusals are visible.
+//! Which execution profile each command defaults to, and what a refusal says.
 //!
-//! A refused side effect looks exactly like the machine refusing it — the call
-//! returns its failure value and sets `@error = 1` — so the profile says which
-//! kind it turned down and how to overrule it, once per kind. That is the
-//! difference between "`DirCreate` failed because of ACLs" (an afternoon) and
-//! "the deterministic profile refused a file write" (one line).
+//! `run`/`debug` run a script the way AutoIt would — real side effects;
+//! `evaluate`/`deobfuscate --evaluate` analyse it under the deterministic
+//! profile, which refuses them. A refusal looks exactly like the machine
+//! refusing it (the call returns its failure value with `@error = 1`), so it is
+//! named on stderr once per kind.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -38,40 +38,67 @@ fn au3(args: &[&str]) -> (bool, String) {
     )
 }
 
+/// A script that creates a directory and reports what happened, then cleans up.
+const CREATE: &str = "Local $dir = @TempDir & \"\\au3-profile-dir\"\n\
+                      Local $r = DirCreate($dir)\n\
+                      ConsoleWrite(\"created=\" & $r & \" err=\" & @error & @CRLF)\n\
+                      DirRemove($dir)\n";
+
 #[test]
-fn a_refused_side_effect_is_named_once() {
-    // Two writes, one note: the second attempt is the same kind.
-    let path = script(
-        "note",
-        "DirCreate(@TempDir & \"\\au3-profile-a\")\nDirCreate(@TempDir & \"\\au3-profile-b\")\n",
-    );
+fn run_does_the_side_effect_like_autoit_would() {
+    let path = script("run-default", CREATE);
     let (ok, out) = au3(&["run", &path.to_string_lossy()]);
     assert!(ok, "got:\n{out}");
+    assert!(out.contains("created=1 err=0"), "the write happened:\n{out}");
+    assert!(!out.contains("was refused"), "nothing was refused:\n{out}");
+}
+
+#[test]
+fn debug_does_the_side_effect_like_autoit_would() {
+    let path = script("debug-default", CREATE);
+    let (ok, out) = au3(&[
+        "debug",
+        &path.to_string_lossy(),
+        "-c",
+        "run",
+        "-c",
+        "quit",
+    ]);
+    assert!(ok, "got:\n{out}");
+    assert!(out.contains("created=1 err=0"), "the write happened:\n{out}");
+    assert!(!out.contains("was refused"), "nothing was refused:\n{out}");
+}
+
+#[test]
+fn the_deterministic_profile_refuses_and_says_which_kind() {
+    let path = script("run-deterministic", CREATE);
+    let (ok, out) = au3(&["run", &path.to_string_lossy(), "--deterministic"]);
+    assert!(ok, "got:\n{out}");
+    assert!(out.contains("created=0 err=1"), "the write was refused:\n{out}");
     assert!(
         out.contains("note: a file side effect was refused by the execution profile"),
         "got:\n{out}"
     );
-    assert!(out.contains("--allow file"), "the note says how to allow it:\n{out}");
+    assert!(
+        out.contains("--allow file"),
+        "the note says how to allow it:\n{out}"
+    );
+}
+
+#[test]
+fn a_refused_kind_is_reported_once() {
+    // Two writes, one note: the second attempt is the same kind.
+    let path = script(
+        "once",
+        "DirCreate(@TempDir & \"\\au3-profile-a\")\nDirCreate(@TempDir & \"\\au3-profile-b\")\n",
+    );
+    let (ok, out) = au3(&["run", &path.to_string_lossy(), "--deterministic"]);
+    assert!(ok, "got:\n{out}");
     assert_eq!(
         out.matches("note: a file side effect").count(),
         1,
         "reported once per kind:\n{out}"
     );
-}
-
-#[test]
-fn a_faithful_run_does_the_side_effect_and_says_nothing() {
-    let path = script(
-        "faithful",
-        "Local $dir = @TempDir & \"\\au3-profile-faithful\"\n\
-         Local $r = DirCreate($dir)\n\
-         ConsoleWrite(\"created=\" & $r & \" err=\" & @error & @CRLF)\n\
-         DirRemove($dir)\n",
-    );
-    let (ok, out) = au3(&["run", &path.to_string_lossy(), "--faithful"]);
-    assert!(ok, "got:\n{out}");
-    assert!(out.contains("created=1 err=0"), "the write happened:\n{out}");
-    assert!(!out.contains("was refused"), "nothing was refused:\n{out}");
 }
 
 #[test]
@@ -81,11 +108,31 @@ fn allowing_one_kind_silences_only_that_kind() {
         "DirCreate(@TempDir & \"\\au3-profile-allowed\")\n\
          EnvSet(\"AU3_PROFILE_TEST\", \"1\")\n",
     );
-    let (ok, out) = au3(&["run", &path.to_string_lossy(), "--allow", "file"]);
+    let (ok, out) = au3(&[
+        "run",
+        &path.to_string_lossy(),
+        "--deterministic",
+        "--allow",
+        "file",
+    ]);
     assert!(ok, "got:\n{out}");
-    assert!(!out.contains("a file side effect"), "file writes are allowed:\n{out}");
+    assert!(
+        !out.contains("a file side effect"),
+        "file writes are allowed:\n{out}"
+    );
     assert!(
         out.contains("note: a env side effect was refused"),
         "the environment write is not:\n{out}"
+    );
+}
+
+#[test]
+fn analysing_a_script_keeps_the_deterministic_default() {
+    let path = script("evaluate-default", CREATE);
+    let (ok, out) = au3(&["evaluate", &path.to_string_lossy()]);
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("note: a file side effect was refused"),
+        "evaluate analyses without side effects:\n{out}"
     );
 }

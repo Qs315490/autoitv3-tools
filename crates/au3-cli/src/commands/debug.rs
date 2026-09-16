@@ -341,7 +341,10 @@ fn build_runtime(
     // override that when a `.au3` is being compared against its build.
     rt.set_compiled(args.compiled.resolve(resource_module.is_some()));
     rt.set_max_steps(args.steps.max_steps);
-    match args.effects.apply(args.profile.profile()) {
+    match args
+        .effects
+        .apply(args.profile.profile(crate::args::Preset::Faithful))
+    {
         Ok(p) => rt.set_profile(p),
         Err(e) => eprintln!("{}", msg!("warning: {message}", message = e.message)),
     }

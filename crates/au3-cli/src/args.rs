@@ -174,25 +174,68 @@ impl CompiledArgs {
     }
 }
 
+/// The preset a command runs under when neither profile flag was given.
+///
+/// Running a script (`run`, `debug`) means [AutoIt semantics](Preset::Faithful):
+/// it should do what the script says. Evaluating one for analysis (`evaluate`,
+/// `deobfuscate --evaluate`) means the
+/// [deterministic profile](Preset::Deterministic): fast, repeatable, and unable
+/// to touch the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Preset {
+    /// Real delays, real entropy, real side effects.
+    Faithful,
+    /// `Sleep` skipped, `Random` from a fixed seed, side effects refused.
+    Deterministic,
+}
+
+impl Preset {
+    /// The profile this preset names.
+    pub const fn profile(self) -> ExecutionProfile {
+        match self {
+            Preset::Faithful => ExecutionProfile::faithful(),
+            Preset::Deterministic => ExecutionProfile::deterministic(),
+        }
+    }
+}
+
 /// Execution-semantics selection shared by the commands that run a script.
 ///
-/// The default is the deterministic analysis profile; `--faithful` switches to
-/// AutoIt's own semantics instead.
+/// `run` and `debug` default to AutoIt's own semantics ([`Preset::Faithful`]);
+/// the analysis commands (`evaluate`, `deobfuscate --evaluate`) default to the
+/// deterministic profile ([`Preset::Deterministic`]). Either flag overrides the
+/// command's default, and the two are mutually exclusive.
 #[derive(Args, Debug, Clone, Default)]
 pub struct ProfileArgs {
-    /// Run with AutoIt semantics (real delays, entropy, side effects) instead
-    /// of the deterministic analysis profile
+    /// Run with AutoIt's own semantics: real delays, real entropy and real side
+    /// effects
+    ///
+    /// The default for `run` and `debug` — running a script should do what the
+    /// script says. The analysis commands (`evaluate`, `deobfuscate
+    /// --evaluate`) default to `--deterministic` instead.
     #[arg(long)]
     pub faithful: bool,
+
+    /// Run with the deterministic analysis profile: `Sleep` skipped, `Random`
+    /// from a fixed seed, every side effect refused
+    ///
+    /// A refused side effect returns its failure value with `@error = 1` and is
+    /// reported once per kind on stderr. The default for `evaluate` and
+    /// `deobfuscate --evaluate`, which analyse a sample without letting it
+    /// touch the machine; `run` and `debug` default to `--faithful`.
+    #[arg(long, conflicts_with = "faithful")]
+    pub deterministic: bool,
 }
 
 impl ProfileArgs {
-    /// The profile these arguments select.
-    pub fn profile(&self) -> ExecutionProfile {
+    /// The profile these arguments select, given the command's own default.
+    pub fn profile(&self, default: Preset) -> ExecutionProfile {
         if self.faithful {
             ExecutionProfile::faithful()
-        } else {
+        } else if self.deterministic {
             ExecutionProfile::deterministic()
+        } else {
+            default.profile()
         }
     }
 }
