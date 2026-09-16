@@ -143,11 +143,11 @@ ConsoleWrite("[" & @Compiled & "]" & @CRLF)
 
 #[test]
 fn gui_calls_are_answered_with_and_without_a_backend() {
-    // Without `--gui` the platform picks: nothing is drawn on this host, and a
-    // Windows one opens a real window for the moment the process lives. Either
-    // way the 165 GUI functions answer, which is what this pins — with
-    // `--gui headless` nothing is drawn anywhere.
-    let body = "Func F()\n    Return GUICreate(\"T\", 100, 50) > 0\nEndFunc\n";
+    // Without `--gui` the platform picks the backend; either way the GUI
+    // functions answer, which is what this pins. The call stays windowless on
+    // purpose: on Windows `auto` is the real Win32 backend, and a test must not
+    // put a window on somebody's desktop.
+    let body = "Func F()\n    Return GUIGetMsg() = 0\nEndFunc\n";
     let path = script("gui-headless", body);
     let out = au3(&["run", path.to_str().unwrap(), "F"]);
     assert!(out.contains("F() = true"), "got:\n{out}");

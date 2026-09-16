@@ -64,6 +64,18 @@ fn run_full(path: &Path, flags: &[&str], commands: &[&str], input: &str) -> Stri
     use std::io::Write;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_au3"));
     cmd.arg("debug").arg(path);
+    // A test must never open a real window or dialog, and must not write, spawn
+    // or sleep: `--gui auto` is the native Win32 backend on Windows, where a
+    // `MsgBox` would block the session until somebody clicked it, and the
+    // faithful profile would let the script do whatever it says. Tests that are
+    // *about* `--gui` pass their own and are left alone.
+    let has = |flag: &str| flags.contains(&flag);
+    if !has("--gui") {
+        cmd.arg("--gui").arg("headless");
+    }
+    if !has("--faithful") && !has("--deterministic") {
+        cmd.arg("--deterministic");
+    }
     for f in flags {
         cmd.arg(f);
     }
@@ -989,9 +1001,11 @@ fn gui_headless_keeps_the_session_working() {
 }
 
 /// `--gui auto` is the default, so saying it out loud has to behave the same.
+/// The script stays windowless on purpose: an accepted mode is what is being
+/// checked, and on Windows `auto` is the real Win32 backend.
 #[test]
 fn gui_auto_is_accepted() {
-    let path = script("gui-auto", "Global $h = GUICreate(\"T\", 100, 50)\n");
+    let path = script("gui-auto", "ConsoleWrite(\"auto\" & @CRLF)\n");
     let out = shell_with(&path, &["--gui", "auto"], &["quit"]);
     assert!(!out.contains("invalid value"), "got:\n{out}");
 }
