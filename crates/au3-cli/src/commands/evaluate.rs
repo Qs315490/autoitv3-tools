@@ -20,6 +20,7 @@
 
 use autoitv3_deobf::{evaluate_with_debugger, evaluate_with_options, SubstituteOptions};
 use autoitv3_format::PrettyPrinter;
+use autoitv3_i18n::{msg, tr};
 use clap::Args;
 
 use crate::args::{
@@ -77,29 +78,39 @@ pub struct EvaluateArgs {
 /// Report an evaluation outcome to stderr.
 pub fn report(outcome: &autoitv3_deobf::EvaluateReport) {
     eprintln!(
-        "evaluated: {} globals, {} tables, {} values inlined, {} calls resolved",
-        outcome.globals, outcome.tables, outcome.substitutions, outcome.calls_resolved
+        "{}",
+        msg!(
+            "evaluated: {globals} globals, {tables} tables, {inlined} values inlined, {calls} calls resolved",
+            globals = outcome.globals,
+            tables = outcome.tables,
+            inlined = outcome.substitutions,
+            calls = outcome.calls_resolved
+        )
     );
     if outcome.declarations_resolved > 0 {
         eprintln!(
-            "  {} table declaration(s) rewritten as literal values",
-            outcome.declarations_resolved
+            "{}",
+            msg!(
+                "  {declarations} table declaration(s) rewritten as literal values",
+                declarations = outcome.declarations_resolved
+            )
         );
     }
     match (&outcome.stopped, outcome.completed) {
         (Some(why), _) => {
-            eprintln!("script body did not finish: {why}");
+            eprintln!("{}", msg!("script body did not finish: {why}", why = why));
             if why.contains("undefined function") {
                 // The usual reason: the script reached the operating system,
                 // which is exactly where a Windows platform layer would go.
                 eprintln!(
-                    "  (that is the platform boundary: this function is not implemented for the current OS)"
+                    "{}",
+                    tr("  (that is the platform boundary: this function is not implemented for the current OS)")
                 );
             }
-            eprintln!("  values produced before that point were still inlined");
+            eprintln!("{}", tr("  values produced before that point were still inlined"));
         }
-        (None, false) => eprintln!("script body stopped early (Exit)"),
-        (None, true) => eprintln!("script body ran to completion"),
+        (None, false) => eprintln!("{}", tr("script body stopped early (Exit)")),
+        (None, true) => eprintln!("{}", tr("script body ran to completion")),
     }
 }
 

@@ -47,6 +47,7 @@ pub mod script;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use autoitv3_i18n::{msg, tr};
 use autoitv3_platform::{CipherAlg, HashAlg, PeImage};
 
 pub use script::{CompiledScript, FileKind, ScriptFile, ScriptVersion};
@@ -82,20 +83,31 @@ impl fmt::Display for Error {
         match self {
             Error::NotAPackage => write!(
                 f,
-                "no packed payload found (expected a derived-key loader plus \
-                 three stream-cipher members among the resources)"
+                "{}",
+                tr("no packed payload found (expected a derived-key loader plus \
+                 three stream-cipher members among the resources)")
             ),
             Error::NoCompiledScript => write!(
                 f,
-                "no compiled script found (expected an AU3!EA05 or AU3!EA06 \
-                 chunk, a resource named SCRIPT, or a raw chunk)"
+                "{}",
+                tr("no compiled script found (expected an AU3!EA05 or AU3!EA06 \
+                 chunk, a resource named SCRIPT, or a raw chunk)")
             ),
             Error::NoScript => write!(
                 f,
-                "the build carries no script entry (only embedded payloads)"
+                "{}",
+                tr("the build carries no script entry (only embedded payloads)")
             ),
-            Error::BadData(why) => write!(f, "the packed payload is malformed: {why}"),
-            Error::BadIndex(why) => write!(f, "invalid index spec: {why}"),
+            Error::BadData(why) => write!(
+                f,
+                "{}",
+                msg!("the packed payload is malformed: {why}", why = why)
+            ),
+            Error::BadIndex(why) => write!(
+                f,
+                "{}",
+                msg!("invalid index spec: {why}", why = why)
+            ),
             // (kept distinct from the inner message so it reads as one line)
             Error::Io(why) => write!(f, "{why}"),
         }
@@ -349,22 +361,22 @@ fn decode(psw_dict: &[u8], members: &[String]) -> Result<(String, Vec<String>), 
         let spec_key = hash_password(&hashes[i], &dict_text)?;
         let key = derive(&CipherAlg::Aes192, spec_key.as_bytes());
         let mut spec = CipherAlg::Aes192.apply(&key, &[0u8; 16], &psws[i]);
-        strip_padding(&mut spec).ok_or("the AES-192 password block has no padding")?;
+        strip_padding(&mut spec).ok_or(tr("the AES-192 password block has no padding"))?;
         let spec = String::from_utf8_lossy(&spec).into_owned();
         let (first, second) = password_pair(&spec, &dict_text)?;
 
         let key = derive(&CipherAlg::Aes128, second.as_bytes());
         let mut plain = CipherAlg::Aes128.apply(&key, &[0u8; 16], &data[i]);
-        strip_padding(&mut plain).ok_or("the AES-128 layer has no padding")?;
+        strip_padding(&mut plain).ok_or(tr("the AES-128 layer has no padding"))?;
         let key = derive(&CipherAlg::Aes256, first.as_bytes());
         let mut plain = CipherAlg::Aes256.apply(&key, &[0u8; 16], &plain);
-        strip_padding(&mut plain).ok_or("the AES-256 layer has no padding")?;
+        strip_padding(&mut plain).ok_or(tr("the AES-256 layer has no padding"))?;
 
         // The format authenticates itself: the digest must match the one
         // carried alongside the block, which is why a wrong key cannot slip
         // through.
         if HashAlg::Sha1.digest(&plain) != hashes[i] {
-            return Err(format!("block {} fails its SHA-1 check", i + 1));
+            return Err(msg!("block {n} fails its SHA-1 check", n = i + 1));
         }
         parts.push(String::from_utf8_lossy(&plain).into_owned());
         data[i] = plain;
@@ -376,7 +388,7 @@ fn decode(psw_dict: &[u8], members: &[String]) -> Result<(String, Vec<String>), 
     let mut chars = text.chars();
     let sep: String = chars.by_ref().take(3).collect();
     if sep.chars().count() < 3 {
-        return Err("the payload is too short to carry a separator".into());
+        return Err(tr("the payload is too short to carry a separator").into());
     }
     let entries = chars.as_str().split(&sep).map(str::to_string).collect();
     Ok((text, entries))
@@ -389,14 +401,14 @@ fn decode(psw_dict: &[u8], members: &[String]) -> Result<(String, Vec<String>), 
 /// marker. Returns `(the stripped run, what is left)`.
 fn split_tail(text: &str) -> Result<(&str, &str), String> {
     if text.len() < 8 {
-        return Err("a block is too short to carry its length marker".into());
+        return Err(tr("a block is too short to carry its length marker").into());
     }
     let tail = &text[text.len() - 8..];
     let marker: String = tail.chars().step_by(2).collect();
-    let len = from_hex(&marker).ok_or("a block's length marker is not hex")?;
+    let len = from_hex(&marker).ok_or(tr("a block's length marker is not hex"))?;
     let end = text.len() - 8;
     if len > end {
-        return Err("a block's length marker runs past its start".into());
+        return Err(tr("a block's length marker runs past its start").into());
     }
     Ok((&text[end - len..end], &text[..end - len]))
 }
@@ -404,7 +416,7 @@ fn split_tail(text: &str) -> Result<(&str, &str), String> {
 /// `decode_hash`: undo the arithmetic the hash blob was folded with.
 fn decode_hash(text: &str) -> Result<Vec<u8>, String> {
     if text.len() < 4 {
-        return Err("a hash block is too short".into());
+        return Err(tr("a hash block is too short").into());
     }
     // Every other character is taken, and pairs of those form bytes.
     let chars: Vec<char> = text.chars().step_by(2).collect();
@@ -417,7 +429,7 @@ fn decode_hash(text: &str) -> Result<Vec<u8>, String> {
         })
         .collect();
     if bytes.len() < 2 {
-        return Err("a hash block decodes to nothing".into());
+        return Err(tr("a hash block decodes to nothing").into());
     }
     let mut folded: Vec<char> = bytes.iter().map(|b| *b as char).collect();
 
@@ -445,7 +457,7 @@ fn decode_hash(text: &str) -> Result<Vec<u8>, String> {
 
     // The leading pair is how far to rotate; odd rotates right, even left.
     if folded.len() < 2 {
-        return Err("a hash block is too short to rotate".into());
+        return Err(tr("a hash block is too short to rotate").into());
     }
     let rotate = from_hex(&folded[..2].iter().collect::<String>()).unwrap_or(0);
     let mut body: Vec<char> = folded.split_off(2);
@@ -480,7 +492,7 @@ fn hash_password(hash: &[u8], dict: &str) -> Result<String, String> {
         }
     }
     if out.is_empty() {
-        return Err("a hash block yields no password material".into());
+        return Err(tr("a hash block yields no password material").into());
     }
     Ok(out.chars().take(PASSWORD_MAX_LEN).collect())
 }
@@ -494,16 +506,16 @@ fn password_pair(spec: &str, dict: &str) -> Result<(String, String), String> {
     // `^(\d+)\.\d+,` — a decimal header, consumed before the lists.
     let digits: String = spec.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
-        return Err("the AES-192 block has no length header".into());
+        return Err(tr("the AES-192 block has no length header").into());
     }
     let rest = &spec[digits.len()..];
-    let rest = rest.strip_prefix('.').ok_or("the password header is malformed")?;
+    let rest = rest.strip_prefix('.').ok_or(tr("the password header is malformed"))?;
     let more: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     let rest = &rest[more.len()..];
-    let rest = rest.strip_prefix(',').ok_or("the password header is malformed")?;
+    let rest = rest.strip_prefix(',').ok_or(tr("the password header is malformed"))?;
     let n: usize = digits
         .parse()
-        .map_err(|_| "the password header is not a number".to_string())?;
+        .map_err(|_| tr("the password header is not a number").to_string())?;
 
     // The two windows are `StringMid($s, 1, n)` and `StringMid($s, n + 2, n)`.
     // AutoIt's `StringMid` clamps rather than failing, so a short block simply
@@ -580,13 +592,13 @@ fn hex_upper(bytes: &[u8]) -> String {
 /// Inverse of [`hex_upper`], rejecting anything that is not hex.
 fn unhex(text: &str) -> Result<Vec<u8>, Error> {
     if text.len() % 2 != 0 {
-        return Err(Error::BadData("a hex run has an odd length".into()));
+        return Err(Error::BadData(tr("a hex run has an odd length").into()));
     }
     (0..text.len())
         .step_by(2)
         .map(|i| {
             u8::from_str_radix(&text[i..i + 2], 16)
-                .map_err(|_| Error::BadData("a hex run is not hexadecimal".into()))
+                .map_err(|_| Error::BadData(tr("a hex run is not hexadecimal").into()))
         })
         .collect()
 }
@@ -655,11 +667,18 @@ pub fn select_entries(
             }
         };
         if from > to {
-            return Err(Error::BadIndex(format!("{part} is a descending range")));
+            return Err(Error::BadIndex(msg!(
+                "{part} is a descending range",
+                part = part
+            )));
         }
         for n in from..=to {
             let entry = entries.get(n - 1).cloned().ok_or_else(|| {
-                Error::BadIndex(format!("{n} is past the end ({} entries)", entries.len()))
+                Error::BadIndex(msg!(
+                    "{n} is past the end ({count} entries)",
+                    n = n,
+                    count = entries.len()
+                ))
             })?;
             if !out.iter().any(|(seen, _)| *seen == n) {
                 out.push((n, entry));
@@ -675,7 +694,13 @@ fn parse_index(text: &str) -> Result<usize, Error> {
     match text.parse::<usize>() {
         // The table itself is 1-based; `0` is the count, not an entry.
         Ok(n) if n >= 1 => Ok(n),
-        _ => Err(Error::BadIndex(format!("{text:?} is not a 1-based index"))),
+        _ => {
+            let shown = format!("{text:?}");
+            Err(Error::BadIndex(msg!(
+                "{shown} is not a 1-based index",
+                shown = shown
+            )))
+        }
     }
 }
 

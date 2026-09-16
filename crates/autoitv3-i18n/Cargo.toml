@@ -1,0 +1,14 @@
+[package]
+name = "autoitv3-i18n"
+version.workspace = true
+edition.workspace = true
+description = "Runtime message localisation for the AutoIt v3 toolkit (English + Simplified Chinese)"
+
+[dependencies]
+
+[lib]
+name = "autoitv3_i18n"
+path = "src/lib.rs"
+
+[lints.rust]
+unused = "warn"

@@ -20,6 +20,7 @@
 
 use std::path::Path;
 
+use autoitv3_i18n::{msg, tr};
 use autoitv3_unpack::script;
 use autoitv3_unpack::{candidates_from_dir, candidates_from_image, select_entries, unpack};
 use clap::Args;
@@ -69,9 +70,9 @@ pub fn run(args: &UnpackArgs) -> CliResult<()> {
 fn run_script(args: &UnpackArgs) -> CliResult<()> {
     let path = Path::new(&args.input);
     if path.is_dir() {
-        return Err(CliError::failure(format!(
-            "{} is a directory; --script reads a PE image or a compiled-script chunk",
-            path.display()
+        return Err(CliError::failure(msg!(
+            "{path} is a directory; --script reads a PE image or a compiled-script chunk",
+            path = path.display()
         )));
     }
     let compiled = script::from_image(path).map_err(|e| CliError::failure(e.to_string()))?;
@@ -80,19 +81,27 @@ fn run_script(args: &UnpackArgs) -> CliResult<()> {
     // The container does not label which record is the script, only its
     // sub-type does — so saying what was found is part of the answer.
     eprintln!(
-        "compiled script: {} ({} embedded file(s))",
-        compiled.version,
-        compiled.files.len()
+        "{}",
+        msg!(
+            "compiled script: {version} ({files} embedded file(s))",
+            version = compiled.version,
+            files = compiled.files.len()
+        )
     );
     for file in &compiled.files {
+        let sub_type = format!("{:?}", file.sub_type);
+        let name = if file.name.is_empty() { tr("<unnamed>") } else { file.name.as_str() };
         eprintln!(
-            "  {:?} {} ({} bytes)",
-            file.sub_type,
-            if file.name.is_empty() { "<unnamed>" } else { &file.name },
-            file.data.len()
+            "{}",
+            msg!(
+                "  {sub_type} {name} ({bytes} bytes)",
+                sub_type = sub_type,
+                name = name,
+                bytes = file.data.len()
+            )
         );
     }
-    eprintln!("  {} bytes of source", source.len());
+    eprintln!("{}", msg!("  {bytes} bytes of source", bytes = source.len()));
     write_output(args.output.output.as_deref(), &source)
 }
 
@@ -107,22 +116,32 @@ fn run_payload(args: &UnpackArgs) -> CliResult<()> {
     .map_err(|e| CliError::failure(e.to_string()))?;
 
     if candidates.is_empty() {
-        return Err(CliError::failure(format!(
-            "{}: no resources to look at",
-            path.display()
+        return Err(CliError::failure(msg!(
+            "{path}: no resources to look at",
+            path = path.display()
         )));
     }
     let decoded = unpack(&candidates).map_err(|e| CliError::failure(e.to_string()))?;
 
     eprintln!(
-        "unpacked: loader {}, members {}/{}/{} ({} resources considered)",
-        decoded.package.loader,
-        decoded.package.members[0],
-        decoded.package.members[1],
-        decoded.package.members[2],
-        candidates.len()
+        "{}",
+        msg!(
+            "unpacked: loader {loader}, members {members0}/{members1}/{members2} ({resources} resources considered)",
+            loader = decoded.package.loader,
+            members0 = decoded.package.members[0],
+            members1 = decoded.package.members[1],
+            members2 = decoded.package.members[2],
+            resources = candidates.len()
+        )
     );
-    eprintln!("  {} entries, {} bytes", decoded.entries.len(), decoded.text.len());
+    eprintln!(
+        "{}",
+        msg!(
+            "  {entries} entries, {bytes} bytes",
+            entries = decoded.entries.len(),
+            bytes = decoded.text.len()
+        )
+    );
 
     let body = if args.raw {
         decoded.text.clone()

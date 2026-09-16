@@ -16,6 +16,7 @@
 
 use std::rc::Rc;
 
+use autoitv3_i18n::{msg, tr};
 use autoitv3_runtime::value::{NativeObject, ObjRef, Value};
 
 use windows_sys::core::GUID;
@@ -285,7 +286,7 @@ fn ensure_com() -> Result<(), String> {
             FAILED = !(succeeded(hr) || hr == windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE);
         });
         if FAILED {
-            return Err("CoInitializeEx failed".to_string());
+            return Err(tr("CoInitializeEx failed").to_string());
         }
     }
     Ok(())
@@ -295,20 +296,22 @@ fn ensure_com() -> Result<(), String> {
 pub(crate) fn obj_create(name: &str, args: &[Value]) -> Result<Value, String> {
     ensure_com()?;
     if name.is_empty() {
-        return Err("empty ProgID".to_string());
+        return Err(tr("empty ProgID").to_string());
     }
     let prog_w = wide(name);
     let mut clsid: GUID = unsafe { std::mem::zeroed() };
     let hr = unsafe { CLSIDFromProgID(prog_w.as_ptr(), &mut clsid) };
     if !succeeded(hr) {
-        return Err(format!("CLSIDFromProgID({name}) failed: 0x{hr:08X}"));
+        let hr = format!("{hr:#010X}");
+        return Err(msg!("CLSIDFromProgID({name}) failed: {hr}", name = name, hr = hr));
     }
     let mut iface: *mut core::ffi::c_void = std::ptr::null_mut();
     let hr = unsafe {
         CoCreateInstance(&clsid, std::ptr::null_mut(), CLSCTX_ALL, &IID_IDISPATCH, &mut iface)
     };
     if !succeeded(hr) {
-        return Err(format!("CoCreateInstance({name}) failed: 0x{hr:08X}"));
+        let hr = format!("{hr:#010X}");
+        return Err(msg!("CoCreateInstance({name}) failed: {hr}", name = name, hr = hr));
     }
     // Construction arguments: invoke the object's default member when given.
     if !args.is_empty() {
@@ -330,7 +333,7 @@ fn invoke_member(
 ) -> Result<Value, String> {
     let iface = dispatch_of(obj);
     if iface.is_null() {
-        return Err("released object".to_string());
+        return Err(tr("released object").to_string());
     }
     let mut variants: Vec<Variant> = args.iter().map(to_variant).collect();
     let id = unsafe { dispatch_id(iface, member) }
@@ -353,7 +356,7 @@ fn invoke_member(
 pub(crate) fn obj_get(obj: &ObjRef, member: &str) -> Result<Value, String> {
     let iface = dispatch_of(obj);
     if iface.is_null() {
-        return Err("released object".to_string());
+        return Err(tr("released object").to_string());
     }
     let id = unsafe { dispatch_id(iface, member) }
         .map_err(|hr| format!("{}.{}: 0x{hr:08X}", obj.name, member))?;

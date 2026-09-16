@@ -42,6 +42,7 @@ pub mod tokens;
 use std::fmt;
 use std::path::Path;
 
+use autoitv3_i18n::{msg, tr};
 use autoitv3_platform::PeImage;
 
 use crate::Error;
@@ -181,7 +182,7 @@ impl ScriptFile {
         match self.kind() {
             FileKind::CompiledScript => tokens::deassemble(&self.data)
                 .map(Some)
-                .map_err(|e| Error::BadData(format!("the token stream could not be read: {e}"))),
+                .map_err(|e| Error::BadData(msg!("the token stream could not be read: {e}", e = e))),
             FileKind::UnicodeScript => Ok(Some(decode_utf16(&self.data)?)),
             FileKind::Script => Ok(Some(String::from_utf8_lossy(&self.data).into_owned())),
             FileKind::Other => Ok(None),
@@ -360,14 +361,22 @@ fn parse_records(rest: &[u8], version: ScriptVersion) -> Result<CompiledScript, 
         // The Adler-32 is the format's only integrity check, and it is what
         // rejects a chunk that only looked like one.
         if adler32(&data) != checksum {
-            return Err(Error::BadData(format!(
-                "the {sub_type:?} record fails its Adler-32 check \
-                 (want {checksum:#010x})"
+            let record = format!("{sub_type:?}");
+            let checksum = format!("{checksum:#010x}");
+            return Err(Error::BadData(msg!(
+                "the {record} record fails its Adler-32 check (want {checksum})",
+                record = record,
+                checksum = checksum
             )));
         }
         if is_compressed == 1 {
+            let record = format!("{sub_type:?}");
             data = lz::decompress(&data, ea06)
-                .map_err(|e| Error::BadData(format!("the {sub_type:?} record is compressed oddly: {e}")))?;
+                .map_err(|e| Error::BadData(msg!(
+                    "the {record} record is compressed oddly: {e}",
+                    record = record,
+                    e = e
+                )))?;
         }
         files.push(ScriptFile { sub_type, name, data });
     }
@@ -375,7 +384,7 @@ fn parse_records(rest: &[u8], version: ScriptVersion) -> Result<CompiledScript, 
     // A marker can sit in unrelated data; a chunk with no records at all is
     // not a chunk, and saying so keeps the scan from stopping on a coincidence.
     if files.is_empty() {
-        return Err(Error::BadData("no records follow the signature".into()));
+        return Err(Error::BadData(tr("no records follow the signature").into()));
     }
     Ok(CompiledScript { version, files })
 }
@@ -395,9 +404,9 @@ impl<'a> Reader<'a> {
         let end = self
             .position
             .checked_add(count)
-            .ok_or_else(|| Error::BadData("a record is longer than the chunk".into()))?;
+            .ok_or_else(|| Error::BadData(tr("a record is longer than the chunk").into()))?;
         let slice = self.data.get(self.position..end).ok_or_else(|| {
-            Error::BadData("the chunk ends in the middle of a record".into())
+            Error::BadData(tr("the chunk ends in the middle of a record").into())
         })?;
         self.position = end;
         Ok(slice)
@@ -463,13 +472,13 @@ fn xor(data: &[u8], seed: u32, ea06: bool) -> Vec<u8> {
 /// Decode UTF-16 little-endian, which is what AutoIt writes.
 fn decode_utf16(data: &[u8]) -> Result<String, Error> {
     if data.len() % 2 != 0 {
-        return Err(Error::BadData("a UTF-16 string has an odd byte count".into()));
+        return Err(Error::BadData(tr("a UTF-16 string has an odd byte count").into()));
     }
     let units: Vec<u16> = data
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
-    String::from_utf16(&units).map_err(|_| Error::BadData("a UTF-16 string is malformed".into()))
+    String::from_utf16(&units).map_err(|_| Error::BadData(tr("a UTF-16 string is malformed").into()))
 }
 
 /// The Adler-32 check the container stores for every record.

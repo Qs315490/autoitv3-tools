@@ -72,6 +72,7 @@ pub(crate) mod misc;
 pub(crate) mod process;
 pub(crate) mod registry;
 
+use autoitv3_i18n::msg;
 use autoitv3_runtime::error::RuntimeError;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::platform::Platform;
@@ -153,18 +154,25 @@ impl WindowsPlatform {
         if base == 0 {
             if dll::trace_enabled() {
                 eprintln!(
-                    "[win32] GetModuleHandleW(NULL): cannot map resource image {} \
-                     (LoadLibraryExW failed)",
-                    path.display()
+                    "{}",
+                    msg!(
+                        "[win32] GetModuleHandleW(NULL): cannot map resource image {path} (LoadLibraryExW failed)",
+                        path = path.display()
+                    )
                 );
             }
             return None;
         }
         self.resource_base = base;
         if dll::trace_enabled() {
+            let base = format!("{base:#x}");
             eprintln!(
-                "[win32] GetModuleHandleW(NULL) -> resource image {} @ {base:#x}",
-                path.display()
+                "{}",
+                msg!(
+                    "[win32] GetModuleHandleW(NULL) -> resource image {path} @ {base}",
+                    path = path.display(),
+                    base = base
+                )
             );
         }
         Some(base)
@@ -250,7 +258,7 @@ impl WindowsPlatform {
         }
         self.unimplemented_dll_calls.push(target.clone());
         if dll::trace_enabled() {
-            eprintln!("[win32] DllCall not resolved: {target}");
+            eprintln!("{}", msg!("[win32] DllCall not resolved: {target}", target = target));
         }
     }
 }

@@ -18,6 +18,8 @@
 //! (for RVA → file offset) and the three-level resource tree
 //! (type → name → language). Nothing is executed and no section is mapped.
 
+use autoitv3_i18n::{msg, tr};
+
 /// A `FindResourceW` selector: either an integer id or a string name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selector {
@@ -205,27 +207,30 @@ fn describe(sel: &Selector) -> String {
 fn parse(image: &[u8]) -> Result<Vec<Resource>, String> {
     if read_u16(image, 0) != Some(0x5a4d) {
         // "MZ"
-        return Err("not a PE image (missing MZ)".to_string());
+        return Err(tr("not a PE image (missing MZ)").to_string());
     }
-    let nt = read_u32(image, 0x3c).ok_or("truncated DOS header")? as usize;
+    let nt = read_u32(image, 0x3c).ok_or(tr("truncated DOS header"))? as usize;
     if image.get(nt..nt + 4) != Some(b"PE\0\0") {
-        return Err("not a PE image (missing PE signature)".to_string());
+        return Err(tr("not a PE image (missing PE signature)").to_string());
     }
 
     let coff = nt + 4;
-    let sections = read_u16(image, coff + 2).ok_or("truncated COFF header")? as usize;
-    let optional_size = read_u16(image, coff + 16).ok_or("truncated COFF header")? as usize;
+    let sections = read_u16(image, coff + 2).ok_or(tr("truncated COFF header"))? as usize;
+    let optional_size = read_u16(image, coff + 16).ok_or(tr("truncated COFF header"))? as usize;
     let optional = coff + 20;
-    let magic = read_u16(image, optional).ok_or("truncated optional header")?;
+    let magic = read_u16(image, optional).ok_or(tr("truncated optional header"))?;
     // The data directories follow the fixed part of the optional header: 96
     // bytes for PE32, 112 for PE32+. Directory 2 is the resource table.
     let dirs = optional
         + match magic {
             0x10b => 96,
             0x20b => 112,
-            other => return Err(format!("unknown optional header magic {other:#x}")),
+            other => {
+                let magic = format!("{other:#x}");
+                return Err(msg!("unknown optional header magic {magic}", magic = magic));
+            }
         };
-    let rsrc_rva = read_u32(image, dirs + 2 * 8).ok_or("truncated data directories")?;
+    let rsrc_rva = read_u32(image, dirs + 2 * 8).ok_or(tr("truncated data directories"))?;
     if rsrc_rva == 0 || read_u32(image, dirs + 2 * 8 + 4).unwrap_or(0) == 0 {
         return Ok(Vec::new());
     }
@@ -252,7 +257,7 @@ fn parse(image: &[u8]) -> Result<Vec<Resource>, String> {
         Some((raw + (rva - vaddr)) as usize)
     };
 
-    let base = to_offset(rsrc_rva).ok_or("resource directory RVA is not mapped")?;
+    let base = to_offset(rsrc_rva).ok_or(tr("resource directory RVA is not mapped"))?;
     let mut out = Vec::new();
     // Every offset inside the resource tree is relative to `base`, so it is
     // threaded through the recursion rather than added to the current node.

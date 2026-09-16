@@ -25,6 +25,16 @@ use crate::commands;
     propagate_version = true,
 )]
 pub struct Cli {
+    /// Language for messages, help and diagnostics
+    ///
+    /// `en` (English), `zh-CN` (Simplified Chinese), or `auto` to follow the
+    /// environment: `AU3_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG`, with
+    /// `zh*` meaning Chinese and anything else English. Defaults to `auto`, so
+    /// an unset environment behaves exactly as before.
+    #[arg(long, global = true, value_name = "LANG", default_value = "auto",
+          value_parser = crate::i18n_cli::lang_value)]
+    pub lang: String,
+
     /// (internal) Attach to the console of the process that started us
     ///
     /// The elevated copy an `#RequireAdmin` run starts is given a console of

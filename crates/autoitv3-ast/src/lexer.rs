@@ -6,6 +6,7 @@
 
 use crate::span::{Pos, Span};
 use crate::token::{Token, TokenKind};
+use autoitv3_i18n::{msg, tr};
 
 /// A lexical error with the position where it occurred.
 #[derive(Debug, Clone)]
@@ -316,7 +317,7 @@ impl<'a> Lexer<'a> {
             b'A'..=b'Z' | b'a'..=b'z' | b'_' => self.ident(start),
             _ => {
                 return Err(LexError {
-                    msg: format!("unexpected character '{}'", c as char),
+                    msg: msg!("unexpected character '{c}'", c = c as char),
                     pos: start,
                 })
             }
@@ -459,7 +460,7 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 None => {
                     return Err(LexError {
-                        msg: "unterminated string literal".into(),
+                        msg: tr("unterminated string literal").into(),
                         pos: start,
                     })
                 }

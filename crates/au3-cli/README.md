@@ -9,9 +9,11 @@
 ```text
     au3-cli/                # CLI 二进制 crate（产物名为 au3，使用 clap 解析参数）
       src/
-        main.rs     入口：Cli::parse() → dispatch → 把 CliError 转成退出码
-        cli.rs      顶层 Cli / Command 定义（子命令、别名、缩写开关）
+        main.rs     入口：定语言 → i18n_cli::parse() → dispatch → 把 CliError 转成退出码
+        cli.rs      顶层 Cli / Command 定义（子命令、别名、缩写开关、--lang）
         args.rs     共用参数类型（-o 输出、-I 搜索路径）、CliError、输入加载
+        i18n_cli.rs 语言选择（--lang 预扫描）+ 把 clap 的帮助/用法错误过一遍译文表
+        tests_i18n.rs  （测试用）帮助文本与 tr()/msg!() 键的覆盖率守卫
         elevate.rs   #RequireAdmin：判断指令、起提权副本、说明为什么不提权
         output.rs   输出目标：文件或 stdout（`-` 表示 stdout）
         commands/
@@ -103,6 +105,11 @@ au3 run some-gui.au3 --gui headless      # 确定性地跑：窗口不画，MsgB
                                          # 只按脚本化答案回答（不等人），分析/CI 用这个
 au3 run some-gui.au3 --gui window        # 没有原生路径的主机也能看窗口
 
+# --lang：消息/帮助/诊断用哪种语言（en 英文、zh-CN 简体中文、auto 跟随环境，默认 auto）
+au3 --help --lang zh-CN
+AU3_LANG=zh-CN au3 run some.au3
+au3 debug some.au3 --lang zh-CN
+
 # debug：加载脚本并进入交互式调试 shell（断点/单步/异常时停/查看/求值）
 au3 debug some.au3
 au3 debug some.au3 -c "break 68" -c run -c "print $string_table[0x4ea]" -c quit
@@ -116,6 +123,32 @@ quit' | au3 debug some.au3        # 管道同样可以驱动（不画提示符�
 au3 debug some-gui.au3                # Windows 默认用真窗口，别处不画
 au3 debug some-gui.au3 --gui window   # 会话跑在 eframe 窗口下（需 --features gui-window 构建）
 ```
+
+### 语言（i18n）
+
+`au3` 的**消息、帮助文本和诊断**都有简体中文版，但只有这一层是"文案"：标识符、
+参数名、路径、类型名、值、生成的 AutoIt 源码、反汇编文本、脚本自己的输出
+（`ConsoleWrite`/`MsgBox` 的内容）**不翻译**——那些是数据或输出，翻译会破坏可解析性。
+
+```bash
+au3 --lang zh-CN --help          # 中文帮助
+au3 run some.au3                 # 选语言：--lang > AU3_LANG > LC_ALL/LC_MESSAGES/LANG
+AU3_LANG=zh-CN au3 debug some.au3
+au3 debug some.au3 --lang en     # 单次强制英文
+```
+
+- `--lang` 是全局参数，可以放在子命令前后（`au3 run f.au3 --lang zh-CN` 也行）。
+- 不写 `--lang` 时默认 `auto`：看 `AU3_LANG`，没有再看 `LC_ALL` / `LC_MESSAGES` /
+  `LANG`，`zh*`（`zh_CN.UTF-8`、`zh-Hans`…）用中文，其它一律英文。所以
+  `LANG=zh_CN.UTF-8` 的环境里默认就是中文，`LANG=C` 或 `CI` 里默认英文。
+- 缺翻译时**静默退回英文**，不会漏掉消息；`AU3_I18N_STRICT=1` 会把还没翻译的键
+  逐条打到 stderr，方便补。`--lang` 的取值写错会当作用法错误报出来。
+
+译文在 [`autoitv3-i18n`](../autoitv3-i18n/README.md) 的
+`src/catalog/*.rs` 里，按 `(英文, 中文)` 一条一条加；英文侧留在调用点上，
+既是默认文案也是翻译键（`tr("...")` / `msg!("... {name}", name = x)`）。
+`cargo test --offline -p au3-cli --bin au3 -- --ignored` 里的两个覆盖率
+测试会列出没翻译的键（帮助文本与源码里的键各一个）。
 
 ### `#include`
 

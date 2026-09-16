@@ -5,6 +5,7 @@ edition.workspace = true
 description.workspace = true
 
 [dependencies]
+autoitv3-i18n = { path = "../autoitv3-i18n" }
 autoitv3-ast = { path = "../autoitv3-ast" }
 
 # AutoIt's StringRegExp* are PCRE; we implement them with the pure-Rust

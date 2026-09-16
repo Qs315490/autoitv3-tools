@@ -4,6 +4,7 @@
 //! and summarises what was found, without emitting any source.
 
 use autoitv3_ast::ast::ItemKind;
+use autoitv3_i18n::msg;
 use clap::Args;
 
 use crate::args::{load_program, CliResult};
@@ -27,9 +28,12 @@ pub fn run(args: &ParseArgs) -> CliResult<()> {
         .count();
 
     println!(
-        "parsed OK: {} top-level items, {} functions",
-        prog.items.len(),
-        funcs
+        "{}",
+        msg!(
+            "parsed OK: {items} top-level items, {functions} functions",
+            items = prog.items.len(),
+            functions = funcs
+        )
     );
     Ok(())
 }

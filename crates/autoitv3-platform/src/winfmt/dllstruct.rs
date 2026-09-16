@@ -31,6 +31,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use autoitv3_i18n::msg;
 use autoitv3_runtime::value::Value;
 
 use crate::winfmt::WindowsArch;
@@ -444,7 +445,8 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
         }
         if let Some(n) = lower.strip_prefix("align") {
             let n = n.trim().parse::<usize>().map_err(|_| {
-                format!("DllStruct: bad alignment in {token:?}")
+                let token = format!("{token:?}");
+                msg!("DllStruct: bad alignment in {token}", token = token)
             })?;
             next_align = n.min(8);
             continue;
@@ -467,7 +469,13 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
         // `BYTE [38]`, `ulong` and `ULong` interchangeably.
         let (elem_size, is_char, is_binary, is_wchar, is_float, signed) =
             type_info(&type_name.to_ascii_lowercase(), arch).ok_or_else(|| {
-                format!("DllStruct: unknown type {type_name:?} in {definition:?}")
+                let type_name = format!("{type_name:?}");
+                let definition = format!("{definition:?}");
+                msg!(
+                    "DllStruct: unknown type {type_name} in {definition}",
+                    type_name = type_name,
+                    definition = definition
+                )
             })?;
 
         // Natural alignment, capped the way Windows caps it at 8 bytes. An
@@ -493,7 +501,11 @@ fn parse_fields(definition: &str, arch: WindowsArch) -> Result<Vec<Field>, Strin
     }
 
     if fields.is_empty() {
-        return Err(format!("DllStruct: {definition:?} declares no fields"));
+        let definition = format!("{definition:?}");
+        return Err(msg!(
+            "DllStruct: {definition} declares no fields",
+            definition = definition
+        ));
     }
     Ok(fields)
 }

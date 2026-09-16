@@ -100,6 +100,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::{Instant, SystemTime};
 
+use autoitv3_i18n::msg;
 use autoitv3_runtime::error::RuntimeError;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::platform::Platform;
@@ -767,7 +768,14 @@ impl WindowsEmulation {
             Ok(image) => self.module = Some(image),
             Err(e) => {
                 if self.trace_dll {
-                    eprintln!("[winemu] cannot read module {}: {e}", path.display());
+                    eprintln!(
+                        "{}",
+                        msg!(
+                            "[winemu] cannot read module {path}: {e}",
+                            path = path.display(),
+                            e = e
+                        )
+                    );
                 }
                 self.module = None;
             }

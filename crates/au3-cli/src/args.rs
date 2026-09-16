@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use autoitv3_ast::{parse, Program};
+use autoitv3_i18n::{msg, tr};
 use autoitv3_platform::{
     find_resource_module, has_staged_resources, resource_search_dirs, PlatformOptions,
     WindowsArch, WindowsEmulation, WindowsVersion,
@@ -120,14 +121,18 @@ impl EffectArgs {
         for (list, allowed) in [(&self.allow, true), (&self.deny, false)] {
             for raw in list {
                 let kind = EffectKind::from_name(raw).ok_or_else(|| {
-                    CliError::failure(format!(
-                        "unknown effect {raw:?} (try file, env, registry, clipboard, spawn, \
-                         shutdown, net, process)"
+                    let shown = format!("{raw:?}");
+                    CliError::failure(msg!(
+                        "unknown effect {shown} (try file, env, registry, clipboard, spawn, \
+                         shutdown, net, process)",
+                        shown = shown
                     ))
                 })?;
                 if profile.overrides.get(kind).is_some() {
-                    return Err(CliError::failure(format!(
-                        "effect {raw:?} given to both --allow and --deny"
+                    let shown = format!("{raw:?}");
+                    return Err(CliError::failure(msg!(
+                        "effect {shown} given to both --allow and --deny",
+                        shown = shown
                     )));
                 }
                 profile = profile.with_effect(kind, allowed);
@@ -313,22 +318,29 @@ impl WinEmuArgs {
         }
         if let Some(raw) = &self.win_version {
             let version = WindowsVersion::from_name(raw).ok_or_else(|| {
-                CliError::failure(format!(
-                    "unknown --win-version {raw:?} (try win7, win8, win81, win10, win11)"
+                let shown = format!("{raw:?}");
+                CliError::failure(msg!(
+                    "unknown --win-version {shown} (try win7, win8, win81, win10, win11)",
+                    shown = shown
                 ))
             })?;
             emu = emu.with_version(version);
         }
         if let Some(raw) = &self.win_arch {
             let arch = WindowsArch::from_name(raw).ok_or_else(|| {
-                CliError::failure(format!("unknown --win-arch {raw:?} (try x86, x64, arm64)"))
+                let shown = format!("{raw:?}");
+                CliError::failure(msg!(
+                    "unknown --win-arch {shown} (try x86, x64, arm64)",
+                    shown = shown
+                ))
             })?;
             emu = emu.with_arch(arch);
         }
         if let Some(path) = &self.resource_module {
             if !Path::new(path).is_file() {
-                return Err(CliError::failure(format!(
-                    "--resource-module {path}: no such file"
+                return Err(CliError::failure(msg!(
+                    "--resource-module {path}: no such file",
+                    path = path
                 )));
             }
             emu = emu.with_module_file(path);
@@ -336,15 +348,23 @@ impl WinEmuArgs {
             if let Some(path) = input_module {
                 // The input *was* the build, so its resources are the ones the
                 // script reads — no sibling search needed.
+                let shown = path.display().to_string();
                 eprintln!(
-                    "# resource module: {} (the input build; override with --resource-module)",
-                    path.display()
+                    "{}",
+                    msg!(
+                        "# resource module: {path} (the input build; override with --resource-module)",
+                        path = shown
+                    )
                 );
                 emu = emu.with_module_file(path);
             } else if let Some(found) = find_resource_module(script) {
+                let shown = found.display().to_string();
                 eprintln!(
-                    "# resource module: {} (found next to the script; override with --resource-module)",
-                    found.display()
+                    "{}",
+                    msg!(
+                        "# resource module: {path} (found next to the script; override with --resource-module)",
+                        path = shown
+                    )
                 );
                 emu = emu.with_module_file(found);
             }
@@ -355,7 +375,8 @@ impl WinEmuArgs {
             let dirs = resource_search_dirs(script);
             if emu.module_path().is_none() && !has_staged_resources(&dirs) {
                 eprintln!(
-                    "# no resource image or extracted resource files found: resource calls will fail"
+                    "{}",
+                    tr("# no resource image or extracted resource files found: resource calls will fail")
                 );
             }
             emu = emu.with_resource_dirs(dirs);
@@ -427,19 +448,20 @@ pub struct Input {
 /// `#include` is *not* expanded here: the commands that only read or rewrite a
 /// file want the file, directives and all. See [`load_input_included`].
 pub fn load_input(path: &str) -> CliResult<Input> {
-    let bytes =
-        std::fs::read(path).map_err(|e| CliError::io(format!("cannot read {path}: {e}")))?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| CliError::io(msg!("cannot read {path}: {e}", path = path, e = e)))?;
     if is_compiled_build(&bytes) {
         return load_compiled(path);
     }
     let source = autoitv3_preproc::decode(&bytes).ok_or_else(|| {
-        CliError::io(format!(
+        CliError::io(msg!(
             "cannot read {path}: not UTF-8 or UTF-16 source, and not a compiled build \
-             (no MZ / AU3!EA header)"
+             (no MZ / AU3!EA header)",
+            path = path
         ))
     })?;
-    let program =
-        parse(&source).map_err(|e| CliError::failure(format!("parse error in {path}: {e}")))?;
+    let program = parse(&source)
+        .map_err(|e| CliError::failure(msg!("parse error in {path}: {e}", path = path, e = e)))?;
     Ok(Input {
         source,
         program,
@@ -470,9 +492,12 @@ pub fn load_input_included(path: &str, includes: &IncludeArgs) -> CliResult<Inpu
     }
     if expansion.files.len() > 1 {
         eprintln!(
-            "# #include: read {} files ({} included)",
-            expansion.files.len(),
-            expansion.files.len() - 1
+            "{}",
+            msg!(
+                "# #include: read {files} files ({included} included)",
+                files = expansion.files.len(),
+                included = expansion.files.len() - 1
+            )
         );
     }
     input.program = expansion.program;
@@ -497,13 +522,19 @@ fn load_compiled(path: &str) -> CliResult<Input> {
         .source()
         .map_err(|e| CliError::failure(format!("{path}: {e}")))?;
     eprintln!(
-        "# input build: {path} (compiled script {}, {} embedded file(s))",
-        compiled.version,
-        compiled.files.len()
+        "{}",
+        msg!(
+            "# input build: {path} (compiled script {version}, {files} embedded file(s))",
+            path = path,
+            version = compiled.version,
+            files = compiled.files.len()
+        )
     );
     let program = parse(&source).map_err(|e| {
-        CliError::failure(format!(
-            "parse error in the script unpacked from {path}: {e}"
+        CliError::failure(msg!(
+            "parse error in the script unpacked from {path}: {e}",
+            path = path,
+            e = e
         ))
     })?;
     Ok(Input {

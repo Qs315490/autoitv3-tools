@@ -17,6 +17,8 @@
 //! why `apply_keyword_indent` exists and why an unknown keyword would need
 //! care. This is a port of the MIT-licensed AutoIt-Ripper's `opcodes.py`.
 
+use autoitv3_i18n::{msg, tr};
+
 use super::symbols::{canonical_function, canonical_keyword, canonical_macro, FUNCTIONS};
 
 /// Why a token stream could not be turned into source.
@@ -84,11 +86,11 @@ impl<'a> Tokens<'a> {
         let end = self
             .position
             .checked_add(count)
-            .ok_or_else(|| TokenError::new("the token stream runs off the end"))?;
+            .ok_or_else(|| TokenError::new(tr("the token stream runs off the end")))?;
         let slice = self
             .data
             .get(self.position..end)
-            .ok_or_else(|| TokenError::new("the token stream runs off the end"))?;
+            .ok_or_else(|| TokenError::new(tr("the token stream runs off the end")))?;
         self.position = end;
         Ok(slice)
     }
@@ -135,14 +137,14 @@ impl<'a> Tokens<'a> {
         let bytes = key as usize * 2;
         let raw = self
             .take(bytes)
-            .map_err(|_| TokenError::new(format!("a string of {key} characters runs off the end")))?;
+            .map_err(|_| TokenError::new(msg!("a string of {key} characters runs off the end", key = key)))?;
         let mut units = Vec::with_capacity(key as usize);
         for pair in raw.chunks_exact(2) {
             let word = u16::from_le_bytes([pair[0], pair[1]]);
             units.push(word ^ (key as u16));
         }
         String::from_utf16(&units)
-            .map_err(|_| TokenError::new("a string is not valid UTF-16"))
+            .map_err(|_| TokenError::new(tr("a string is not valid UTF-16")))
     }
 
     /// One token, rendered as the text it stands for.
@@ -155,7 +157,7 @@ impl<'a> Tokens<'a> {
                 let index = usize::try_from(index)
                     .ok()
                     .filter(|i| *i < super::symbols::KEYWORDS.len())
-                    .ok_or_else(|| TokenError::new("a keyword index is out of range"))?;
+                    .ok_or_else(|| TokenError::new(tr("a keyword index is out of range")))?;
                 let keyword = super::symbols::KEYWORDS[index];
                 self.apply_keyword_indent(keyword);
                 keyword.to_string()
@@ -166,7 +168,7 @@ impl<'a> Tokens<'a> {
                 let index = usize::try_from(index)
                     .ok()
                     .filter(|i| *i < FUNCTIONS.len())
-                    .ok_or_else(|| TokenError::new("a function index is out of range"))?;
+                    .ok_or_else(|| TokenError::new(tr("a function index is out of range")))?;
                 FUNCTIONS[index].to_string()
             }
             // The integer literals are *signed*: `-1` in the source is an
@@ -180,8 +182,9 @@ impl<'a> Tokens<'a> {
             // Keyword by name.
             0x30 => {
                 let name = self.xored_string()?;
+                let shown = format!("{name:?}");
                 let keyword = canonical_keyword(&name)
-                    .ok_or_else(|| TokenError::new(format!("unknown keyword {name:?}")))?;
+                    .ok_or_else(|| TokenError::new(msg!("unknown keyword {name}", name = shown)))?;
                 self.apply_keyword_indent(keyword);
                 keyword.to_string()
             }
@@ -202,9 +205,12 @@ impl<'a> Tokens<'a> {
                 format!("\"{}\"", text.replace('"', "\"\""))
             }
             0x37 => self.xored_string()?,
-            _ => operator(opcode)
-                .ok_or_else(|| TokenError::new(format!("unsupported opcode {opcode:#04x}")))?
-                .to_string(),
+            _ => {
+                let shown = format!("{opcode:#04x}");
+                operator(opcode)
+                    .ok_or_else(|| TokenError::new(msg!("unsupported opcode {opcode}", opcode = shown)))?
+                    .to_string()
+            }
         })
     }
 

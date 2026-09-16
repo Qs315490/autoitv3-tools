@@ -23,6 +23,7 @@ AutoIt v3 词法/语法分析工具集：产出**带源码位置（Span）的 AS
 | `autoitv3-gui-egui` | GUI 渲染后端：离屏 PNG / 真窗口 | [README](crates/autoitv3-gui-egui/README.md) |
 | `autoitv3-unpack` | 编译脚本与资源载荷解包 | [README](crates/autoitv3-unpack/README.md) |
 | `au3-cli` | `au3` 命令行（parse/pretty/deobfuscate/evaluate/run/debug/unpack） | [README](crates/au3-cli/README.md) |
+| `autoitv3-i18n` | 消息本地化：英文原文即翻译键，简体中文译文表（`--lang`/`AU3_LANG`） | [README](crates/autoitv3-i18n/README.md) |
 
 每个 crate 的 README 收录了它的目录树、设计说明与用法细节（此前集中在本文件的
 章节已按主题拆分过去）；执行配置、平台层语义、GUI 后端、解包格式等长文都在对应 crate 里。

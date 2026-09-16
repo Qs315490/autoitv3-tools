@@ -22,6 +22,8 @@
 use std::ffi::OsString;
 use std::path::Path;
 
+use autoitv3_i18n::msg;
+
 use crate::elevate::{command_line, Elevated};
 
 /// A NUL-terminated UTF-16 copy of `text`, for the wide Win32 entry points.
@@ -75,9 +77,10 @@ pub fn relaunch_elevated(
         if code == ERROR_CANCELLED {
             return Ok(Elevated::Declined);
         }
-        return Err(format!(
-            "ShellExecuteExW(runas) failed: {}",
-            std::io::Error::from_raw_os_error(code as i32)
+        let error = std::io::Error::from_raw_os_error(code as i32);
+        return Err(msg!(
+            "ShellExecuteExW(runas) failed: {error}",
+            error = error
         ));
     }
 

@@ -17,6 +17,7 @@
 //! it; winit insists on the main thread, so that mode runs the script on a
 //! worker driven by `LiveBackend::run` and blocks here until the window closes.
 
+use autoitv3_i18n::{msg, tr};
 use autoitv3_platform::winemu::HeadlessBackend;
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger, StopReason};
 use autoitv3_runtime::profile::EffectKind;
@@ -135,19 +136,18 @@ fn run_windowed(args: &RunArgs) -> CliResult<()> {
     autoitv3_gui_egui::LiveBackend::new(title)
         .run(move |backend| {
             if let Err(e) = execute(&owned, Some(Box::new(backend))) {
-                eprintln!("error: {}", e.message);
+                eprintln!("{}", msg!("error: {message}", message = e.message));
             }
         })
-        .map_err(|e| CliError::failure(format!("opening the GUI window failed: {e}")))
+        .map_err(|e| CliError::failure(msg!("opening the GUI window failed: {e}", e = e)))
 }
 
 /// `--gui window` without the feature: say how to get it.
 #[cfg(not(feature = "gui-window"))]
 fn run_windowed(_args: &RunArgs) -> CliResult<()> {
-    Err(CliError::failure(
-        "--gui window needs a build with the `gui-window` feature \
-         (cargo build --release -p au3-cli --features gui-window)",
-    ))
+    Err(CliError::failure(tr(
+        "--gui window needs a build with the `gui-window` feature (cargo build --release -p au3-cli --features gui-window)",
+    )))
 }
 
 /// Build the runtime and execute the script, optionally with a GUI backend.
@@ -178,8 +178,8 @@ fn execute(
     if args.gui == GuiMode::Window {
         if crate::elevate::is_required(&prog) {
             eprintln!(
-                "note: #RequireAdmin: --gui window keeps this process, \
-                 so the script runs without administrator rights"
+                "{}",
+                tr("note: #RequireAdmin: --gui window keeps this process, so the script runs without administrator rights")
             );
         }
     } else if crate::elevate::relaunch_if_required(
@@ -220,17 +220,23 @@ fn execute(
         rt.set_cmdline(&cmdline);
         let outcome = rt.run_script();
         match &outcome {
-            Ok(Flow::Return(value)) => println!("script body returned {}", format_value(value)),
-            Ok(Flow::Exit(code)) => println!("script body exited with code {code}"),
-            Ok(_) => println!("script body ran to completion"),
+            Ok(Flow::Return(value)) => println!(
+                "{}",
+                msg!("script body returned {value}", value = format_value(value))
+            ),
+            Ok(Flow::Exit(code)) => {
+                println!("{}", msg!("script body exited with code {code}", code = code))
+            }
+            Ok(_) => println!("{}", tr("script body ran to completion")),
             Err(_) => {}
         }
         if let Some(reason) = rt.take_pause() {
-            eprintln!("(stopped: {reason:?})");
+            let reason = format!("{reason:?}");
+            eprintln!("{}", msg!("(stopped: {reason})", reason = reason));
         }
         return outcome
             .map(|_| ())
-            .map_err(|e| CliError::failure(format!("error while running script body: {e}")));
+            .map_err(|e| CliError::failure(msg!("error while running script body: {e}", e = e)));
     };
 
     // With a FUNC, `--cmdline` is still the script's command line (visible to
@@ -241,8 +247,9 @@ fn execute(
         // Execute the top-level script so the tables the function may rely on
         // exist before it runs.
         if let Err(e) = rt.run_script() {
-            return Err(CliError::failure(format!(
-                "error while running script body: {e}"
+            return Err(CliError::failure(msg!(
+                "error while running script body: {e}",
+                e = e
             )));
         }
     }
@@ -253,12 +260,15 @@ fn execute(
         Ok(value) => {
             println!("{function}() = {}", format_value(&value));
             if let Some(reason) = rt.take_pause() {
-                eprintln!("(stopped: {reason:?})");
+                let reason = format!("{reason:?}");
+                eprintln!("{}", msg!("(stopped: {reason})", reason = reason));
             }
             Ok(())
         }
-        Err(e) => Err(CliError::failure(format!(
-            "runtime error in {function}(): {e}"
+        Err(e) => Err(CliError::failure(msg!(
+            "runtime error in {function}(): {e}",
+            function = function,
+            e = e
         ))),
     }
 }
@@ -288,12 +298,13 @@ impl Debugger for TracePrinter {
         self.statements += 1;
         // Keep the output usable on a 23k-line script.
         if self.statements <= 40 {
+            let pos = format!("{:>5}:{:<4}", span.start.line, span.start.col);
             eprintln!(
-                "[trace] {:>5}:{:<4} depth={depth}",
-                span.start.line, span.start.col
+                "{}",
+                msg!("[trace] {pos} depth={depth}", pos = pos, depth = depth)
             );
         } else if self.statements == 41 {
-            eprintln!("[trace] ... (further statements suppressed)");
+            eprintln!("{}", tr("[trace] ... (further statements suppressed)"));
         }
         DebugAction::Continue
     }
@@ -301,12 +312,16 @@ impl Debugger for TracePrinter {
     fn on_call_enter(&mut self, name: &str, args: &[Value]) -> DebugAction {
         self.calls.push(name.to_string());
         if self.calls.len() <= 40 {
-            eprintln!("[trace] call {name}({} args)", args.len());
+            eprintln!(
+                "{}",
+                msg!("[trace] call {name}({args} args)", name = name, args = args.len())
+            );
         }
         DebugAction::Continue
     }
 
     fn on_stop(&mut self, reason: &StopReason, _host: &mut dyn DebugHost) {
-        eprintln!("[trace] stop: {reason:?}");
+        let reason = format!("{reason:?}");
+        eprintln!("{}", msg!("[trace] stop: {reason}", reason = reason));
     }
 }

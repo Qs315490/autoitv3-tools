@@ -15,6 +15,7 @@ use crate::span::Span;
 use crate::token::Token;
 use crate::token::TokenKind;
 use crate::token::TokenKind as TK;
+use autoitv3_i18n::{msg, tr};
 use TK::*;
 
 /// A parse error tied to a source location.
@@ -116,7 +117,7 @@ impl Parser {
         if let Some(t) = self.eat(k) {
             Ok(t)
         } else {
-            Err(self.err_here(format!("expected {what}")))
+            Err(self.err_here(msg!("expected {what}", what = what)))
         }
     }
 
@@ -238,7 +239,7 @@ impl Parser {
                 break;
             }
             if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing EndFunc"));
+                return Err(self.err_here(tr("unexpected EOF: missing EndFunc")));
             }
             body.push(self.parse_stmt()?);
         }
@@ -493,7 +494,7 @@ impl Parser {
                 self.bump();
                 break;
             } else if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing EndIf"));
+                return Err(self.err_here(tr("unexpected EOF: missing EndIf")));
             } else {
                 // continuation of multi-line Then body
                 loop {
@@ -525,7 +526,7 @@ impl Parser {
                 break;
             }
             if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing WEnd"));
+                return Err(self.err_here(tr("unexpected EOF: missing WEnd")));
             }
             body.push(self.parse_stmt()?);
         }
@@ -541,7 +542,7 @@ impl Parser {
                 break;
             }
             if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing Until"));
+                return Err(self.err_here(tr("unexpected EOF: missing Until")));
             }
             body.push(self.parse_stmt()?);
         }
@@ -579,7 +580,7 @@ impl Parser {
                 break;
             }
             if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing Next"));
+                return Err(self.err_here(tr("unexpected EOF: missing Next")));
             }
             body.push(self.parse_stmt()?);
         }
@@ -603,12 +604,12 @@ impl Parser {
                 break;
             }
             if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing EndSelect"));
+                return Err(self.err_here(tr("unexpected EOF: missing EndSelect")));
             }
             if self.at(&Case) {
                 cases.push(self.parse_case(&[&EndSelect])?);
             } else {
-                return Err(self.err_here("expected Case or EndSelect"));
+                return Err(self.err_here(tr("expected Case or EndSelect")));
             }
         }
         Ok(StmtKind::Select(cases))
@@ -625,12 +626,12 @@ impl Parser {
                 break;
             }
             if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing EndSwitch"));
+                return Err(self.err_here(tr("unexpected EOF: missing EndSwitch")));
             }
             if self.at(&Case) {
                 cases.push(self.parse_case(&[&EndSwitch])?);
             } else {
-                return Err(self.err_here("expected Case or EndSwitch"));
+                return Err(self.err_here(tr("expected Case or EndSwitch")));
             }
         }
         Ok(StmtKind::Switch(SwitchStmt { expr, cases }))
@@ -678,7 +679,7 @@ impl Parser {
                 break;
             }
             if self.at(&Eof) {
-                return Err(self.err_here("unexpected EOF: missing EndWith"));
+                return Err(self.err_here(tr("unexpected EOF: missing EndWith")));
             }
             body.push(self.parse_stmt()?);
         }
@@ -995,7 +996,7 @@ impl Parser {
                 // reference that is then invoked. The brackets and the call
                 // form one chain, so `$arr[0](...)[1]` keeps working.
                 let ExprKind::Var(base) = e.kind.clone() else {
-                    return Err(self.err_here("cannot call non-variable expression"));
+                    return Err(self.err_here(tr("cannot call non-variable expression")));
                 };
                 self.bump();
                 let mut args = Vec::new();
@@ -1020,7 +1021,7 @@ impl Parser {
 
         // A `.` with nothing after it is not a valid expression.
         if matches!(e.kind, ExprKind::WithSubject) {
-            return Err(self.err_here("expected a member name after '.'"));
+            return Err(self.err_here(tr("expected a member name after '.'")));
         }
         Ok(e)
     }
@@ -1161,7 +1162,7 @@ impl Parser {
                     span,
                 })
             }
-            _ => Err(self.err_here("expected expression")),
+            _ => Err(self.err_here(tr("expected expression"))),
         }
     }
 
@@ -1176,7 +1177,7 @@ impl Parser {
                 self.bump();
                 Ok(Ident::new(name, t.span))
             }
-            _ => Err(self.err_here("expected identifier or variable name")),
+            _ => Err(self.err_here(tr("expected identifier or variable name"))),
         }
     }
 

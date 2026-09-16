@@ -1,0 +1,7 @@
+# Message assertions in the test suite are written in English, and the toolkit
+# is localised (`zh_CN.UTF-8` prints Chinese). Pin the test/`cargo run`
+# environment to English so results do not depend on the developer's locale:
+# `force = false` keeps an explicit caller value working
+# (`AU3_LANG=zh-CN cargo run …`), and `--lang` still wins over both.
+[env]
+AU3_LANG = { value = "en", force = false }

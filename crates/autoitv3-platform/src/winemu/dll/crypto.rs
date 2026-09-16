@@ -4,6 +4,7 @@
 //! and [`super::super::bcrypt`] (CNG); this file is the `advapi32`/`ntdll`
 //! surface those two answer.
 
+use autoitv3_i18n::msg;
 use autoitv3_runtime::value::Value;
 
 use super::WindowsEmulation;
@@ -15,7 +16,14 @@ impl WindowsEmulation {
     pub(in crate::winemu) fn crypt_create_hash(&mut self, algid: &Value) -> Option<DllOutcome> {
         let Some(alg) = crate::winemu::crypto::HashAlg::from_algid(algid.to_int() as u32) else {
             if self.trace_dll {
-                eprintln!("[winemu] CryptCreateHash: unsupported hash algid {:#x}", algid.to_int());
+                let algid = format!("{:#x}", algid.to_int());
+                eprintln!(
+                    "{}",
+                    msg!(
+                        "[winemu] CryptCreateHash: unsupported hash algid {algid}",
+                        algid = algid
+                    )
+                );
             }
             return None;
         };
@@ -87,7 +95,14 @@ impl WindowsEmulation {
     pub(in crate::winemu) fn crypt_derive_key(&mut self, algid: &Value, base: &Value) -> Option<DllOutcome> {
         let Some(alg) = crate::winemu::crypto::CipherAlg::from_algid(algid.to_int() as u32) else {
             if self.trace_dll {
-                eprintln!("[winemu] CryptDeriveKey: unsupported cipher algid {:#x}", algid.to_int());
+                let algid = format!("{:#x}", algid.to_int());
+                eprintln!(
+                    "{}",
+                    msg!(
+                        "[winemu] CryptDeriveKey: unsupported cipher algid {algid}",
+                        algid = algid
+                    )
+                );
             }
             return None;
         };

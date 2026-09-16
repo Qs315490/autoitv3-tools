@@ -5,6 +5,7 @@ edition.workspace = true
 description.workspace = true
 
 [dependencies]
+autoitv3-i18n = { path = "../autoitv3-i18n" }
 autoitv3-ast = { path = "../autoitv3-ast" }
 autoitv3-gui-model = { path = "../autoitv3-gui-model" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }

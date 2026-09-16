@@ -23,6 +23,7 @@
 //! `Pause` — rather than something the interpreter has to model.
 
 use autoitv3_ast::span::Span;
+use autoitv3_i18n::msg;
 
 use crate::error::RuntimeError;
 use crate::value::Value;
@@ -462,7 +463,7 @@ pub trait DebugHost {
     fn jump_to(&mut self, line: u32) -> Result<(), RuntimeError> {
         let _ = line;
         Err(RuntimeError::Unsupported {
-            what: "this host cannot jump".to_string(),
+            what: msg!("this host cannot jump"),
             span: None,
         })
     }

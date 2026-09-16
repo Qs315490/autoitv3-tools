@@ -16,6 +16,7 @@ use autoitv3_deobf::{
     evaluate_with_debugger, evaluate_with_options, DeobfReport, Deobfuscator, SubstituteOptions,
 };
 use autoitv3_format::PrettyPrinter;
+use autoitv3_i18n::{msg, tr};
 use clap::Args;
 
 use crate::args::{
@@ -166,25 +167,31 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
             let again = values.substitute_with(&mut prog, options);
             if again.total() > 0 {
                 eprintln!(
-                    "  {} more values inlined in code the simplifier spliced",
-                    again.total()
+                    "{}",
+                    msg!(
+                        "  {more} more values inlined in code the simplifier spliced",
+                        more = again.total()
+                    )
                 );
             }
             deobf.run_passes(&mut prog, &deobf.passes[split..], &mut report);
         }
         None => deobf.run_passes(&mut prog, &deobf.passes, &mut report),
     }
+    let renamed = if args.rename { "" } else { tr(" (renaming off; pass --rename)") };
     eprintln!(
-        "deobfuscated: {} folds, {} vars, {} funcs renamed{}; \
-         table: {} entries, {} calls, {} refs; {} indirect calls simplified",
-        report.folds,
-        report.renamed.vars,
-        report.renamed.funcs,
-        if args.rename { "" } else { " (renaming off; pass --rename)" },
-        report.table.entries,
-        report.table.calls,
-        report.table.refs,
-        report.simplified.calls + report.simplified.executes,
+        "{}",
+        msg!(
+            "deobfuscated: {folds} folds, {vars} vars, {funcs} funcs renamed{renamed}; table: {entries} entries, {calls} calls, {refs} refs; {simplified} indirect calls simplified",
+            folds = report.folds,
+            vars = report.renamed.vars,
+            funcs = report.renamed.funcs,
+            renamed = renamed,
+            entries = report.table.entries,
+            calls = report.table.calls,
+            refs = report.table.refs,
+            simplified = report.simplified.calls + report.simplified.executes
+        )
     );
 
     if !args.evaluate {
@@ -193,8 +200,11 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         let computed = computed_globals(&prog);
         if computed > 0 {
             eprintln!(
-                "note: {computed} global(s) are built by a function call at load time; \
-                 re-run with --evaluate to run the script body and inline their values"
+                "{}",
+                msg!(
+                    "note: {computed} global(s) are built by a function call at load time; re-run with --evaluate to run the script body and inline their values",
+                    computed = computed
+                )
             );
         }
     }

@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use autoitv3_ast::ast::*;
 use autoitv3_ast::span::Span;
+use autoitv3_i18n::msg;
 
 use crate::builtins;
 use crate::debug::{
@@ -305,7 +306,7 @@ impl DebugHost for Runtime {
         };
         if !in_range {
             return Err(RuntimeError::Unsupported {
-                what: format!("jump target line {line} is outside the current frame"),
+                what: msg!("jump target line {line} is outside the current frame", line = line),
                 span: None,
             });
         }
@@ -1022,7 +1023,7 @@ impl Runtime {
                 // script bug; stop unwinding and report it.
                 Ok(Flow::Break(_)) | Ok(Flow::Continue(_)) | Ok(Flow::ContinueCase) => {
                     result = Err(RuntimeError::Unsupported {
-                        what: format!("loop or case control outside its block in {display}"),
+                        what: msg!("loop or case control outside its block in {display}", display = display),
                         span,
                     });
                     break;
@@ -1307,7 +1308,7 @@ impl Runtime {
             }
             ExprKind::WithSubject => {
                 return Err(RuntimeError::Unsupported {
-                    what: "`With` subject outside a platform host".to_string(),
+                    what: msg!("`With` subject outside a platform host"),
                     span: Some(e.span),
                 })
             }
@@ -1338,14 +1339,14 @@ impl Runtime {
         let value = self.eval_expr(subject)?;
         let Value::Obj(obj) = value else {
             return Err(RuntimeError::Unsupported {
-                what: format!("member access `.{member}` on a non-object value"),
+                what: msg!("member access `.{member}` on a non-object value", member = member),
                 span: Some(span),
             });
         };
         let Runtime { globals, error, extended, profile, options, platform, .. } = self;
         let Some(platform) = platform.as_mut() else {
             return Err(RuntimeError::Unsupported {
-                what: format!("member access `.{member}` (no platform installed)"),
+                what: msg!("member access `.{member}` (no platform installed)", member = member),
                 span: Some(span),
             });
         };
@@ -1366,14 +1367,14 @@ impl Runtime {
         let value = self.eval_expr(subject)?;
         let Value::Obj(obj) = value else {
             return Err(RuntimeError::Unsupported {
-                what: format!("method call `.{member}()` on a non-object value"),
+                what: msg!("method call `.{member}()` on a non-object value", member = member),
                 span: Some(span),
             });
         };
         let Runtime { globals, error, extended, profile, options, platform, .. } = self;
         let Some(platform) = platform.as_mut() else {
             return Err(RuntimeError::Unsupported {
-                what: format!("method call `.{member}()` (no platform installed)"),
+                what: msg!("method call `.{member}()` (no platform installed)", member = member),
                 span: Some(span),
             });
         };
@@ -1550,7 +1551,7 @@ impl Runtime {
                 self.assign_index(base, &v.indices, value, span)
             }
             other => Err(RuntimeError::Unsupported {
-                what: format!("assignment target {other:?}"),
+                what: msg!("assignment target {target}", target = format!("{other:?}")),
                 span: Some(span),
             }),
         }
@@ -2284,7 +2285,7 @@ impl Runtime {
     pub fn evaluate_expression(&mut self, source: &str, span: Span) -> Result<Value, RuntimeError> {
         let wrapped = format!("Func __au3_expr__()\n    Return {source}\nEndFunc\n");
         let prog = autoitv3_ast::parse(&wrapped).map_err(|e| RuntimeError::Unsupported {
-            what: format!("not an expression: {} ({source})", e.msg),
+            what: msg!("not an expression: {error} ({source})", error = e.msg, source = source),
             span: Some(span),
         })?;
         let body = prog
@@ -2295,7 +2296,7 @@ impl Runtime {
                 _ => None,
             })
             .ok_or_else(|| RuntimeError::Unsupported {
-                what: format!("not an expression: {source}"),
+                what: msg!("not an expression: {source}", source = source),
                 span: Some(span),
             })?;
         let expr = body.iter().find_map(|stmt| match &stmt.kind {
@@ -2304,7 +2305,7 @@ impl Runtime {
         });
         let Some(expr) = expr else {
             return Err(RuntimeError::Unsupported {
-                what: format!("not an expression: {source}"),
+                what: msg!("not an expression: {source}", source = source),
                 span: Some(span),
             });
         };
@@ -2315,7 +2316,7 @@ impl Runtime {
 
     pub fn execute_source(&mut self, src: &str, span: Span) -> Result<Value, RuntimeError> {
         let prog = autoitv3_ast::parse(src).map_err(|e| RuntimeError::Unsupported {
-            what: format!("Execute() parse error: {}", e.msg),
+            what: msg!("Execute() parse error: {error}", error = e.msg),
             span: Some(span),
         })?;
         // Only expression statements contribute a value, matching AutoIt's
@@ -2337,7 +2338,7 @@ impl Runtime {
                             Flow::Return(v) => return Ok(v),
                             other => {
                                 return Err(RuntimeError::Unsupported {
-                                    what: format!("Execute() control flow {other:?}"),
+                                    what: msg!("Execute() control flow {flow}", flow = format!("{other:?}")),
                                     span: Some(span),
                                 })
                             }

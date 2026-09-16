@@ -35,6 +35,7 @@
 use std::ffi::OsString;
 
 use autoitv3_ast::Program;
+use autoitv3_i18n::{msg, tr};
 use autoitv3_platform::elevate::{self, Elevated};
 use crate::args::{CliError, CliResult};
 
@@ -49,7 +50,7 @@ pub fn is_required(program: &Program) -> bool {
 
 /// A note about the directive, prefixed so it is not mistaken for output.
 fn note(text: &str) {
-    eprintln!("note: {text}");
+    eprintln!("{}{text}", tr("note: "));
 }
 
 /// What `#RequireAdmin` calls for, decided before anything is done about it.
@@ -110,40 +111,39 @@ pub fn relaunch_if_required(
     match action(true, admin, no_elevate, spawn_denied) {
         Action::Nothing => return Ok(false),
         Action::Skip(reason) => {
-            note(reason);
+            note(tr(reason));
             return Ok(false);
         }
         Action::Relaunch => {}
     }
 
     let exe = std::env::current_exe()
-        .map_err(|e| CliError::io(format!("cannot find the running executable: {e}")))?;
+        .map_err(|e| CliError::io(msg!("cannot find the running executable: {e}", e = e)))?;
     let args = elevated_args();
     // Relative script paths have to resolve in the elevated copy too, and the
     // shell is free to pick its own directory when we do not say.
     let dir = std::env::current_dir().ok();
     match elevate::relaunch_elevated(&exe, &args, dir.as_deref()) {
         Ok(Elevated::Finished(code)) => {
-            note(&format!(
-                "#RequireAdmin: the elevated copy finished with exit code {code}"
+            note(&msg!(
+                "#RequireAdmin: the elevated copy finished with exit code {code}",
+                code = code
             ));
             Ok(true)
         }
         Ok(Elevated::Declined) => {
-            note(
-                "#RequireAdmin: the elevation prompt was dismissed, \
-                 running without administrator rights",
-            );
+            note(tr(
+                "#RequireAdmin: the elevation prompt was dismissed, running without administrator rights",
+            ));
             Ok(false)
         }
         Ok(Elevated::Unsupported) => {
-            note(
-                "#RequireAdmin: elevation is a Windows mechanism and this host has none, \
-                 running without administrator rights",
-            );
+            note(tr(
+                "#RequireAdmin: elevation is a Windows mechanism and this host has none, running without administrator rights",
+            ));
             Ok(false)
         }
-        Err(e) => Err(CliError::failure(format!("#RequireAdmin: {e}"))),
+        Err(e) => Err(CliError::failure(msg!("#RequireAdmin: {e}", e = e))),
     }
 }
 

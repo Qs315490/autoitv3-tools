@@ -17,6 +17,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use autoitv3_ast::span::Span;
+use autoitv3_i18n::msg;
 
 use crate::profile::SleepPolicy;
 
@@ -449,7 +450,7 @@ pub(crate) fn call(
                 other => {
                     rt.set_error_value(2, 0);
                     return Err(RuntimeError::Unsupported {
-                        what: format!("StringRegExp flag {other} (expected 0..4)"),
+                        what: msg!("StringRegExp flag {other} (expected 0..4)", other = other),
                         span: Some(span),
                     });
                 }

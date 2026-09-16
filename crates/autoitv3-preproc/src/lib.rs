@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 
 use autoitv3_ast::ast::{Item, ItemKind};
 use autoitv3_ast::{parse, Program};
+use autoitv3_i18n::msg;
 
 /// How deeply includes may nest before the expansion gives up.
 ///
@@ -288,8 +289,9 @@ impl State<'_> {
         depth: usize,
     ) -> Result<Option<Vec<Item>>, Error> {
         let Some((target, quoted)) = include_argument(argument) else {
-            self.warnings.push(format!(
-                "#include without a file name ({argument}) — the directive was ignored"
+            self.warnings.push(msg!(
+                "#include without a file name ({argument}) — the directive was ignored",
+                argument = argument
             ));
             return Ok(None);
         };
@@ -301,9 +303,11 @@ impl State<'_> {
                 .map(|dir| dir.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            self.warnings.push(format!(
+            self.warnings.push(msg!(
                 "#include {argument} not found (searched {searched}) — \
-                 put the AutoIt Include directory in AU3_INCLUDE_PATH or pass -I DIR"
+                 put the AutoIt Include directory in AU3_INCLUDE_PATH or pass -I DIR",
+                argument = argument,
+                searched = searched
             ));
             return Ok(None);
         };
@@ -312,24 +316,25 @@ impl State<'_> {
             return Ok(None);
         }
         if self.stack.contains(&key) {
-            self.warnings.push(format!(
-                "#include {} is already being expanded (cyclic include) — it was skipped",
-                path.display()
+            self.warnings.push(msg!(
+                "#include {path} is already being expanded (cyclic include) — it was skipped",
+                path = path.display()
             ));
             return Ok(None);
         }
         if depth >= MAX_DEPTH {
-            return Err(Error::new(format!(
-                "#include {} nests more than {MAX_DEPTH} levels deep",
-                path.display()
+            return Err(Error::new(msg!(
+                "#include {path} nests more than {max_depth} levels deep",
+                path = path.display(),
+                max_depth = MAX_DEPTH
             )));
         }
         let bytes = std::fs::read(&path)
-            .map_err(|e| Error::new(format!("cannot read {}: {e}", path.display())))?;
+            .map_err(|e| Error::new(msg!("cannot read {path}: {e}", path = path.display(), e = e)))?;
         if is_compiled(&bytes) {
-            self.warnings.push(format!(
-                "#include {} is a compiled file (.a3x), which is not expanded",
-                path.display()
+            self.warnings.push(msg!(
+                "#include {path} is a compiled file (.a3x), which is not expanded",
+                path = path.display()
             ));
             return Ok(None);
         }
@@ -338,7 +343,7 @@ impl State<'_> {
         // dropped, so the ASCII parts still define what the script asked for.
         let source = decode(&bytes).unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
         let program = parse(&source)
-            .map_err(|e| Error::new(format!("parse error in {}: {e}", path.display())))?;
+            .map_err(|e| Error::new(msg!("parse error in {path}: {e}", path = path.display(), e = e)))?;
         if has_include_once(&program) && !self.once.insert(key.clone()) {
             return Ok(None);
         }

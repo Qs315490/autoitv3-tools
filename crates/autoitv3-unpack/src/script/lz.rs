@@ -17,6 +17,8 @@
 //!
 //! This is a port of the MIT-licensed AutoIt-Ripper's `decompress.py`.
 
+use autoitv3_i18n::{msg, tr};
+
 /// Refuse a claimed output larger than this. The figure follows the reference
 /// implementation; a corrupt header should not be able to ask for gigabytes.
 const MAX_UNCOMPRESSED: usize = 10_000_000;
@@ -39,22 +41,24 @@ impl std::fmt::Display for LzError {
 pub fn decompress(data: &[u8], ea06: bool) -> Result<Vec<u8>, LzError> {
     let expected: &[u8; 4] = if ea06 { b"EA06" } else { b"EA05" };
     let Some(signature) = data.get(..4) else {
-        return Err(LzError("the compressed blob is shorter than its signature".into()));
+        return Err(LzError(tr("the compressed blob is shorter than its signature").into()));
     };
     if signature != expected {
-        return Err(LzError(format!(
-            "the compressed blob is not {} (starts with {} )",
-            String::from_utf8_lossy(expected),
-            describe(signature)
+        return Err(LzError(msg!(
+            "the compressed blob is not {expected} (starts with {actual} )",
+            expected = String::from_utf8_lossy(expected),
+            actual = describe(signature)
         )));
     }
     let Some(size_bytes) = data.get(4..8) else {
-        return Err(LzError("the compressed blob has no size header".into()));
+        return Err(LzError(tr("the compressed blob has no size header").into()));
     };
     let size = u32::from_be_bytes([size_bytes[0], size_bytes[1], size_bytes[2], size_bytes[3]]) as usize;
     if size > MAX_UNCOMPRESSED {
-        return Err(LzError(format!(
-            "the compressed blob claims {size} bytes, past the {MAX_UNCOMPRESSED} byte cap"
+        return Err(LzError(msg!(
+            "the compressed blob claims {size} bytes, past the {cap} byte cap",
+            size = size,
+            cap = MAX_UNCOMPRESSED
         )));
     }
 
@@ -82,7 +86,7 @@ pub fn decompress(data: &[u8], ea06: bool) -> Result<Vec<u8>, LzError> {
         if fillup > 0 {
             let fillup = fillup as usize;
             if piece.is_empty() {
-                return Err(LzError("a back-reference copies from before the output".into()));
+                return Err(LzError(tr("a back-reference copies from before the output").into()));
             }
             if fillup == 1 {
                 piece.push(piece[0]);
@@ -146,7 +150,7 @@ impl<'a> BitReader<'a> {
             let byte = *self
                 .data
                 .get(self.position / 8)
-                .ok_or_else(|| LzError("the compressed stream ends mid-item".into()))?;
+                .ok_or_else(|| LzError(tr("the compressed stream ends mid-item").into()))?;
             let bit = (byte >> (7 - self.position % 8)) & 1;
             value = (value << 1) | bit as u32;
             self.position += 1;

@@ -9,6 +9,7 @@
 use std::time::{Duration, Instant};
 
 use autoitv3_ast::span::Span;
+use autoitv3_i18n::msg;
 use autoitv3_runtime::debug::{DebugAction, DebugHost, Debugger};
 use autoitv3_runtime::Value;
 
@@ -62,15 +63,20 @@ impl Debugger for ProgressDebugger {
         }
         self.last = Instant::now();
         let globals = host.globals();
+        let global_count = globals.len();
         let tables = globals
             .iter()
             .filter(|(_, v)| matches!(v, Value::Array(_) | Value::Map(_)))
             .count();
+        let seconds = format!("{:.1}", self.start.elapsed().as_secs_f32());
         eprintln!(
-            "evaluating: {} globals, {} tables ({:.1}s)",
-            globals.len(),
-            tables,
-            self.start.elapsed().as_secs_f32()
+            "{}",
+            msg!(
+                "evaluating: {globals} globals, {tables} tables ({seconds}s)",
+                globals = global_count,
+                tables = tables,
+                seconds = seconds
+            )
         );
         DebugAction::Continue
     }

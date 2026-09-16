@@ -1,6 +1,7 @@
 //! Runtime errors and control-flow signals.
 
 use autoitv3_ast::span::Span;
+use autoitv3_i18n::{msg, tr};
 use std::fmt;
 
 /// Control flow produced by executing a statement.
@@ -64,27 +65,37 @@ impl RuntimeError {
     /// A short, human-readable description.
     pub fn message(&self) -> String {
         match self {
-            RuntimeError::Unsupported { what, .. } => format!("unsupported construct: {what}"),
+            RuntimeError::Unsupported { what, .. } => {
+                msg!("unsupported construct: {what}", what = what)
+            }
             RuntimeError::Type { expected, got, .. } => {
-                format!("type error: expected {expected}, got {got}")
+                msg!("type error: expected {expected}, got {got}", expected = expected, got = got)
             }
-            RuntimeError::UndefinedVariable { name, .. } => format!("undefined variable: {name}"),
-            RuntimeError::UndefinedFunction { name, .. } => format!("undefined function: {name}"),
+            RuntimeError::UndefinedVariable { name, .. } => {
+                msg!("undefined variable: {name}", name = name)
+            }
+            RuntimeError::UndefinedFunction { name, .. } => {
+                msg!("undefined function: {name}", name = name)
+            }
             RuntimeError::IndexOutOfBounds { index, len, .. } => {
-                format!("index {index} out of bounds (len {len})")
+                msg!("index {index} out of bounds (len {len})", index = index, len = len)
             }
-            RuntimeError::ArrayTooLarge { elements, limit, .. } => format!(
+            RuntimeError::ArrayTooLarge { elements, limit, .. } => msg!(
                 "array of {elements} elements is past the {limit} AutoIt allows \
-                 (VAR_SUBSCRIPT_ELEMENTS)"
+                 (VAR_SUBSCRIPT_ELEMENTS)",
+                elements = elements,
+                limit = limit
             ),
             RuntimeError::StepLimitExceeded { limit } => {
-                format!("step limit exceeded ({limit})")
+                msg!("step limit exceeded ({limit})", limit = limit)
             }
             RuntimeError::CallDepthExceeded { limit } => {
-                format!("call depth exceeded ({limit})")
+                msg!("call depth exceeded ({limit})", limit = limit)
             }
-            RuntimeError::Host { name, message } => format!("host function {name}: {message}"),
-            RuntimeError::Aborted => "aborted by the debugger".to_string(),
+            RuntimeError::Host { name, message } => {
+                msg!("host function {name}: {message}", name = name, message = message)
+            }
+            RuntimeError::Aborted => tr("aborted by the debugger").to_string(),
         }
     }
 
@@ -112,7 +123,16 @@ impl fmt::Display for RuntimeError {
     /// bare "index out of bounds" is hard to act on in a 23k-line script.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.span() {
-            Some(s) => write!(f, "{} (at {}:{})", self.message(), s.start.line, s.start.col),
+            Some(s) => write!(
+                f,
+                "{}",
+                msg!(
+                    "{message} (at {line}:{col})",
+                    message = self.message(),
+                    line = s.start.line,
+                    col = s.start.col
+                )
+            ),
             None => write!(f, "{}", self.message()),
         }
     }

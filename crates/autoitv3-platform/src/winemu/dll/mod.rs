@@ -11,6 +11,7 @@ mod system;
 
 use std::rc::Rc;
 
+use autoitv3_i18n::msg;
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::value::Value;
 
@@ -93,10 +94,14 @@ impl WindowsEmulation {
             // when a call fails, and scripts test `@error` first.
             None => {
                 if self.trace_dll && self.traced.insert(function.to_ascii_lowercase()) {
+                    let dll = arg_str(args, 0);
                     eprintln!(
-                        "[winemu] DllCall not emulated: {}!{}",
-                        arg_str(args, 0),
-                        function
+                        "{}",
+                        msg!(
+                            "[winemu] DllCall not emulated: {dll}!{function}",
+                            dll = dll,
+                            function = function
+                        )
                     );
                 }
                 ctx.set_error(1, 0);
@@ -159,7 +164,13 @@ impl WindowsEmulation {
                 let data = match PeImage::find_resource_file(&self.resource_dirs, &name) {
                     Some(bytes) => {
                         if self.trace_dll {
-                            eprintln!("[winemu] resource {} from file", name.name.as_deref().unwrap_or("?"));
+                            eprintln!(
+                                "{}",
+                                msg!(
+                                    "[winemu] resource {name} from file",
+                                    name = name.name.as_deref().unwrap_or("?")
+                                )
+                            );
                         }
                         bytes
                     }

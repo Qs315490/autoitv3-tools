@@ -20,15 +20,19 @@
 
 mod args;
 mod cli;
+#[cfg(test)]
+mod tests_i18n;
 mod commands;
 mod elevate;
+mod i18n_cli;
 mod output;
 mod progress;
 
-use clap::Parser;
-
 fn main() {
-    let cli = cli::Cli::parse();
+    // The language must be known before clap renders help or anything else is
+    // printed: `--lang` wins, then `AU3_LANG`, then the locale variables.
+    autoitv3_i18n::set_lang(i18n_cli::lang_from_args());
+    let cli = i18n_cli::parse();
 
     // The elevated copy of an `#RequireAdmin` run is created by the shell
     // service, which hands it a console of its own — the output would open in a
@@ -36,17 +40,30 @@ fn main() {
     // back where the command was typed, including this note.
     if let Some(pid) = cli.attach_console {
         if autoitv3_platform::elevate::attach_console(pid) {
-            eprintln!("note: #RequireAdmin: elevated, sharing the console of process {pid}");
+            eprintln!(
+                "{}",
+                autoitv3_i18n::msg!(
+                    "note: #RequireAdmin: elevated, sharing the console of process {pid}",
+                    pid = pid
+                )
+            );
         } else {
             eprintln!(
-                "note: #RequireAdmin: elevated, but process {pid} has no console to share — \
-                 this output has a window of its own"
+                "{}",
+                autoitv3_i18n::msg!(
+                    "note: #RequireAdmin: elevated, but process {pid} has no console to share, \
+                     so this output has a window of its own",
+                    pid = pid
+                )
             );
         }
     }
 
     if let Err(err) = commands::dispatch(&cli) {
-        eprintln!("error: {}", err.message);
+        eprintln!(
+            "{}",
+            autoitv3_i18n::msg!("error: {message}", message = err.message)
+        );
         std::process::exit(err.code);
     }
 }

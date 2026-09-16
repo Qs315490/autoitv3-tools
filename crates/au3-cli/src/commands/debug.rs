@@ -52,6 +52,7 @@ use autoitv3_ast::Program;
 use autoitv3_runtime::debug::{Breakpoint, DebugAction, DebugHost, Debugger, FrameInfo, StopReason};
 use autoitv3_runtime::RuntimeError;
 use autoitv3_runtime::Runtime;
+use autoitv3_i18n::{msg, tr};
 use clap::Args;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -179,26 +180,26 @@ pub fn run(args: &DebugArgs) -> CliResult<()> {
 fn run_windowed(args: &DebugArgs) -> CliResult<()> {
     let title = Path::new(&args.input)
         .file_name()
-        .map(|name| format!("au3 debug — {}", name.to_string_lossy()))
+        .map(|name| msg!("au3 debug — {name}", name = name.to_string_lossy()))
         .unwrap_or_else(|| "au3 debug".to_string());
     let owned = args.clone();
     autoitv3_gui_egui::LiveBackend::new(title)
         .run(move |backend| {
             let factory: GuiFactory = Box::new(move || Box::new(backend.clone()));
             if let Err(e) = session(&owned, Some(factory)) {
-                eprintln!("error: {}", e.message);
+                eprintln!("{}", msg!("error: {message}", message = e.message));
             }
         })
-        .map_err(|e| CliError::failure(format!("opening the GUI window failed: {e}")))
+        .map_err(|e| CliError::failure(msg!("opening the GUI window failed: {e}", e = e)))
 }
 
 /// `--gui window` without the feature: say how to get one.
 #[cfg(not(feature = "gui-window"))]
 fn run_windowed(_args: &DebugArgs) -> CliResult<()> {
-    Err(CliError::failure(
+    Err(CliError::failure(tr(
         "--gui window needs a build with the `gui-window` feature \
          (cargo build --release -p au3-cli --features gui-window)",
-    ))
+    )))
 }
 
 /// The debug session: command files, shell and run loop.
@@ -217,15 +218,20 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
     // script that asked for rights.
     if crate::elevate::is_required(&prog) {
         eprintln!(
-            "note: #RequireAdmin: this script wants administrator rights; \
-             the debugger does not elevate — run it from an elevated shell to match"
+            "{}",
+            tr(
+                "note: #RequireAdmin: this script wants administrator rights; \
+                 the debugger does not elevate — run it from an elevated shell to match"
+            )
         );
     }
 
     let mut file_commands = Vec::new();
     for path in &args.command_files {
         let text = std::fs::read_to_string(path)
-            .map_err(|e| CliError::io(format!("cannot read command file {path}: {e}")))?;
+            .map_err(|e| {
+                CliError::io(msg!("cannot read command file {path}: {e}", path = path, e = e))
+            })?;
         for line in text.lines() {
             file_commands.extend(split_commands(line));
         }
@@ -285,7 +291,7 @@ fn build_runtime(
     );
     match platform {
         Ok(platform) => rt.set_platform(platform),
-        Err(e) => eprintln!("warning: {}", e.message),
+        Err(e) => eprintln!("{}", msg!("warning: {message}", message = e.message)),
     }
     // The build the script came out of answered `@Compiled = 1`; the flags
     // override that when a `.au3` is being compared against its build.
@@ -293,7 +299,7 @@ fn build_runtime(
     rt.set_max_steps(args.steps.max_steps);
     match args.effects.apply(args.profile.profile()) {
         Ok(p) => rt.set_profile(p),
-        Err(e) => eprintln!("warning: {}", e.message),
+        Err(e) => eprintln!("{}", msg!("warning: {message}", message = e.message)),
     }
     rt.set_debugger(Box::new(SharedShell(shell)));
     rt
@@ -760,10 +766,10 @@ impl Shell {
             return;
         }
         match outcome {
-            Ok(_) => println!("[script finished]"),
+            Ok(_) => println!("{}", tr("[script finished]")),
             // A caught error was already printed where it was raised.
             Err(_) if std::mem::take(&mut self.reported_error) => {}
-            Err(e) => println!("[script stopped: {e}]"),
+            Err(e) => println!("{}", msg!("[script stopped: {e}]", e = e)),
         }
     }
 
@@ -966,7 +972,10 @@ impl Shell {
             }
             "source" => self.source_command(rest.trim()),
             other => {
-                println!("unknown command {other:?} — try `help`");
+                println!(
+                    "{}",
+                    msg!("unknown command {other} — try `help`", other = format!("{other:?}"))
+                );
                 Outcome::Stay
             }
         };
@@ -980,7 +989,7 @@ impl Shell {
     /// what makes walking a loop body practical (`next 5`, `step 20`).
     fn step_command(&mut self, which: &str, rest: &str) -> Outcome {
         if which == "finish" && !rest.is_empty() {
-            println!("usage: finish");
+            println!("{}", tr("usage: finish"));
             return Outcome::Stay;
         }
         let count = match rest {
@@ -988,7 +997,7 @@ impl Shell {
             raw => match raw.parse::<u64>() {
                 Ok(n) if n >= 1 => n,
                 _ => {
-                    println!("usage: {which} [n] (n >= 1)");
+                    println!("{}", msg!("usage: {which} [n] (n >= 1)", which = which));
                     return Outcome::Stay;
                 }
             },
@@ -1025,17 +1034,17 @@ impl Shell {
         // `+N` / `-N`: relative to the current stop.
         if expr.starts_with('+') || expr.starts_with('-') {
             let Ok(n) = expr[1..].parse::<i64>() else {
-                println!("not a line expression: {expr:?}");
+                println!("{}", msg!("not a line expression: {expr}", expr = format!("{expr:?}")));
                 return None;
             };
             let Some((span, _)) = self.current else {
-                println!("no current line to be relative to — run first");
+                println!("{}", tr("no current line to be relative to — run first"));
                 return None;
             };
             let delta = if expr.starts_with('-') { -n } else { n };
             let line = span.start.line as i64 + delta;
             if line < 1 {
-                println!("{expr:?} resolves to line {line}, before the file");
+                println!("{}", msg!("{expr} resolves to line {line}, before the file", expr = format!("{expr:?}"), line = line));
                 return None;
             }
             return Some(line as u32);
@@ -1049,13 +1058,13 @@ impl Shell {
             Some(entry) => {
                 let line = entry as i64 + offset;
                 if line < 1 {
-                    println!("{expr:?} resolves to line {line}, before the file");
+                    println!("{}", msg!("{expr} resolves to line {line}, before the file", expr = format!("{expr:?}"), line = line));
                     return None;
                 }
                 Some(line as u32)
             }
             None => {
-                println!("no such line or function: {expr:?}");
+                println!("{}", msg!("no such line or function: {expr}", expr = format!("{expr:?}")));
                 None
             }
         }
@@ -1086,7 +1095,7 @@ impl Shell {
                 match n {
                     Some(n) => skip = n,
                     None => {
-                        println!("usage: ... skip <n>");
+                        println!("{}", tr("usage: ... skip <n>"));
                         return None;
                     }
                 }
@@ -1095,7 +1104,7 @@ impl Shell {
                 match n {
                     Some(n) if n >= 1 => every = n,
                     _ => {
-                        println!("usage: ... every <n>");
+                        println!("{}", tr("usage: ... every <n>"));
                         return None;
                     }
                 }
@@ -1116,9 +1125,13 @@ impl Shell {
         };
         if line == 0 || line as usize > self.lines.len().max(1) {
             println!(
-                "line {line} is outside {} (1..{})",
-                self.script,
-                self.lines.len()
+                "{}",
+                msg!(
+                    "line {line} is outside {script} (1..{total})",
+                    line = line,
+                    script = self.script,
+                    total = self.lines.len()
+                )
             );
             return None;
         }
@@ -1126,7 +1139,7 @@ impl Shell {
         // A function-relative target still shows its function in `info
         // breakpoints`; plain numbers and `+N`/`-N` have no name.
         if pos.parse::<u32>().is_err() && !pos.starts_with('+') && !pos.starts_with('-') {
-            spec.label = Some(format!("func {pos}"));
+            spec.label = Some(msg!("func {pos}", pos = pos));
         }
         spec.condition = condition;
         spec.skip = skip;
@@ -1143,20 +1156,20 @@ impl Shell {
     /// the frame that will resume are valid; the interpreter rejects the rest.
     fn jmp_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
         if !self.paused {
-            println!("jmp needs a stopped run — use run first");
+            println!("{}", tr("jmp needs a stopped run — use run first"));
             return Outcome::Stay;
         }
         let Some(line) = self.resolve_line_expr(rest.trim(), host) else {
-            println!("usage: jmp <line> (a statement line of the current frame)");
+            println!("{}", tr("usage: jmp <line> (a statement line of the current frame)"));
             return Outcome::Stay;
         };
         match host.jump_to(line) {
             Ok(()) => {
-                println!("jumping to line {line}");
+                println!("{}", msg!("jumping to line {line}", line = line));
                 Outcome::Resume
             }
             Err(e) => {
-                println!("cannot jump: {e}");
+                println!("{}", msg!("cannot jump: {e}", e = e));
                 Outcome::Stay
             }
         }
@@ -1167,7 +1180,7 @@ impl Shell {
     /// it fires. Works before `run` and at a stop.
     fn tbreak_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
         if rest.is_empty() {
-            println!("usage: tbreak <line|func>");
+            println!("{}", tr("usage: tbreak <line|func>"));
             return Outcome::Stay;
         }
         match self.resolve_break_target(rest, host) {
@@ -1189,14 +1202,14 @@ impl Shell {
     /// instead; `untilgui` is the shorthand for `untilcall GUICreate`.
     fn until_call_command(&mut self, name: &str) -> Outcome {
         if name.is_empty() {
-            println!("usage: untilcall <function>");
+            println!("{}", tr("usage: untilcall <function>"));
             return Outcome::Stay;
         }
         self.until_call = Some(name.to_ascii_lowercase());
         self.until_ret = None;
         self.until_hit = false;
         self.step = StepMode::Run;
-        println!("running until {name} is called (stopping before it runs)");
+        println!("{}", msg!("running until {name} is called (stopping before it runs)", name = name));
         Outcome::Resume
     }
 
@@ -1207,14 +1220,14 @@ impl Shell {
     /// part.
     fn until_ret_command(&mut self, name: &str) -> Outcome {
         if name.is_empty() {
-            println!("usage: untilret <function>");
+            println!("{}", tr("usage: untilret <function>"));
             return Outcome::Stay;
         }
         self.until_ret = Some(name.to_ascii_lowercase());
         self.until_call = None;
         self.until_hit = false;
         self.step = StepMode::Run;
-        println!("running until {name} returns");
+        println!("{}", msg!("running until {name} returns", name = name));
         Outcome::Resume
     }
 
@@ -1229,17 +1242,29 @@ impl Shell {
         let names: Vec<&str> = rest.split_whitespace().collect();
         if names.is_empty() {
             if self.stop_at.is_empty() {
-                println!("no stop-at set (usage: stopat <function>..., e.g. `stopat MsgBox`)")
+                println!(
+                    "{}",
+                    tr("no stop-at set (usage: stopat <function>..., e.g. `stopat MsgBox`)")
+                )
             } else {
-                println!("stopping before every {} call", self.stop_at.join(", "));
+                println!(
+                    "{}",
+                    msg!(
+                        "stopping before every {names} call",
+                        names = self.stop_at.join(", ")
+                    )
+                );
             }
             return Outcome::Stay;
         }
         if names.len() == 1 && (names[0].eq_ignore_ascii_case("off") || names[0].eq_ignore_ascii_case("clear")) {
             if self.stop_at.is_empty() {
-                println!("no stop-at was set");
+                println!("{}", tr("no stop-at was set"));
             } else {
-                println!("stop-at cleared (was {})", self.stop_at.join(", "));
+                println!(
+                    "{}",
+                    msg!("stop-at cleared (was {names})", names = self.stop_at.join(", "))
+                );
                 self.stop_at.clear();
             }
             return Outcome::Stay;
@@ -1250,7 +1275,10 @@ impl Shell {
                 self.stop_at.push(lower);
             }
         }
-        println!("stopping before every {} call", self.stop_at.join(", "));
+        println!(
+            "{}",
+            msg!("stopping before every {names} call", names = self.stop_at.join(", "))
+        );
         Outcome::Stay
     }
 
@@ -1259,7 +1287,7 @@ impl Shell {
     /// expression counterpart.
     fn eval_command(&mut self, rest: &str, host: &mut dyn DebugHost) -> Outcome {
         if rest.is_empty() {
-            println!("usage: eval <statement>");
+            println!("{}", tr("usage: eval <statement>"));
             return Outcome::Stay;
         }
         self.show(host.evaluate(rest));
@@ -1272,19 +1300,26 @@ impl Shell {
         let (id, count) = match (parts.next(), parts.next()) {
             (Some(i), Some(c)) => (i, c),
             _ => {
-                println!("usage: ignore <id> <count>");
+                println!("{}", tr("usage: ignore <id> <count>"));
                 return Outcome::Stay;
             }
         };
         match (id.parse::<u32>(), count.parse::<u64>()) {
             (Ok(id), Ok(count)) => {
                 if host.ignore_breakpoint(id, count) {
-                    println!("breakpoint {id} will skip the next {count} hit(s)");
+                    println!(
+                        "{}",
+                        msg!(
+                            "breakpoint {id} will skip the next {count} hit(s)",
+                            id = id,
+                            count = count
+                        )
+                    );
                 } else {
-                    println!("no breakpoint {id}");
+                    println!("{}", msg!("no breakpoint {id}", id = id));
                 }
             }
-            _ => println!("usage: ignore <id> <count>"),
+            _ => println!("{}", tr("usage: ignore <id> <count>")),
         }
         Outcome::Stay
     }
@@ -1297,7 +1332,7 @@ impl Shell {
             None => (rest.trim(), ""),
         };
         let Ok(id) = id_raw.parse::<u32>() else {
-            println!("usage: commands <id> [do <stmt> | off]");
+            println!("{}", tr("usage: commands <id> [do <stmt> | off]"));
             return Outcome::Stay;
         };
         let existing = host
@@ -1306,25 +1341,25 @@ impl Shell {
             .find(|b| b.id == id)
             .map(|b| b.actions);
         let Some(mut actions) = existing else {
-            println!("no breakpoint {id}");
+            println!("{}", msg!("no breakpoint {id}", id = id));
             return Outcome::Stay;
         };
         if tail == "off" {
             host.set_breakpoint_actions(id, Vec::new());
-            println!("breakpoint {id}: actions cleared");
+            println!("{}", msg!("breakpoint {id}: actions cleared", id = id));
         } else if let Some(stmt) = tail.strip_prefix("do ") {
             actions.push(stmt.trim().to_string());
             host.set_breakpoint_actions(id, actions.clone());
-            println!("breakpoint {id}: {} action(s)", actions.len());
+            println!("{}", msg!("breakpoint {id}: {count} action(s)", id = id, count = actions.len()));
         } else if tail.is_empty() {
             if actions.is_empty() {
-                println!("breakpoint {id}: no actions");
+                println!("{}", msg!("breakpoint {id}: no actions", id = id));
             }
             for a in &actions {
                 println!("  do {a}");
             }
         } else {
-            println!("usage: commands <id> [do <stmt> | off]");
+            println!("{}", tr("usage: commands <id> [do <stmt> | off]"));
         }
         Outcome::Stay
     }
@@ -1341,14 +1376,21 @@ impl Shell {
             Ok(id) => {
                 if host.set_breakpoint_stop(id, stop) {
                     println!(
-                        "breakpoint {id} will {}",
-                        if stop { "stop" } else { "not stop (logpoint)" }
+                        "{}",
+                        if stop {
+                            msg!("breakpoint {id} will stop", id = id)
+                        } else {
+                            msg!("breakpoint {id} will not stop (logpoint)", id = id)
+                        }
                     );
                 } else {
-                    println!("no breakpoint {id}");
+                    println!("{}", msg!("no breakpoint {id}", id = id));
                 }
             }
-            Err(_) => println!("usage: {} <id>", if stop { "stop" } else { "nostop" }),
+            Err(_) => {
+                let command = if stop { "stop" } else { "nostop" };
+                println!("{}", msg!("usage: {command} <id>", command = command));
+            }
         }
         Outcome::Stay
     }
@@ -1359,14 +1401,17 @@ impl Shell {
         let rest = rest.trim();
         if rest.is_empty() {
             if self.watches.is_empty() {
-                println!("no watches");
+                println!("{}", tr("no watches"));
             }
             for w in &self.watches {
                 println!(
-                    "{:>3}  {}  last={}",
-                    w.id,
-                    w.expr,
-                    w.last.as_deref().unwrap_or("(not observed yet)")
+                    "{}",
+                    msg!(
+                        "{id}  {expr}  last={last}",
+                        id = format!("{:>3}", w.id),
+                        expr = w.expr,
+                        last = w.last.as_deref().unwrap_or(tr("(not observed yet)"))
+                    )
                 );
             }
             return Outcome::Stay;
@@ -1376,16 +1421,13 @@ impl Shell {
                 Ok(id) => {
                     let before = self.watches.len();
                     self.watches.retain(|w| w.id != id);
-                    println!(
-                        "{}",
-                        if self.watches.len() != before {
-                            format!("deleted watch {id}")
-                        } else {
-                            format!("no watch {id}")
-                        }
-                    );
+                    if self.watches.len() != before {
+                        println!("{}", msg!("deleted watch {id}", id = id));
+                    } else {
+                        println!("{}", msg!("no watch {id}", id = id));
+                    }
                 }
-                Err(_) => println!("usage: watch -d <id>"),
+                Err(_) => println!("{}", tr("usage: watch -d <id>")),
             }
             return Outcome::Stay;
         }
@@ -1396,15 +1438,37 @@ impl Shell {
                 Ok(v) => {
                     let id = self.next_watch;
                     self.next_watch += 1;
-                    println!("watch {id}: {rest} = {}", format_value(&v));
+                    println!(
+                        "{}",
+                        msg!(
+                            "watch {id}: {expr} = {value}",
+                            id = id,
+                            expr = rest,
+                            value = format_value(&v)
+                        )
+                    );
                     self.watches.push(Watch { id, expr: rest.to_string(), last: Some(format!("{v:?}")) });
                 }
-                Err(e) => println!("cannot evaluate {rest:?} here: {e}"),
+                Err(e) => println!(
+                    "{}",
+                    msg!(
+                        "cannot evaluate {expr} here: {e}",
+                        expr = format!("{rest:?}"),
+                        e = e
+                    )
+                ),
             }
         } else {
             let id = self.next_watch;
             self.next_watch += 1;
-            println!("watch {id}: {rest} (baseline set on first write)");
+            println!(
+                "{}",
+                msg!(
+                    "watch {id}: {expr} (baseline set on first write)",
+                    id = id,
+                    expr = rest
+                )
+            );
             self.watches.push(Watch { id, expr: rest.to_string(), last: None });
         }
         Outcome::Stay
@@ -1415,16 +1479,13 @@ impl Shell {
             Ok(id) => {
                 let before = self.watches.len();
                 self.watches.retain(|w| w.id != id);
-                println!(
-                    "{}",
-                    if self.watches.len() != before {
-                        format!("deleted watch {id}")
-                    } else {
-                        format!("no watch {id}")
-                    }
-                );
+                if self.watches.len() != before {
+                    println!("{}", msg!("deleted watch {id}", id = id));
+                } else {
+                    println!("{}", msg!("no watch {id}", id = id));
+                }
             }
-            Err(_) => println!("usage: unwatch <id>"),
+            Err(_) => println!("{}", tr("usage: unwatch <id>")),
         }
         Outcome::Stay
     }
@@ -1436,7 +1497,7 @@ impl Shell {
             match rest.trim().parse::<u32>() {
                 Ok(id) => Some(id),
                 Err(_) => {
-                    println!("usage: delete [id]");
+                    println!("{}", tr("usage: delete [id]"));
                     return Outcome::Stay;
                 }
             }
@@ -1452,7 +1513,8 @@ impl Shell {
                 Outcome::Stay
             }
             Err(_) => {
-                println!("usage: {} <id>", if enabled { "enable" } else { "disable" });
+                let command = if enabled { "enable" } else { "disable" };
+                println!("{}", msg!("usage: {command} <id>", command = command));
                 Outcome::Stay
             }
         }
@@ -1478,32 +1540,40 @@ impl Shell {
                     self.jmp_pending.push(id);
                 }
                 let mut summary = if let Some(label) = &spec.label {
-                    format!("Breakpoint {id} at {label} (line {})", spec.line)
+                    msg!(
+                        "Breakpoint {id} at {label} (line {line})",
+                        id = id,
+                        label = label,
+                        line = spec.line
+                    )
                 } else {
-                    format!("Breakpoint {id} at line {}", spec.line)
+                    msg!("Breakpoint {id} at line {line}", id = id, line = spec.line)
                 };
                 if let Some(c) = &spec.condition {
-                    summary.push_str(&format!(" if {c}"));
+                    summary.push_str(&msg!(" if {condition}", condition = c));
                 }
                 if spec.skip > 0 {
-                    summary.push_str(&format!(", skips next {}", spec.skip));
+                    summary.push_str(&msg!(", skips next {skip}", skip = spec.skip));
                 }
                 if spec.every > 1 {
-                    summary.push_str(&format!(", every {}", spec.every));
+                    summary.push_str(&msg!(", every {every}", every = spec.every));
                 }
                 if !spec.stop {
-                    summary.push_str(", nostop (logpoint)");
+                    summary.push_str(tr(", nostop (logpoint)"));
                 }
                 if !spec.actions.is_empty() {
-                    summary.push_str(&format!(", do {:?}", spec.actions));
+                    summary.push_str(&msg!(
+                        ", do {actions}",
+                        actions = format!("{:?}", spec.actions)
+                    ));
                 }
                 println!("{summary}");
             }
             Some(Edit::Remove(Some(id))) => {
                 if host.remove_breakpoint(id) {
-                    println!("deleted breakpoint {id}");
+                    println!("{}", msg!("deleted breakpoint {id}", id = id));
                 } else {
-                    println!("no breakpoint {id}");
+                    println!("{}", msg!("no breakpoint {id}", id = id));
                 }
             }
             Some(Edit::Remove(None)) => {
@@ -1511,16 +1581,20 @@ impl Shell {
                 for id in &ids {
                     host.remove_breakpoint(*id);
                 }
-                println!("deleted {} breakpoints", ids.len());
+                println!("{}", msg!("deleted {count} breakpoints", count = ids.len()));
             }
             Some(Edit::Enable(id, enabled)) => {
                 if host.set_breakpoint_enabled(id, enabled) {
                     println!(
-                        "breakpoint {id} {}",
-                        if enabled { "enabled" } else { "disabled" }
+                        "{}",
+                        if enabled {
+                            msg!("breakpoint {id} enabled", id = id)
+                        } else {
+                            msg!("breakpoint {id} disabled", id = id)
+                        }
                     );
                 } else {
-                    println!("no breakpoint {id}");
+                    println!("{}", msg!("no breakpoint {id}", id = id));
                 }
             }
         }
@@ -1544,7 +1618,7 @@ impl Shell {
 
     fn eval_and_print(&mut self, expr: &str, host: &mut dyn DebugHost) {
         if expr.is_empty() {
-            println!("usage: print <expression>");
+            println!("{}", tr("usage: print <expression>"));
             return;
         }
         // An expression, so `p $i = 5` compares rather than assigns — `set` is
@@ -1559,7 +1633,7 @@ impl Shell {
 
     fn set_command(&mut self, rest: &str, host: &mut dyn DebugHost) {
         if rest.is_empty() {
-            println!("usage: set $var = <expression>");
+            println!("{}", tr("usage: set $var = <expression>"));
             return;
         }
         // Accept both `set $x = 1` and `set $x 1`, like gdb does.
@@ -1584,15 +1658,18 @@ impl Shell {
             "g" | "global" | "globals" => self.info_globals(host),
             "f" | "func" | "funcs" | "functions" => self.info_functions(host),
             "frame" | "stack" => self.backtrace(host),
-            "" => println!("usage: info breakpoints|locals|globals|functions|frame"),
-            other => println!("unknown info topic {other:?}"),
+            "" => println!("{}", tr("usage: info breakpoints|locals|globals|functions|frame")),
+            other => println!(
+                "{}",
+                msg!("unknown info topic {other}", other = format!("{other:?}"))
+            ),
         }
     }
 
     fn info_breakpoints(&mut self, host: &mut dyn DebugHost) {
         let bps = host.breakpoints();
         if bps.is_empty() {
-            println!("no breakpoints");
+            println!("{}", tr("no breakpoints"));
             return;
         }
         for bp in bps {
@@ -1604,24 +1681,30 @@ impl Shell {
                 .map(|(_, l)| l.as_str())
                 .unwrap_or("line");
             let condition = match &bp.condition {
-                Some(c) => format!(" if {c}"),
+                Some(c) => msg!(" if {condition}", condition = c),
                 None => String::new(),
             };
+            let nostop = if bp.stop { "" } else { tr("  nostop") };
+            let actions = if bp.actions.is_empty() {
+                String::new()
+            } else {
+                msg!("  actions={count}", count = bp.actions.len())
+            };
             println!(
-                "{:>3}  {} {:<6} enabled={state}  hits={}{}  skip={} every={}{}{}",
-                bp.id,
-                label,
-                bp.line,
-                bp.hits,
-                condition,
-                bp.skip_remaining,
-                bp.every,
-                if bp.stop { "" } else { "  nostop" },
-                if bp.actions.is_empty() {
-                    String::new()
-                } else {
-                    format!("  actions={}", bp.actions.len())
-                },
+                "{}",
+                msg!(
+                    "{id}  {label} {line} enabled={state}  hits={hits}{condition}  skip={skip} every={every}{nostop}{actions}",
+                    id = format!("{:>3}", bp.id),
+                    label = label,
+                    line = format!("{:<6}", bp.line),
+                    state = state,
+                    hits = bp.hits,
+                    condition = condition,
+                    skip = bp.skip_remaining,
+                    every = bp.every,
+                    nostop = nostop,
+                    actions = actions
+                )
             );
             for a in &bp.actions {
                 println!("        do {a}");
@@ -1631,19 +1714,19 @@ impl Shell {
 
     fn info_locals(&mut self, host: &mut dyn DebugHost) {
         if !self.paused {
-            println!("the script is not stopped — use `run` first");
+            println!("{}", tr("the script is not stopped — use `run` first"));
             return;
         }
         let frames = host.frames();
         let index = self.frame_index(frames.len());
         let Some(frame) = frames.get(index) else {
             // Top-level code runs without a frame; its variables are globals.
-            println!("the top level has no locals — see `info globals`");
+            println!("{}", tr("the top level has no locals — see `info globals`"));
             return;
         };
         if frame.locals.is_empty() {
             let name = frame.function.as_deref().unwrap_or("<script>");
-            println!("no locals in {name}");
+            println!("{}", msg!("no locals in {name}", name = name));
             return;
         }
         for (name, value) in &frame.locals {
@@ -1653,18 +1736,18 @@ impl Shell {
 
     fn info_globals(&mut self, host: &mut dyn DebugHost) {
         let globals = host.globals();
-        println!("{} globals", globals.len());
+        println!("{}", msg!("{count} globals", count = globals.len()));
         for (name, value) in globals.iter().take(200) {
             println!("{name} = {}", format_value(value));
         }
         if globals.len() > 200 {
-            println!("... {} more", globals.len() - 200);
+            println!("{}", msg!("... {count} more", count = globals.len() - 200));
         }
     }
 
     fn info_functions(&mut self, host: &mut dyn DebugHost) {
         let names = host.function_names();
-        println!("{} functions", names.len());
+        println!("{}", msg!("{count} functions", count = names.len()));
         for chunk in names.chunks(4) {
             println!("  {}", chunk.join("  "));
         }
@@ -1672,7 +1755,7 @@ impl Shell {
 
     fn backtrace(&mut self, host: &mut dyn DebugHost) {
         if !self.paused {
-            println!("the script is not stopped — use `run` first");
+            println!("{}", tr("the script is not stopped — use `run` first"));
             return;
         }
         let frames = host.frames();
@@ -1681,8 +1764,11 @@ impl Shell {
             // Top-level code: there is no activation record to show, but the
             // position still is one.
             match self.current {
-                Some((span, _)) => println!("#0  <script> at {file}:{}", span.start.line),
-                None => println!("#0  <script>"),
+                Some((span, _)) => println!(
+                    "{}",
+                    msg!("#0  <script> at {file}:{line}", file = file, line = span.start.line)
+                ),
+                None => println!("{}", tr("#0  <script>")),
             }
             return;
         }
@@ -1693,7 +1779,7 @@ impl Shell {
         let file = self.script_file();
         for (i, frame) in frames.iter().rev().enumerate() {
             let tag = if i == selected && selected != 0 {
-                "  (selected)"
+                tr("  (selected)")
             } else {
                 ""
             };
@@ -1715,7 +1801,7 @@ impl Shell {
             .span
             .map(|s| format!("{file}:{}", s.start.line))
             .unwrap_or_else(|| "-".to_string());
-        format!("#{number}  {name}{args} at {at}")
+        msg!("#{number}  {name}{args} at {at}", number = number, name = name, args = args, at = at)
     }
 
     /// The file name `bt` shows for every frame (one script, so one file).
@@ -1748,12 +1834,12 @@ impl Shell {
     /// number it reports the selected one.
     fn frame_command(&mut self, rest: &str, host: &mut dyn DebugHost) {
         if !self.paused {
-            println!("the script is not stopped — use `run` first");
+            println!("{}", tr("the script is not stopped — use `run` first"));
             return;
         }
         let count = host.frames().len();
         if count == 0 {
-            println!("only top-level code is on the stack (`#0  <script>`)");
+            println!("{}", tr("only top-level code is on the stack (`#0  <script>`)"));
             return;
         }
         if !rest.is_empty() {
@@ -1761,11 +1847,19 @@ impl Shell {
             match number {
                 Ok(n) if n < count => self.selected_frame = (n != 0).then_some(n),
                 Ok(n) => {
-                    println!("no frame {n}: the stack has {count} (0..{})", count - 1);
+                    println!(
+                        "{}",
+                        msg!(
+                            "no frame {n}: the stack has {count} (0..{last})",
+                            n = n,
+                            count = count,
+                            last = count - 1
+                        )
+                    );
                     return;
                 }
                 Err(_) => {
-                    println!("usage: frame [number]");
+                    println!("{}", tr("usage: frame [number]"));
                     return;
                 }
             }
@@ -1777,12 +1871,12 @@ impl Shell {
     /// (gdb numbers grow outward), `down` toward the innermost frame.
     fn move_frame_command(&mut self, word: &str, rest: &str, host: &mut dyn DebugHost) {
         if !self.paused {
-            println!("the script is not stopped — use `run` first");
+            println!("{}", tr("the script is not stopped — use `run` first"));
             return;
         }
         let count = host.frames().len();
         if count == 0 {
-            println!("only top-level code is on the stack");
+            println!("{}", tr("only top-level code is on the stack"));
             return;
         }
         let step = rest
@@ -1807,7 +1901,7 @@ impl Shell {
         let frames = host.frames();
         let index = self.frame_index(frames.len());
         let Some(frame) = frames.get(index) else {
-            println!("no frames — only top-level code is on the stack");
+            println!("{}", tr("no frames — only top-level code is on the stack"));
             return;
         };
         let number = frames.len() - 1 - index;
@@ -1827,7 +1921,7 @@ impl Shell {
     /// older "one line past the stop" meaning.
     fn list_command(&mut self, rest: &str, host: &mut dyn DebugHost) {
         if self.lines.is_empty() {
-            println!("{} is empty", self.script);
+            println!("{}", msg!("{script} is empty", script = self.script));
             return;
         }
         let current = self.current.map(|(span, _)| span.start.line);
@@ -1854,24 +1948,30 @@ impl Shell {
         match rest {
             "on" => {
                 self.catching = true;
-                println!("stopping where an uncaught error is raised");
+                println!("{}", tr("stopping where an uncaught error is raised"));
             }
             "off" => {
                 self.catching = false;
-                println!("uncaught errors will end the run without stopping");
+                println!("{}", tr("uncaught errors will end the run without stopping"));
             }
             "" => println!(
-                "stopping on uncaught errors is {}",
-                if self.catching { "on" } else { "off" }
+                "{}",
+                msg!(
+                    "stopping on uncaught errors is {state}",
+                    state = if self.catching { "on" } else { "off" }
+                )
             ),
-            other => println!("usage: catch on|off (not {other:?})"),
+            other => println!(
+                "{}",
+                msg!("usage: catch on|off (not {other})", other = format!("{other:?}"))
+            ),
         }
     }
 
     /// `source FILE` — queue that file's commands to run next.
     fn source_command(&mut self, path: &str) -> Outcome {
         if path.is_empty() {
-            println!("usage: source <file>");
+            println!("{}", tr("usage: source <file>"));
             return Outcome::Stay;
         }
         match std::fs::read_to_string(path) {
@@ -1883,11 +1983,11 @@ impl Shell {
                 for command in commands.into_iter().rev() {
                     self.queue.push_front(command);
                 }
-                println!("sourced {path} ({count} commands)");
+                println!("{}", msg!("sourced {path} ({count} commands)", path = path, count = count));
                 Outcome::Stay
             }
             Err(e) => {
-                println!("cannot read {path}: {e}");
+                println!("{}", msg!("cannot read {path}: {e}", path = path, e = e));
                 Outcome::Stay
             }
         }
@@ -1904,56 +2004,63 @@ impl Shell {
         match word {
             "on" => {
                 self.tracing = true;
-                println!("statement tracing on");
+                println!("{}", tr("statement tracing on"));
             }
             "off" => {
                 self.tracing = false;
-                println!("statement tracing off");
+                println!("{}", tr("statement tracing off"));
             }
             "depth" => match arg {
                 "off" => {
                     self.trace_depth = None;
-                    println!("trace depth limit off");
+                    println!("{}", tr("trace depth limit off"));
                 }
                 other => match other.parse::<usize>() {
                     Ok(n) => {
                         self.trace_depth = Some(n);
-                        println!("tracing statements at depth <= {n}");
+                        println!("{}", msg!("tracing statements at depth <= {n}", n = n));
                     }
-                    Err(_) => println!("usage: trace depth <n> | trace depth off"),
+                    Err(_) => println!("{}", tr("usage: trace depth <n> | trace depth off")),
                 },
             },
             "skip" => match arg {
                 "off" => {
                     self.trace_skip.clear();
-                    println!("trace skip list cleared");
+                    println!("{}", tr("trace skip list cleared"));
                 }
-                "" => println!("usage: trace skip <func> | trace skip off"),
+                "" => println!("{}", tr("usage: trace skip <func> | trace skip off")),
                 other => {
                     let lower = other.to_ascii_lowercase();
                     if !self.trace_skip.contains(&lower) {
                         self.trace_skip.push(lower);
                     }
-                    println!("not tracing inside {other}");
+                    println!("{}", msg!("not tracing inside {other}", other = other));
                 }
             },
             "unskip" => {
                 let lower = arg.to_ascii_lowercase();
                 self.trace_skip.retain(|f| *f != lower);
-                println!("tracing inside {arg} again");
+                println!("{}", msg!("tracing inside {arg} again", arg = arg));
             }
             "" => {
                 let mut state = if self.tracing { "on" } else { "off" }.to_string();
                 if let Some(n) = self.trace_depth {
-                    state.push_str(&format!(", depth <= {n}"));
+                    state.push_str(&msg!(", depth <= {n}", n = n));
                 }
                 if !self.trace_skip.is_empty() {
-                    state.push_str(&format!(", skipping {}", self.trace_skip.join(", ")));
+                    state.push_str(&msg!(
+                        ", skipping {functions}",
+                        functions = self.trace_skip.join(", ")
+                    ));
                 }
-                println!("statement tracing is {state}");
+                println!("{}", msg!("statement tracing is {state}", state = state));
             }
             other => println!(
-                "usage: trace on|off | trace depth <n> | trace skip <func> (not {other:?})"
+                "{}",
+                msg!(
+                    "usage: trace on|off | trace depth <n> | trace skip <func> (not {other})",
+                    other = format!("{other:?}")
+                )
             ),
         }
     }
@@ -1975,7 +2082,9 @@ impl Shell {
             return;
         }
         println!(
-            "\
+            "{}",
+            tr(
+                "\
 Commands (`help <cmd>` describes one)
 
   run, restart           start the script (a second `run` starts over)
@@ -2013,6 +2122,7 @@ A <line-expr> is `123`, `+N`/`-N` (relative to the stop), `Func`, or
 
 `;` separates several commands on one line (`break 11; run; print $i`); a `;`
 inside a \"quoted string\" is left alone."
+            )
         );
     }
 }
@@ -2029,7 +2139,7 @@ impl Debugger for Shell {
             let depth = self.current.map(|(_, d)| d).unwrap_or(0);
             self.current = Some((span, depth));
         }
-        println!("[uncaught error] {error}");
+        println!("{}", msg!("[uncaught error] {error}", error = error));
         self.show_current_line();
         // The frames that led here are still live, so `backtrace` and
         // `info locals` work and `run` starts a fresh pass. Whatever is typed,
@@ -2103,7 +2213,15 @@ impl Debugger for Shell {
             false
         };
         if self.tracing && self.trace_visible(depth) {
-            println!("[trace] {}:{} depth={depth}", span.start.line, span.start.col);
+            println!(
+                "{}",
+                msg!(
+                    "[trace] {line}:{col} depth={depth}",
+                    line = span.start.line,
+                    col = span.start.col,
+                    depth = depth
+                )
+            );
         }
         // `untilret` saw its target return: stop here, on the statement after
         // the call.
@@ -2152,9 +2270,12 @@ impl Debugger for Shell {
                     // A `jmp` target: one-shot, so remove it on arrival.
                     self.jmp_pending.retain(|t| t != id);
                     host.remove_breakpoint(*id);
-                    println!("run-to target reached, line {line}");
+                    println!("{}", msg!("run-to target reached, line {line}", line = line));
                 } else {
-                    println!("Breakpoint {id}, line {line}");
+                    println!(
+                        "{}",
+                        msg!("Breakpoint {id}, line {line}", id = id, line = line)
+                    );
                 }
                 self.show_current_line();
                 self.prompt_loop(host);
@@ -2164,8 +2285,8 @@ impl Debugger for Shell {
                 self.paused = true;
                 self.selected_frame = None;
                 match self.caught_call.take() {
-                    Some(call) => println!("Catchpoint: {call}"),
-                    None => println!("Catchpoint: {name}"),
+                    Some(call) => println!("{}", msg!("Catchpoint: {call}", call = call)),
+                    None => println!("{}", msg!("Catchpoint: {name}", name = name)),
                 }
                 self.show_current_line();
                 self.prompt_loop(host);
@@ -2175,8 +2296,11 @@ impl Debugger for Shell {
                 self.paused = true;
                 self.selected_frame = None;
                 match self.current {
-                    Some((span, _)) => println!("Stopped at line {}", span.start.line),
-                    None => println!("Stopped"),
+                    Some((span, _)) => println!(
+                        "{}",
+                        msg!("Stopped at line {line}", line = span.start.line)
+                    ),
+                    None => println!("{}", tr("Stopped")),
                 }
                 self.show_current_line();
                 self.prompt_loop(host);
@@ -2238,10 +2362,14 @@ impl Shell {
             if w.last.as_deref() != Some(now.as_str()) {
                 let old = w.last.clone().unwrap_or_default();
                 println!(
-                    "[watch {id}] {expr}: {old} -> {new}",
-                    id = w.id,
-                    expr = w.expr,
-                    new = now
+                    "{}",
+                    msg!(
+                        "[watch {id}] {expr}: {old} -> {new}",
+                        id = w.id,
+                        expr = w.expr,
+                        old = old,
+                        new = now
+                    )
                 );
                 w.last = Some(now);
                 fired = true;
@@ -2329,9 +2457,9 @@ impl Shell {
                 match host.as_deref_mut() {
                     Some(h) => {
                         h.set_breakpoint_actions(id, actions.clone());
-                        println!("breakpoint {id}: {} action(s)", actions.len());
+                        println!("{}", msg!("breakpoint {id}: {count} action(s)", id = id, count = actions.len()));
                     }
-                    None => println!("no host to apply breakpoint actions"),
+                    None => println!("{}", tr("no host to apply breakpoint actions")),
                 }
                 continue; // block handled: read the next command
             }
@@ -2431,80 +2559,80 @@ fn format_call(name: &str, args: &[autoitv3_runtime::Value]) -> String {
 /// One-line help for a single command.
 fn help_for(topic: &str) -> String {
     match topic {
-        "run" | "r" => "run — start the script body; typing it again starts over".to_string(),
-        "continue" | "c" => "continue — resume until the next breakpoint".to_string(),
+        "run" | "r" => tr("run — start the script body; typing it again starts over").to_string(),
+        "continue" | "c" => tr("continue — resume until the next breakpoint").to_string(),
         "step" | "s" => {
-            "step [n] — run n statements (default 1), entering function calls".to_string()
+            tr("step [n] — run n statements (default 1), entering function calls").to_string()
         }
         "next" | "n" => {
-            "next [n] — run n statements in this frame or a shallower one".to_string()
+            tr("next [n] — run n statements in this frame or a shallower one").to_string()
         }
-        "finish" => "finish — run until the current function returns".to_string(),
-        "until" | "u" => "until <line-expr> — alias of `tbreak <line-expr>`".to_string(),
+        "finish" => tr("finish — run until the current function returns").to_string(),
+        "until" | "u" => tr("until <line-expr> — alias of `tbreak <line-expr>`").to_string(),
         "untilcall" | "untilc" | "uc" => {
-            "untilcall <func> — run until <func> is called, stopping before it runs (builtins too); one-shot".to_string()
+            tr("untilcall <func> — run until <func> is called, stopping before it runs (builtins too); one-shot").to_string()
         }
         "untilret" | "untilr" | "ur" => {
-            "untilret <func> — run until <func> has returned, stopping on the statement after the call".to_string()
+            tr("untilret <func> — run until <func> has returned, stopping on the statement after the call").to_string()
         }
-        "untilgui" | "gui" => "untilgui — run until GUICreate is called".to_string(),
+        "untilgui" | "gui" => tr("untilgui — run until GUICreate is called").to_string(),
         "stopat" | "sa" => {
-            "stopat <func>... — stop before any of these are called: a builtin before it \
+            tr("stopat <func>... — stop before any of these are called: a builtin before it \
              runs, a script function at its entry (parameters bound). `stopat MsgBox \
              DllOpen` reads a dialog's text and a DLL's name without either happening; \
-             `stopat` lists them, `stopat off` clears them"
+             `stopat` lists them, `stopat off` clears them")
                 .to_string()
         }
         "break" | "b" => {
-            "break <line-expr> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit".to_string()
+            tr("break <line-expr> [if <expr>] [skip <n>] [every <n>] [nostop] [do <cmd>] — stop there; do runs debugger commands on hit").to_string()
         }
         "commands" => {
-            "commands <id> [do <cmd> | off] — on-hit debugger commands (run even with nostop)".to_string()
+            tr("commands <id> [do <cmd> | off] — on-hit debugger commands (run even with nostop)").to_string()
         }
         "jmp" | "j" => {
-            "jmp <line-expr> — unconditionally jump: skip statements up to the target line".to_string()
+            tr("jmp <line-expr> — unconditionally jump: skip statements up to the target line").to_string()
         }
         "tbreak" | "tb" => {
-            "tbreak <line-expr> — one-shot breakpoint: run until it is reached".to_string()
+            tr("tbreak <line-expr> — one-shot breakpoint: run until it is reached").to_string()
         }
         "eval" => {
-            "eval <stmt> — run AutoIt source as a statement (assignments stick)".to_string()
+            tr("eval <stmt> — run AutoIt source as a statement (assignments stick)").to_string()
         }
         "ignore" => {
-            "ignore <id> <count> — the next <count> would-be hits do not fire".to_string()
+            tr("ignore <id> <count> — the next <count> would-be hits do not fire").to_string()
         }
         "nostop" | "stop" => {
-            "nostop <id> | stop <id> — logpoint mode on/off".to_string()
+            tr("nostop <id> | stop <id> — logpoint mode on/off").to_string()
         }
         "watch" => {
-            "watch [expr | -d <id>] — break when the expression's value changes".to_string()
+            tr("watch [expr | -d <id>] — break when the expression's value changes").to_string()
         }
         "unwatch" => {
-            "unwatch <id> — remove a watch".to_string()
+            tr("unwatch <id> — remove a watch").to_string()
         }
         "print" | "p" => {
-            "print <expr> — evaluate in the stopped frame (`p $x`, `p $a[2]`)".to_string()
+            tr("print <expr> — evaluate in the stopped frame (`p $x`, `p $a[2]`)").to_string()
         }
-        "set" => "set $var = <expr> — assign in the stopped frame".to_string(),
-        "info" | "i" => "info breakpoints|locals|globals|functions|frame".to_string(),
-        "backtrace" | "bt" | "where" => "backtrace — the call stack, innermost first (gdb numbering: #0 is the innermost)".to_string(),
+        "set" => tr("set $var = <expr> — assign in the stopped frame").to_string(),
+        "info" | "i" => tr("info breakpoints|locals|globals|functions|frame").to_string(),
+        "backtrace" | "bt" | "where" => tr("backtrace — the call stack, innermost first (gdb numbering: #0 is the innermost)").to_string(),
         "frame" | "f" => {
-            "frame [n] — select a frame (gdb numbering: #0 innermost); print/info locals act there".to_string()
+            tr("frame [n] — select a frame (gdb numbering: #0 innermost); print/info locals act there").to_string()
         }
-        "up" | "down" => "up [n] / down [n] — move the frame selection toward the caller / innermost".to_string(),
-        "list" | "l" => "list [line-expr] — eight source lines around the stop point".to_string(),
+        "up" | "down" => tr("up [n] / down [n] — move the frame selection toward the caller / innermost").to_string(),
+        "list" | "l" => tr("list [line-expr] — eight source lines around the stop point").to_string(),
         "trace" => {
-            "trace on|off | trace depth <n> | trace skip <func> — echo statements, optionally filtered".to_string()
+            tr("trace on|off | trace depth <n> | trace skip <func> — echo statements, optionally filtered").to_string()
         }
         "catch" => {
-            "catch on|off — stop where an uncaught error is raised, before it unwinds. \
+            tr("catch on|off — stop where an uncaught error is raised, before it unwinds. \
              gdb's equivalent is `catch throw`; its target-taking catchpoints \
-             (`catch syscall <name>`, `catch load <lib>`) are what `stopat` is like"
+             (`catch syscall <name>`, `catch load <lib>`) are what `stopat` is like")
                 .to_string()
         }
-        "source" => "source <file> — queue the commands in a file, one per line".to_string(),
-        "quit" | "q" => "quit — leave the session".to_string(),
-        other => format!("no help for {other:?}"),
+        "source" => tr("source <file> — queue the commands in a file, one per line").to_string(),
+        "quit" | "q" => tr("quit — leave the session").to_string(),
+        other => msg!("no help for {other}", other = format!("{other:?}")),
     }
 }
 
