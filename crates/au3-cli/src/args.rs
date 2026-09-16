@@ -480,7 +480,7 @@ impl WinEmuArgs {
             let dirs = resource_search_dirs(script);
             if emu.module_path().is_none() && !has_staged_resources(&dirs) {
                 note_once(tr(
-                    "# no resource image or extracted resource files found: resource calls will fail",
+                    "# no resource image or __* resource files found: resource calls may fail",
                 ));
             }
             emu = emu.with_resource_dirs(dirs);

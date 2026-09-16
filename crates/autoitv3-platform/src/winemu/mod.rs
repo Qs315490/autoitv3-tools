@@ -168,7 +168,13 @@ pub fn find_resource_module(script: Option<&std::path::Path>) -> Option<PathBuf>
 /// Whether any search directory holds resources staged as files.
 ///
 /// `AutoIt3Wrapper_Res_File_Add` writes them with a `__` prefix (`__NAME`) or
-/// under `__Res64`/`__ResImage`, so that is what to look for.
+/// under `__Res64`/`__ResImage` — the two entries that prefix covers — so that
+/// is what to look for.
+///
+/// This is a heads-up for a caller about to warn that resource calls may fail,
+/// not the lookup itself: [`PeImage::find_resource_file`] also accepts a bare
+/// name (a plain resource dump), which cannot be told from any other file here,
+/// so a directory it would answer from can still come back `false`.
 pub fn has_staged_resources(dirs: &[PathBuf]) -> bool {
     dirs.iter().any(|dir| {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1237,8 +1243,13 @@ impl WindowsEmulation {
         std::fs::rename(src, self.recycle_dir.join(format!("{stamp}_{name}"))).is_ok()
     }
 
-    /// Serve `FileInstall`: copy `source` to `dest`, falling back to the loaded
-    /// module's `RT_RCDATA` resources when the source is not on disk.
+    /// Serve `FileInstall`: copy `source` to `dest`, falling back to the
+    /// module's resources when the source is not a file on disk.
+    ///
+    /// The fallback is the lookup `FindResourceW` answers with — resources
+    /// extracted next to the script first (`__NAME`, `NAME`, `__Res64/NAME`,
+    /// `__ResImage/_NAME`), the loaded image second — so an analysis that has
+    /// only the extracted files serves a `FileInstall` too.
     fn file_install(&self, source: &str, dest: &str, no_overwrite: bool) -> bool {
         if dest.is_empty() {
             return false;
@@ -1250,9 +1261,6 @@ impl WindowsEmulation {
         if src.is_file() {
             return std::fs::copy(src, dest).is_ok();
         }
-        let Some(module) = &self.module else {
-            return false;
-        };
         let basename = src
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -1260,6 +1268,17 @@ impl WindowsEmulation {
         if basename.is_empty() {
             return false;
         }
+        // The extracted files carry the wrapper's staging names, so one lookup
+        // with the bare name covers `__NAME` and the `__Res64`/`__ResImage`
+        // directories as well.
+        if let Some(bytes) =
+            PeImage::find_resource_file(&self.resource_dirs, &Selector::name(basename.clone()))
+        {
+            return std::fs::write(dest, &bytes).is_ok();
+        }
+        let Some(module) = &self.module else {
+            return false;
+        };
         for name in [basename.clone(), format!("__{basename}")] {
             if let Some(res) = module.find(&Selector::name(name), &Selector::id(10)) {
                 return std::fs::write(dest, &res.data).is_ok();

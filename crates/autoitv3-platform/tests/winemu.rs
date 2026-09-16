@@ -779,6 +779,31 @@ fn resources_extracted_next_to_the_script_answer_find_resource() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn file_install_releases_the_same_extracted_resources() {
+    // `FileInstall` writes out a resource the wrapper embedded, so it has to
+    // look exactly where `FindResourceW` does: the extracted files first, the
+    // image second. A build analysed from its `__*` files alone is the case
+    // that used to fail here, because only the image was consulted.
+    let dir = scratch("file-install-staged");
+    std::fs::create_dir_all(dir.join("__Res64")).unwrap();
+    std::fs::write(dir.join("__Res64").join("RES057DB"), b"staged payload").unwrap();
+    let out = dir.join("installed.bin");
+
+    let emu = win10().with_resource_dirs([dir.clone()]);
+    let body = format!(
+        r#"Local $ok = FileInstall("RES057DB", "{out}", 1)
+    Local $err = @error
+    Local $h = FileOpen("{out}", 0)
+    Local $text = FileRead($h)
+    FileClose($h)
+    Return $ok & "|" & $err & "|" & $text"#,
+        out = out.display()
+    );
+    assert_eq!(text(emu, &body), "1|0|staged payload");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Windows files / PE, callbacks, COM, system info, shell (column B)
 // ---------------------------------------------------------------------------

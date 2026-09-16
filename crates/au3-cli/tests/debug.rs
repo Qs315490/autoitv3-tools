@@ -1139,8 +1139,6 @@ fn gui_auto_is_accepted() {
 fn environment_notes_are_printed_once_per_process() {
     let path = script("notes-once", "ConsoleWrite(\"hi\" & @CRLF)\n");
     let out = shell(&path, &["run", "quit"]);
-    let count = out
-        .matches("no resource image or extracted resource files found")
-        .count();
+    let count = out.matches("no resource image").count();
     assert_eq!(count, 1, "the note repeated, got:\n{out}");
 }

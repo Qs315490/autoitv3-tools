@@ -89,7 +89,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("--resource-module {path}: no such file", "--resource-module {path}：没有这个文件"),
     ("# resource module: {path} (the input build; override with --resource-module)", "# 资源模块：{path}（输入构建；可用 --resource-module 覆盖）"),
     ("# resource module: {path} (found next to the script; override with --resource-module)", "# 资源模块：{path}（在脚本旁边找到；可用 --resource-module 覆盖）"),
-    ("# no resource image or extracted resource files found: resource calls will fail", "# 未找到资源映像或已提取的资源文件：资源调用将失败"),
+    ("# no resource image or __* resource files found: resource calls may fail", "# 未找到资源映像或 __* 资源文件：资源调用可能失败"),
     ("cannot read {path}: {e}", "无法读取 {path}：{e}"),
     ("cannot read {path}: not UTF-8 or UTF-16 source, and not a compiled build (no MZ / AU3!EA header)", "无法读取 {path}：既不是 UTF-8 或 UTF-16 源码，也不是编译构建（没有 MZ / AU3!EA 头）"),
     ("parse error in {path}: {e}", "解析 {path} 时出错：{e}"),
