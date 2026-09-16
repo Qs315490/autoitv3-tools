@@ -766,9 +766,9 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_bitand()?;
+        let mut lhs = self.parse_equality()?;
         while self.eat(&And).is_some() {
-            let rhs = self.parse_bitand()?;
+            let rhs = self.parse_equality()?;
             let span = lhs.span.merge(rhs.span);
             lhs = Expr {
                 kind: ExprKind::Binary(BinaryOp::And, Box::new(lhs), Box::new(rhs)),
@@ -778,51 +778,13 @@ impl Parser {
         Ok(lhs)
     }
 
-    fn parse_bitand(&mut self) -> Result<Expr, ParseError> {
-        // `&` is ambiguous: bitwise-and vs string concat. AutoIt treats `&`
-        // as concat for strings and bitwise for numbers; for the AST we record
-        // a generic `Amp` and let later passes decide. Here we fold as Concat.
-        let mut lhs = self.parse_equality()?;
-        while self.at(&Amp) {
-            self.bump();
-            let rhs = self.parse_equality()?;
-            let span = lhs.span.merge(rhs.span);
-            lhs = Expr {
-                kind: ExprKind::Binary(BinaryOp::Concat, Box::new(lhs), Box::new(rhs)),
-                span,
-            };
-        }
-        Ok(lhs)
-    }
-
+    /// Comparison and equality — `<`, `<=`, `>`, `>=`, `=`, `==`, `<>`.
+    ///
+    /// AutoIt gives all of them **one** precedence level, left associative;
+    /// measured on the official interpreter, `2 < 1 = 0` is true (so `=` is
+    /// not tighter than `<`) and so is `1 < 2 < 3`.
     fn parse_equality(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_comparison()?;
-        loop {
-            let op = if self.at(&Eq) {
-                self.bump();
-                BinaryOp::Eq
-            } else if self.at(&Assign) {
-                // `=` inside an expression is comparison, not assignment.
-                self.bump();
-                BinaryOp::EqLoose
-            } else if self.at(&NotEq) {
-                self.bump();
-                BinaryOp::NotEq
-            } else {
-                break;
-            };
-            let rhs = self.parse_comparison()?;
-            let span = lhs.span.merge(rhs.span);
-            lhs = Expr {
-                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
-                span,
-            };
-        }
-        Ok(lhs)
-    }
-
-    fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_additive()?;
+        let mut lhs = self.parse_concat()?;
         loop {
             let op = if self.at(&Lt) {
                 self.bump();
@@ -836,13 +798,47 @@ impl Parser {
             } else if self.at(&Ge) {
                 self.bump();
                 BinaryOp::Ge
+            } else if self.at(&Eq) {
+                self.bump();
+                BinaryOp::Eq
+            } else if self.at(&Assign) {
+                // `=` inside an expression is comparison, not assignment.
+                self.bump();
+                BinaryOp::EqLoose
+            } else if self.at(&NotEq) {
+                self.bump();
+                BinaryOp::NotEq
             } else {
                 break;
             };
-            let rhs = self.parse_additive()?;
+            let rhs = self.parse_concat()?;
             let span = lhs.span.merge(rhs.span);
             lhs = Expr {
                 kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    /// `&` — AutoIt's string concatenation, and bitwise-and for numbers.
+    ///
+    /// It binds looser than `+`/`-` but **tighter** than the comparison
+    /// operators: measured on the official interpreter, `"a" & "b" = "ab"`,
+    /// `1 & 2 = 12` and `"10" = 1 & 0` are all true. So
+    /// `If $dir = $root & "\\Drivers"` compares the concatenated path —
+    /// the shape scripts use everywhere.
+    ///
+    /// The AST records one node whatever the operand types; the runtime decides
+    /// between concatenation and bitwise-and from them.
+    fn parse_concat(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_additive()?;
+        while self.at(&Amp) {
+            self.bump();
+            let rhs = self.parse_additive()?;
+            let span = lhs.span.merge(rhs.span);
+            lhs = Expr {
+                kind: ExprKind::Binary(BinaryOp::Concat, Box::new(lhs), Box::new(rhs)),
                 span,
             };
         }

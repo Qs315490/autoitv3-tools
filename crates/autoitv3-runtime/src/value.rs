@@ -305,28 +305,62 @@ impl Value {
     }
 
     /// Case-insensitive equality (AutoIt `=` and `<>`).
+    ///
+    /// AutoIt tries a case-insensitive **string** comparison first and falls
+    /// back to a **numeric** one when the two values are not the same text.
+    /// Both halves are load-bearing, and both were measured on the official
+    /// x64 interpreter:
+    ///
+    /// * a string compared with a number is parsed as a number, and a string
+    ///   with no leading number counts as `0` - `"" = 0` and `"abc" = 0` are
+    ///   **true**, while `"" = "0"` (two strings) is **false**;
+    /// * the string comparison happens first, so `"true" = True` is true by
+    ///   text even though `"true"` as a number is `0`;
+    /// * `Null` and `Default` equal only themselves: `Null = ""` is false.
     pub fn eq_loose(&self, other: &Value) -> bool {
         match (self, other) {
+            (Value::Null, Value::Null) | (Value::Default, Value::Default) => true,
+            (Value::Null, _) | (_, Value::Null) => false,
+            (Value::Default, _) | (_, Value::Default) => false,
             (Value::Str(a), Value::Str(b)) => a.eq_ignore_ascii_case(b),
-            (a, b) if a.is_number() && b.is_number() => a.to_f64() == b.to_f64(),
-            (Value::Str(a), b) => a.eq_ignore_ascii_case(&b.to_autoit_string()),
-            (a, Value::Str(b)) => a.to_autoit_string().eq_ignore_ascii_case(b),
+            (Value::Str(a), b) => {
+                a.eq_ignore_ascii_case(&b.to_autoit_string())
+                    || (b.is_number() && parse_number(a.trim()).unwrap_or(0.0) == b.to_f64())
+            }
+            (a, Value::Str(b)) => {
+                a.to_autoit_string().eq_ignore_ascii_case(b)
+                    || (a.is_number() && a.to_f64() == parse_number(b.trim()).unwrap_or(0.0))
+            }
             _ => self.eq_strict(other),
         }
     }
 
     /// Ordering comparison (`<`, `<=`, `>`, `>=`).
     ///
-    /// Numbers compare numerically; anything else compares as a
-    /// case-insensitive string, matching AutoIt.
+    /// Numbers compare numerically and two strings compare as case-insensitive
+    /// strings; a string mixed with a number is coerced to a number. Measured
+    /// on the official x64 interpreter: `"10" < 9` is false while
+    /// `"10" < "9"` is true, and `"abc" < 5` is true because `"abc"`
+    /// counts as `0`.
     pub fn compare(&self, other: &Value) -> Ordering {
-        if self.is_number() && other.is_number() {
-            let (a, b) = (self.to_f64(), other.to_f64());
-            return a.partial_cmp(&b).unwrap_or(Ordering::Equal);
+        fn numeric(a: f64, b: f64) -> Ordering {
+            a.partial_cmp(&b).unwrap_or(Ordering::Equal)
         }
-        let (a, b) = (self.to_autoit_string(), other.to_autoit_string());
-        let (al, bl) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
-        al.cmp(&bl)
+        fn text(a: &Value, b: &Value) -> Ordering {
+            let (a, b) = (a.to_autoit_string(), b.to_autoit_string());
+            a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())
+        }
+        match (self, other) {
+            (Value::Str(a), Value::Str(b)) => a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()),
+            (Value::Str(a), b) if b.is_number() => {
+                numeric(parse_number(a.trim()).unwrap_or(0.0), b.to_f64())
+            }
+            (a, Value::Str(b)) if a.is_number() => {
+                numeric(a.to_f64(), parse_number(b.trim()).unwrap_or(0.0))
+            }
+            _ if self.is_number() && other.is_number() => numeric(self.to_f64(), other.to_f64()),
+            _ => text(self, other),
+        }
     }
 }
 
@@ -367,32 +401,63 @@ pub fn format_float(f: f64) -> String {
 }
 
 /// Parse a leading AutoIt number from `s` (decimal, `0x` hex, or float).
+///
+/// Measured on the official x64 interpreter, a leading `+` is accepted
+/// (`"+5" + 0` is `5`), the mantissa stops at the second dot or at any other
+/// character (`"1.5.5"` is `1.5`, `"3abc"` is `3`), and a **complete**
+/// exponent is honoured (`"1e2" + 0` is `100`, `"1E3"` is `1000`, while
+/// `"1e"` is `1`).
 pub fn parse_number(s: &str) -> Option<f64> {
     let t = s.trim();
-    if t.is_empty() {
-        return None;
-    }
     let (neg, rest) = match t.strip_prefix('-') {
         Some(r) => (true, r.trim_start()),
-        None => (false, t),
+        None => (false, t.strip_prefix('+').unwrap_or(t).trim_start()),
     };
-    let val = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+    if rest.is_empty() {
+        return None;
+    }
+    let value = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
         let digits: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
         if digits.is_empty() {
             return None;
         }
         i64::from_str_radix(&digits, 16).ok()? as f64
     } else {
-        let digits: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.')
-            .collect();
-        if digits.is_empty() || digits == "." {
+        let bytes = rest.as_bytes();
+        let (mut end, mut dot) = (0, false);
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            if bytes[end] == b'.' {
+                if dot {
+                    break;
+                }
+                dot = true;
+            }
+            end += 1;
+        }
+        let mut text = rest[..end].to_string();
+        if text.is_empty() || text == "." {
             return None;
         }
-        digits.parse::<f64>().ok()?
+        if end < bytes.len() && bytes[end].eq_ignore_ascii_case(&b'e') {
+            let mut i = end + 1;
+            let mut exponent = String::new();
+            if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                exponent.push(bytes[i] as char);
+                i += 1;
+            }
+            let digits = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                exponent.push(bytes[i] as char);
+                i += 1;
+            }
+            if i > digits {
+                text.push('e');
+                text.push_str(&exponent);
+            }
+        }
+        text.parse::<f64>().ok()?
     };
-    Some(if neg { -val } else { val })
+    Some(if neg { -value } else { value })
 }
 /// AutoIt's string form of a pointer: `0x` and 16 upper-case hex digits.
 ///

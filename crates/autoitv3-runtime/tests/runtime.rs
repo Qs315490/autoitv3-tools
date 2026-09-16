@@ -2423,3 +2423,44 @@ fn and_or_short_circuit() {
                EndFunc\n";
     assert_eq!(call(src, "F", vec![]).to_int(), 1);
 }
+#[test]
+fn a_string_compared_with_a_number_is_text_first_then_numeric() {
+    // Measured on the official 3.3.16 x64 interpreter. `=` tries a
+    // case-insensitive string comparison and then a numeric one, where a string
+    // with no leading number counts as 0 - so `"" = 0` and `"abc" = 0` are
+    // true while `"" = "0"` (two strings) is false - and the text comparison
+    // happens first, which is what makes `"true" = True` true. `Null` and
+    // `Default` equal only themselves, `==` stays a plain case-sensitive or
+    // numeric comparison, and `<` coerces a mixed pair to numbers.
+    let src = "Func F()\n\
+               \x20   Local $a[3]\n\
+               \x20   Local $r = \"\"\n\
+               \x20   $r = $r & (\"\" = 0) & (\"abc\" = 0) & (\"\" = \"0\") & (\"true\" = True)\n\
+               \x20   $r = $r & (\"1e2\" = 100) & (\"+5\" = 5) & (\"0x10\" = 16) & (\"1.5.5\" = 1.5)\n\
+               \x20   $r = $r & ($a[0] = 0) & (Null = \"\") & (Null = Null) & (\"abc\" == 0)\n\
+               \x20   $r = $r & (\"10\" < \"9\") & (\"10\" < 9) & (\"abc\" < 5) & (9 < \"10\")\n\
+               \x20   Return $r\n\
+               EndFunc\n";
+    assert_eq!(
+        call(src, "F", vec![]).to_autoit_string(),
+        "TrueTrueFalseTrueTrueTrueTrueTrueTrueFalseTrueFalseTrueFalseTrueTrue"
+    );
+}
+
+#[test]
+fn concat_binds_tighter_than_the_comparison_operators() {
+    // Measured on the official 3.3.16 x64 interpreter: `1 & 2 = 12`,
+    // `"a" & "b" = "ab"` and `"10" = 1 & 0` are all true, so `&` binds
+    // tighter than `=`; `2 < 1 = 0` and `1 < 2 < 3` are true, so `<` and
+    // `=` share one left-associative level; and `Not 1 = 2` is false, so
+    // `Not` stays at the unary level. The first three are the shape of
+    // `If $dir = $root & "\\Drivers"`, which compares the joined path.
+    let src = "Func F()\n\
+               \x20   Return (1 & 2 = 12) & (\"a\" & \"b\" = \"ab\") & (\"10\" = 1 & 0) & (2 < 1 = 0) & (1 < 2 < 3) & (Not 1 = 2)\n\
+               EndFunc\n";
+    assert_eq!(
+        call(src, "F", vec![]).to_autoit_string(),
+        "TrueTrueTrueTrueTrueFalse"
+    );
+}
+
