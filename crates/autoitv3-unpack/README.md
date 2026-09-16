@@ -66,6 +66,12 @@ au3 unpack chunk.bin  --script                   # 裸 chunk（已 dump 出来�
    的索引，顺序不能改。
    `>AUTOIT UNICODE SCRIPT<` / `>AUTOIT SCRIPT<` 则是明文源码。
 
+**加壳的镜像会被认出来，但不会替你脱壳**：UPX 会把压缩过的段改名成 `UPX0`/`UPX1`，
+`UPX!` magic 也在；`packed_with()` 用这两条（任一命中即可）判定，`--script` 与资源
+载荷两条路都会直接报"该镜像是 UPX 加壳的，先脱壳（例如 `upx -d FILE`）再读结果"，
+而不是含糊地说"没找到编译脚本"。MPRESS/Themida 之类没有这么整齐的标记，要加就得
+各加各的特征。
+
 `>>>AUTOIT NO CMDEXECUTE<<<` 是解释器自己跳过的占位记录、没有载荷，解码时跳过。
 `FileInstall` 的载荷在同一容器的其它记录里，`--script` 会把它们列到 stderr
 （子类型、路径、大小），但 stdout 只有脚本本身。

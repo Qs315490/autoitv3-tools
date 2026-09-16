@@ -67,6 +67,9 @@ pub enum Error {
     /// No `AU3!EA05`/`AU3!EA06` chunk was found, so there is no compiled
     /// script to read.
     NoCompiledScript,
+    /// The image is packed (UPX), so its real content is inside the packed
+    /// data and nothing can be read from it here.
+    Packed(String),
     /// A chunk was decoded but it carries no script entry — only embedded
     /// payloads, say.
     NoScript,
@@ -97,6 +100,14 @@ impl fmt::Display for Error {
                 f,
                 "{}",
                 tr("the build carries no script entry (only embedded payloads)")
+            ),
+            Error::Packed(packer) => write!(
+                f,
+                "{}",
+                msg!(
+                    "the image is {packer}-packed: its script and resources are inside                      the packed data, so unpack the stub first (for example `upx -d FILE`)                      and read the result",
+                    packer = packer
+                )
             ),
             Error::BadData(why) => write!(
                 f,
@@ -206,6 +217,12 @@ fn collect(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<(PathBuf, String)> {
 pub fn candidates_from_image(path: impl AsRef<Path>) -> Result<Vec<(String, Vec<u8>)>, Error> {
     let path = path.as_ref();
     let image = PeImage::load(path).map_err(Error::Io)?;
+    // A packed image's resource directory is the packer's, not the build's:
+    // whatever the script embedded lives inside the packed data, so say that
+    // instead of reporting the (empty) list as "no payload here".
+    if let Some(packer) = image.packer {
+        return Err(Error::Packed(packer.to_string()));
+    }
     let mut out = Vec::new();
     for r in image.resources.iter().filter(|r| {
         // RT_RCDATA is 10; anything else is an icon or a version block.

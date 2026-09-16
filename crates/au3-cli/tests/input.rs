@@ -50,6 +50,36 @@ fn a_source_file_still_goes_down_the_text_path() {
     assert!(out.contains("1 functions"), "got:\n{out}");
 }
 
+/// A UPX-packed build keeps its script inside the packed data, so there is no
+/// `AU3!EA` chunk to read: the loader has to say that instead of the generic
+/// "no compiled script", which sends an analyst looking for the wrong thing.
+#[test]
+fn a_upx_packed_build_says_so() {
+    let path = scratch("upx-packed", "packed.exe", &upx_looking_image());
+    let (ok, out) = au3(&["parse", path.to_str().unwrap()]);
+    assert!(!ok, "a packed build has no script to parse:\n{out}");
+    assert!(out.contains("UPX-packed"), "got:\n{out}");
+    assert!(out.contains("upx -d"), "the message says what to do: got:\n{out}");
+}
+
+/// Enough of a PE for the packer check: two sections carrying UPX's names and
+/// the stub's magic.
+fn upx_looking_image() -> Vec<u8> {
+    let mut image = vec![0u8; 0x400];
+    image[0..2].copy_from_slice(b"MZ");
+    image[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+    image[0x40..0x44].copy_from_slice(b"PE\0\0");
+    image[0x44..0x46].copy_from_slice(&0x14cu16.to_le_bytes()); // i386
+    image[0x46..0x48].copy_from_slice(&2u16.to_le_bytes()); // two sections
+    image[0x54..0x56].copy_from_slice(&0xe0u16.to_le_bytes()); // optional size
+    image[0x58..0x5a].copy_from_slice(&0x10bu16.to_le_bytes()); // PE32
+    let table = 0x58 + 0xe0;
+    image[table..table + 4].copy_from_slice(b"UPX0");
+    image[table + 40..table + 44].copy_from_slice(b"UPX1");
+    image[0x3f0..0x3f4].copy_from_slice(b"UPX!");
+    image
+}
+
 #[test]
 fn a_build_header_without_a_script_reports_the_build_path() {
     // A PE header but no `AU3!EA…` chunk: the loader must treat it as a build

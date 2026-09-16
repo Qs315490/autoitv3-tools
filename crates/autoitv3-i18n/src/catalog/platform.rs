@@ -12,6 +12,10 @@ pub static ENTRIES: &[(&str, &str)] = &[
         "未找到编译脚本（应为 AU3!EA05 或 AU3!EA06 数据块、名为 SCRIPT 的资源，或原始数据块）",
     ),
     (
+        "the image is {packer}-packed: its script and resources are inside the packed data, so unpack the stub first (for example `upx -d FILE`) and read the result",
+        "该镜像是 {packer} 加壳的：脚本和资源都在压缩数据里，先脱壳（例如 `upx -d FILE`）再读结果",
+    ),
+    (
         "the build carries no script entry (only embedded payloads)",
         "该文件不包含脚本条目（只有内嵌载荷）",
     ),

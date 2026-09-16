@@ -36,6 +36,26 @@ fn the_machine_type_says_whether_the_build_is_x64() {
 }
 
 #[test]
+fn a_packed_image_is_recognised_from_its_headers() {
+    // UPX renames the sections it compressed; the `UPX!` magic is the other
+    // mark. The synthetic image's own section is the resource table, so it is
+    // not packed until the name says so.
+    let plain = tiny_pe(b"payload");
+    assert_eq!(section_names(&plain), vec![".rsrc".to_string()]);
+    assert_eq!(packed_with(&plain), None);
+
+    let mut packed = plain.clone();
+    packed[0x148..0x14d].copy_from_slice(b"UPX0\0");
+    assert_eq!(section_names(&packed), vec!["UPX0".to_string()]);
+    assert_eq!(packed_with(&packed), Some("UPX"));
+
+    // Magic alone counts too: a build can have its section names rewritten.
+    let mut magic = plain.clone();
+    magic[0x200..0x204].copy_from_slice(b"UPX!");
+    assert_eq!(packed_with(&magic), Some("UPX"));
+}
+
+#[test]
 fn selector_matching_is_case_insensitive_for_names() {
     let sel = Selector::name("payload");
     assert!(sel.matches(None, Some("PAYLOAD")));

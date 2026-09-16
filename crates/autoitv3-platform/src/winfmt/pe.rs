@@ -87,6 +87,14 @@ pub struct PeImage {
     /// did (`0` when the header is unreadable: every AutoIt build before the
     /// macro existed was 32-bit).
     pub machine: u16,
+    /// The section names, in header order.
+    ///
+    /// A packer leaves its mark here before anything else is readable; see
+    /// [`packed_with`].
+    pub sections: Vec<String>,
+    /// The packer this image is packed with, if any — a UPX build's script and
+    /// resources live inside the packed data, so nothing here can be read.
+    pub packer: Option<&'static str>,
     /// Every resource leaf, in directory order.
     pub resources: Vec<Resource>,
 }
@@ -100,6 +108,8 @@ impl PeImage {
         Ok(Self {
             path: path.display().to_string(),
             machine: machine_type_of(&bytes).unwrap_or(0),
+            sections: section_names(&bytes),
+            packer: packed_with(&bytes),
             resources,
         })
     }
@@ -397,6 +407,61 @@ fn read_name(image: &[u8], off: usize) -> Option<String> {
 
 fn read_u16(image: &[u8], off: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(off..off + 2)?.try_into().ok()?))
+}
+
+/// The section names of a PE image in memory, in header order.
+///
+/// Empty when the headers cannot be walked, which is also the answer for a file
+/// that is not a PE at all.
+pub fn section_names(image: &[u8]) -> Vec<String> {
+    fn walk(image: &[u8]) -> Option<Vec<String>> {
+        let nt = read_u32(image, 0x3c)? as usize;
+        if image.get(nt..nt + 4)? != b"PE\0\0" {
+            return None;
+        }
+        let coff = nt + 4;
+        let count = read_u16(image, coff + 2)? as usize;
+        // A section header is 40 bytes: an 8-byte NUL-padded name, then the
+        // sizes and addresses.
+        let table = coff + 20 + read_u16(image, coff + 16)? as usize;
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let header = table + index * 40;
+            let raw = image.get(header..header + 8)?;
+            let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
+            out.push(String::from_utf8_lossy(&raw[..end]).into_owned());
+        }
+        Some(out)
+    }
+    walk(image).unwrap_or_default()
+}
+
+/// The packer a section list advertises, if any.
+///
+/// UPX renames the sections it compressed to `UPX0`/`UPX1`/`UPX2`, which is the
+/// cheapest way to recognise a packed build — the names are in the header, so
+/// nothing has to be decompressed to say so. Other packers (MPRESS, Themida)
+/// do not leave so tidy a mark and would need their own signature.
+pub fn section_packer(sections: &[String]) -> Option<&'static str> {
+    sections
+        .iter()
+        .any(|name| name.to_ascii_uppercase().starts_with("UPX"))
+        .then_some("UPX")
+}
+
+/// The packer an image in memory advertises, if any.
+///
+/// Two marks, either one enough: the section names UPX leaves behind and its
+/// `UPX!` magic. A build whose sections were renamed by hand still carries the
+/// magic, and a build whose magic was stripped still has the names.
+pub fn packed_with(image: &[u8]) -> Option<&'static str> {
+    if let Some(packer) = section_packer(&section_names(image)) {
+        return Some(packer);
+    }
+    image
+        .windows(4)
+        .any(|window| window == b"UPX!")
+        .then_some("UPX")
 }
 
 /// The COFF machine type of an image in memory, when its headers are readable.

@@ -258,6 +258,12 @@ pub fn from_image(path: impl AsRef<Path>) -> Result<CompiledScript, Error> {
 pub fn from_bytes(image: &[u8]) -> Result<CompiledScript, Error> {
     let candidates = markers(image);
     if candidates.is_empty() {
+        // A packed build has no readable marker by construction: the stub
+        // unpacks the real image into memory at run time. Saying so is worth
+        // more than the generic "no compiled script" that follows.
+        if let Some(packer) = autoitv3_platform::winfmt::pe::packed_with(image) {
+            return Err(Error::Packed(packer.to_string()));
+        }
         return Err(Error::NoCompiledScript);
     }
     let mut first_error = None;
