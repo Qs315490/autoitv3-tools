@@ -57,6 +57,12 @@ pub mod common;
 pub mod pathmap;
 pub mod winemu;
 
+/// `DllCall` type-token parsing (`"INT:cdecl"`). Only the native Windows
+/// backend consults it, but the spelling rules are worth testing on every
+/// host, so the module is built for the crate's tests everywhere.
+#[cfg(any(windows, test))]
+pub(crate) mod abi;
+
 /// Pure Windows file-format / binary-layout machinery (DllStruct layouts,
 /// PE resources, RT_VERSION, Shell Links) shared by the answering layers.
 pub mod winfmt;

@@ -2,6 +2,8 @@
 //! invocation bridge.
 //!
 //! AutoIt's call shape is `DllCall("dll", "rettype", "func", type1, val1, …)`.
+//! The return type may name a calling convention after a colon —
+//! `"INT:cdecl"`, the spelling real scripts use (see [`crate::abi`]).
 //! The return is an array whose element 0 is the return value and whose
 //! remaining elements echo the arguments, updated in place for the
 //! by-reference types (`int*`, `wstr*`, …) — the same shape the emulation
@@ -26,6 +28,8 @@ use std::rc::Rc;
 
 use autoitv3_runtime::host::HostContext;
 use autoitv3_runtime::value::Value;
+
+use crate::abi::{split_convention, strip_convention, Convention};
 
 use super::WindowsPlatform;
 
@@ -62,13 +66,13 @@ struct ArgType {
 
 /// Parse a type token. Unknown tokens fail the whole call, like AutoIt.
 fn parse_type(raw: &str) -> Option<ArgType> {
-    let token = raw.trim().to_ascii_lowercase();
+    // A convention may be stuck on either side of an argument type
+    // (`"INT*:cdecl"`); only the type is left to read.
+    let token = strip_convention(raw).trim().to_ascii_lowercase();
     let (base, by_ref) = match token.strip_suffix('*') {
         Some(b) => (b.to_string(), true),
         None => (token, false),
     };
-    // Be lenient about a convention prefix left on an argument type.
-    let base = base.rsplit(':').next().unwrap_or("").to_string();
     let ptr_size = (usize::BITS / 8) as u8;
     let (class, width, signed, is_pointer) = match base.as_str() {
         "none" | "void" => (ArgClass::Int, 4, false, false),
@@ -106,13 +110,6 @@ fn parse_type(raw: &str) -> Option<ArgType> {
         signed,
         is_pointer,
     })
-}
-
-/// Calling convention, honoured on 32-bit hosts (x64 has one convention).
-#[derive(Clone, Copy)]
-enum Convention {
-    StdCall,
-    Cdecl,
 }
 
 /// One prepared argument.
@@ -254,12 +251,9 @@ impl WindowsPlatform {
             .unwrap_or_default();
 
         // Peel an explicit calling convention off the return type
-        // (`cdecl:int`); x64 ignores it, x86 honours it.
-        let (convention, ret_type_raw) = match ret_raw.split_once(':') {
-            Some(("cdecl", rest)) => (Convention::Cdecl, rest.to_string()),
-            Some(("stdcall", rest)) => (Convention::StdCall, rest.to_string()),
-            _ => (Convention::StdCall, ret_raw.clone()),
-        };
+        // (`"INT:cdecl"`, as AutoIt spells it); x64 ignores it, x86 honours
+        // it.
+        let (convention, ret_type_raw) = split_convention(&ret_raw);
         let Some(ret_type) = parse_type(&ret_type_raw) else {
             ctx.set_error(2, 0);
             return Value::Int(0);
@@ -371,11 +365,7 @@ impl WindowsPlatform {
             ctx.set_error(1, 0);
             return Value::Int(0);
         }
-        let (convention, ret_type_raw) = match ret_raw.split_once(':') {
-            Some(("cdecl", rest)) => (Convention::Cdecl, rest.to_string()),
-            Some(("stdcall", rest)) => (Convention::StdCall, rest.to_string()),
-            _ => (Convention::StdCall, ret_raw.clone()),
-        };
+        let (convention, ret_type_raw) = split_convention(&ret_raw);
         let Some(ret_type) = parse_type(&ret_type_raw) else {
             ctx.set_error(2, 0);
             return Value::Int(0);
@@ -443,8 +433,10 @@ impl WindowsPlatform {
             .unwrap_or_default();
         let handle = load_library(&name);
         if handle == 0 {
+            // AutoIt hands back -1 for a library it could not load, and
+            // scripts test exactly that (`If DllOpen(...) = -1 Then`).
             ctx.set_error(1, 0);
-            return Value::Int(0);
+            return Value::Int(-1);
         }
         self.track_module(handle);
         ctx.set_error(0, 0);
@@ -690,7 +682,7 @@ fn invoke(
 }
 
 /// The machine-word bridge. `extern "system"` is stdcall on x86, cdecl
-/// nowhere; `extern "cdecl"` covers the `cdecl:` declarations.
+/// nowhere; `extern "cdecl"` covers the `":cdecl"` declarations.
 fn invoke_words(
     address: usize,
     args: &[usize],
