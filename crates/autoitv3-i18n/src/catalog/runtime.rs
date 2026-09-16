@@ -40,4 +40,10 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("Execute() control flow {flow}", "Execute() 控制流 {flow}"),
     ("StringRegExp flag {other} (expected 0..4)", "StringRegExp 标志 {other}（应为 0..4）"),
     ("this host cannot jump", "此宿主无法跳转"),
+    // A refused side effect: the profile said no, and the call failed like a
+    // real permission problem would.
+    (
+        "note: a {kind} side effect was refused by the execution profile — use --allow {kind} to permit this kind, or --faithful to let the script do its side effects for real",
+        "注意：执行配置拒绝了一次 {kind} 类副作用 — 用 --allow {kind} 只放行这一类，或用 --faithful 让脚本真的产生副作用",
+    ),
 ];

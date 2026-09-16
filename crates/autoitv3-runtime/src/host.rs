@@ -52,7 +52,36 @@ pub trait HostContext {
     /// can fine-tune individual effects — e.g. permit registry writes in a
     /// deobfuscation run, or forbid `Shutdown` in a faithful one.
     fn effect_allowed(&self, kind: EffectKind) -> bool {
-        self.profile().effect_allowed(kind)
+        let allowed = self.profile().effect_allowed(kind);
+        if !allowed {
+            note_refused_effect(kind);
+        }
+        allowed
+    }
+}
+
+/// Report a refused side effect on stderr, once per kind per process.
+///
+/// A refusal is otherwise indistinguishable from the machine refusing it: the
+/// call returns its failure value and sets `@error = 1`, which is exactly what
+/// a real permission problem looks like (`DirCreate` returning 0 cost one user
+/// an afternoon of chasing ACLs). The note names the profile's decision and how
+/// to overrule it, and fires only when a script actually tried.
+fn note_refused_effect(kind: EffectKind) {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashSet<EffectKind>>> =
+        std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let seen = seen.get_or_insert_with(std::collections::HashSet::new);
+    if seen.insert(kind) {
+        eprintln!(
+            "{}",
+            autoitv3_i18n::msg!(
+                "note: a {kind} side effect was refused by the execution profile — \
+                 use --allow {kind} to permit this kind, or --faithful to let the script \
+                 do its side effects for real",
+                kind = kind.name()
+            )
+        );
     }
 }
 

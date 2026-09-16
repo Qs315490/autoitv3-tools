@@ -109,6 +109,21 @@ impl EffectKind {
         EffectKind::ProcessControl,
     ];
 
+    /// The canonical CLI/env spelling of this kind (`file`, `registry`,
+    /// `spawn`, ...), the one [`EffectKind::from_name`] documents.
+    pub const fn name(self) -> &'static str {
+        match self {
+            EffectKind::FileWrite => "file",
+            EffectKind::EnvWrite => "env",
+            EffectKind::RegistryWrite => "registry",
+            EffectKind::ClipboardWrite => "clipboard",
+            EffectKind::Spawn => "spawn",
+            EffectKind::Shutdown => "shutdown",
+            EffectKind::NetAccess => "net",
+            EffectKind::ProcessControl => "process",
+        }
+    }
+
     /// Parse a CLI/env spelling (`file`, `registry`, `spawn`, `shutdown`, ...).
     pub fn from_name(name: &str) -> Option<EffectKind> {
         Some(match name.to_ascii_lowercase().as_str() {

@@ -238,6 +238,14 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 | `net` | `TCP*`/`UDP*`/`Inet*`/`Ping`/`DriveMap*` |
 | `process` | `ProcessClose`/`ProcessSetPriority` |
 
+被配置拒绝的副作用**会报一行**（每种 KIND 只报一次，第一次真被脚本触发时），
+否则它和"系统真的不让写"长得一模一样——调用返回失败值、`@error = 1`，
+像 `DirCreate` 失败就很容易被当成权限/ACL 问题去查：
+
+```text
+note: a file side effect was refused by the execution profile — use --allow file to permit this kind, or --faithful to let the script do its side effects for real
+```
+
 `--allow registry` 让确定性的反混淆运行写它要探测的注册表而不放开其它副作用；
 `--deny shutdown` 让一次忠实运行永远到不了 `ExitWindowsEx`。
 `--emulate registry` 则在 Windows 宿主上把 Reg* 路由到仿真层（文件/内存注册表），
