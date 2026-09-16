@@ -45,7 +45,10 @@
    `Continue`/`Pause`/`Abort`；停顿时 `on_stop` 拿到活的 `DebugHost`）、
    `Breakpoint`/`Breakpoints`（含条件）、`FrameInfo` 调用栈快照、`StopReason`。
    解释器每执行一条语句都会调用该接口，因此交互式调试器（`au3 debug`）、DAP 服务端
-   或自动化 tracer 都能直接接上。
+   或自动化 tracer 都能直接接上。调试器的**表达式求值走严格读**
+   （`Runtime::evaluate_expression`：`print`/`watch`/断点条件）：从没赋过值的变量报
+   `UndefinedVariable`，而不是脚本代码那样读成 `""`——提示符上敲错的名字要看得见。
+
 ### 执行配置（ExecutionProfile）——近似行为按用途区分
 
 解释器有两类调用者，诉求相反：**反混淆**要快、可复现、无害（`Sleep(60000)` 不能真等

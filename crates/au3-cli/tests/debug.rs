@@ -225,7 +225,13 @@ fn step_before_run_stops_at_the_first_statement() {
     let path = script("step-start", SCRIPT);
     let out = shell(&path, &["step 1", "print $counter", "quit"]);
     assert!(out.contains("Stopped at line 1"), "got:\n{out}");
-    assert!(has_line(&out, "\"\""), "the body has not run yet:\n{out}");
+    // The probe is `print $counter`: line 1 (`Global $counter = 0`) has not run
+    // yet, so the name does not exist and the shell says so instead of handing
+    // back the `""` a missing name used to read as.
+    assert!(
+        has_line(&out, "undefined variable: $counter"),
+        "the body has not run yet:\n{out}"
+    );
 }
 
 #[test]
@@ -235,7 +241,12 @@ fn a_finished_run_does_not_leak_its_step_budget() {
     let path = script("step-restart", SCRIPT);
     let out = shell(&path, &["run", "step 1", "print $counter", "quit"]);
     assert!(out.contains("Stopped at line 1"), "got:\n{out}");
-    assert!(has_line(&out, "\"\""), "the fresh run has not stepped:\n{out}");
+    // The restart wiped `$counter`, and the body has not run in this run
+    // either, so the probe reports the name as undefined.
+    assert!(
+        has_line(&out, "undefined variable: $counter"),
+        "the fresh run has not stepped:\n{out}"
+    );
 }
 
 #[test]
@@ -329,6 +340,44 @@ fn a_guarded_print_does_not_assign() {
     );
     assert!(has_line(&out, "false"), "`$i = 3` should compare at $i = 1:\n{out}");
     assert!(has_line(&out, "1"), "the loop variable was overwritten:\n{out}");
+}
+
+#[test]
+fn printing_a_name_that_was_never_assigned_says_so() {
+    let path = script("undef-var", SCRIPT);
+    // `$nope` is nowhere in the script. Answering `""` would look like a
+    // variable that really holds an empty string, so the name is reported.
+    let out = shell(&path, &["break 11", "run", "print $nope", "quit"]);
+    assert!(
+        has_line(&out, "undefined variable: $nope"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn printing_an_empty_variable_is_not_an_undefined_one() {
+    // The other side of the same rule: `$blank` exists and is `""`, so its
+    // value is what gets printed.
+    let path = script("blank-var", "Global $blank = \"\"\nGlobal $n = 1\n");
+    let out = shell(&path, &["break 2", "run", "print $blank", "quit"]);
+    assert!(has_line(&out, "\"\""), "got:\n{out}");
+}
+
+#[test]
+fn a_condition_on_a_name_that_does_not_exist_does_not_fire() {
+    let path = script("cond-undef", SCRIPT);
+    // The condition runs through the same strict expression path as `print`,
+    // so `$nope` is an undefined variable rather than `""` — which would make
+    // `$nope = ""` true and fire the breakpoint by accident.
+    let out = shell(&path, &["break 11 if $nope = \"\"", "run", "quit"]);
+    assert!(
+        out.contains("Breakpoint 1 at line 11 if $nope = \"\""),
+        "got:\n{out}"
+    );
+    assert!(
+        !out.contains("Breakpoint 1, line 11"),
+        "a condition on an undefined name fired:\n{out}"
+    );
 }
 
 #[test]

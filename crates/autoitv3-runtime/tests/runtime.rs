@@ -1711,6 +1711,43 @@ fn the_host_reports_frames_and_functions() {
 }
 
 #[test]
+fn a_debugger_expression_reports_a_name_that_was_never_assigned() {
+    // `print` is a question asked at a prompt, so a name that resolves nowhere
+    // is a typo to report: `""` reads as a variable the program really holds.
+    // `evaluate_expression` parses its own wrapper, so the position is not
+    // meaningful here.
+    let at = autoitv3_ast::span::Span::default();
+    let mut r = rt("Global $blank = \"\"\n");
+    r.run_script().unwrap();
+    match r.evaluate_expression("$nope", at) {
+        Err(autoitv3_runtime::RuntimeError::UndefinedVariable { name, span }) => {
+            assert_eq!(name, "$nope");
+            // The generated wrapper has no position the user could recognise,
+            // so the error carries none.
+            assert!(span.is_none(), "span: {span:?}");
+        }
+        other => panic!("expected an undefined variable, got {other:?}"),
+    }
+    // The same expression with a name that exists, even with an empty value,
+    // is a value rather than an error.
+    let v = r.evaluate_expression("$blank", at).unwrap();
+    assert!(matches!(&v, Value::Str(s) if s.is_empty()), "got {v:?}");
+}
+
+#[test]
+fn an_unset_name_still_reads_as_empty_in_script_code() {
+    // Strict reads belong to the prompt. A script reading a name it never
+    // assigned keeps AutoIt's default behaviour (`Opt("MustDeclareVars", 0)`),
+    // which is what the scripts found in the wild are written against.
+    let v = call(
+        "Func F()\n    Return \"[\" & $never_set & \"]\"\nEndFunc\n",
+        "F",
+        vec![],
+    );
+    assert!(matches!(&v, Value::Str(s) if s == "[]"), "got {v:?}");
+}
+
+#[test]
 fn an_uncaught_error_is_offered_while_the_frame_is_still_live() {
     // The hook fires where the error is raised, *before* the frame is popped,
     // which is the whole point: a post-mortem is only useful if the locals that

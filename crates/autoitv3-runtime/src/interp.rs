@@ -134,6 +134,17 @@ pub struct Runtime {
     /// without this guard a `print` inside a stop would recurse into the
     /// debugger for ever.
     in_debugger: bool,
+    /// True while a debugger *expression* is being evaluated — the `print`,
+    /// `watch` and breakpoint-condition path, which is always
+    /// [`Runtime::evaluate_expression`].
+    ///
+    /// An expression typed at the prompt is a question about the program, so
+    /// reading a variable that was never assigned is answered with
+    /// `undefined variable: $x` instead of the empty string a script gets. The
+    /// typo is what the user needs to see; `""` looks like a real value. Script
+    /// code is unaffected: it keeps AutoIt's own behaviour (see
+    /// [`Runtime::read_var_key`]).
+    strict_reads: bool,
     /// Set once a runtime error has been offered to the debugger.
     ///
     /// The hook fires at the innermost statement that failed; as the error
@@ -341,6 +352,7 @@ impl Runtime {
             jump_target: None,
             script_span: None,
             in_debugger: false,
+            strict_reads: false,
             error_reported: false,
             exit_code: None,
             exit_handlers: Vec::new(),
@@ -808,7 +820,7 @@ impl Runtime {
         // `$a[...]`: evaluate the subscripts *once* and use them both for the
         // value and for the write-back path — re-evaluating them later could
         // run their side effects twice, or see a changed index.
-        let base = self.read_var_key(v.name.key(), span)?;
+        let base = self.read_var_key(&v.name)?;
         let mut keys = Vec::with_capacity(v.indices.len());
         for idx in &v.indices {
             keys.push(self.eval_expr(idx)?);
@@ -1090,7 +1102,7 @@ impl Runtime {
     }
 
     /// Copy a `ByRef` parameter's final value back to the caller's variable
-    /// `key` (a lower-cased lookup key, as `read_var_key` wants).
+    /// `key` (a lower-cased lookup key, the form [`Ident::key`] produces).
     ///
     /// The binding follows the same precedence an ordinary write would: a
     /// `Static`, then a local in the caller's frame, then a global. A name the
@@ -1134,12 +1146,21 @@ impl Runtime {
         }
     }
 
-    /// Read the variable `key` names (a lower-cased name, see
-    /// [`Ident::key`](autoitv3_ast::ast::Ident::key)).
+    /// Read the variable `name` refers to.
     ///
-    /// The key is cached on the identifier, so a read costs neither an
+    /// The lookup key is cached on the identifier, so a read costs neither an
     /// allocation nor a lower-casing — this is the interpreter's hottest loop.
-    fn read_var_key(&self, key: &str, span: Span) -> Result<Value, RuntimeError> {
+    ///
+    /// A name that resolves nowhere reads as `""` under AutoIt's default
+    /// options, which is what a script expects. While a debugger expression is
+    /// being evaluated ([`Runtime::strict_reads`]) it is an
+    /// [`RuntimeError::UndefinedVariable`] instead: someone typed that name at
+    /// a prompt, and a typo reported as `""` looks like a value the program
+    /// really holds. The error carries no span, because the expression was
+    /// parsed from a generated wrapper and its positions mean nothing to the
+    /// user; the name is the whole message.
+    fn read_var_key(&self, name: &Ident) -> Result<Value, RuntimeError> {
+        let key = name.key();
         if let Some(f) = self.frames.last() {
             if let Some(store) = f.statics.get(key) {
                 return Ok(self.statics.get(store).cloned().unwrap_or(Value::Null));
@@ -1151,8 +1172,13 @@ impl Runtime {
         if let Some(v) = self.globals.get(key) {
             return Ok(v.clone());
         }
+        if self.strict_reads {
+            return Err(RuntimeError::UndefinedVariable {
+                name: name.name.clone(),
+                span: None,
+            });
+        }
         // Unset variables read as "" in AutoIt when no `MustDeclareVars` is set.
-        let _ = span;
         Ok(Value::Str(String::new()))
     }
 
@@ -1260,7 +1286,7 @@ impl Runtime {
             ExprKind::Macro(name) => Ok(self.eval_macro(name)),
             ExprKind::Ident(id) => Ok(Value::FuncRef(FuncRefName::new(&id.name))),
             ExprKind::Var(v) => {
-                let base = self.read_var_key(v.name.key(), e.span)?;
+                let base = self.read_var_key(&v.name)?;
                 self.index_value(base, &v.indices, e.span)
             }
             ExprKind::Call(c) => {
@@ -1278,7 +1304,7 @@ impl Runtime {
             }
             ExprKind::IndexCall(v, args) => {
                 let callee = {
-                    let base = self.read_var_key(v.name.key(), e.span)?;
+                    let base = self.read_var_key(&v.name)?;
                     self.index_value(base, &v.indices, e.span)?
                 };
                 // `$table[i](...)`: the callee resolved to a function value, so
@@ -1565,7 +1591,7 @@ impl Runtime {
                 Ok(())
             }
             ExprKind::Var(v) => {
-                let base = self.read_var_key(v.name.key(), span)?;
+                let base = self.read_var_key(&v.name)?;
                 self.assign_index(base, &v.indices, value, span)
             }
             other => Err(RuntimeError::Unsupported {
@@ -1823,7 +1849,7 @@ impl Runtime {
             if v.is_redim {
                 // `ReDim $a[n]` / `ReDim $a[n][m]` — resize in place, keeping
                 // the values that still fit.
-                let cur = self.read_var_key(item.name.key(), span)?;
+                let cur = self.read_var_key(&item.name)?;
                 match (&cur, item.dims.len()) {
                     (Value::Array(a), dims) if dims > 1 => {
                         let rows = self.dim_size(&item.dims, span)?;
@@ -2300,6 +2326,13 @@ impl Runtime {
     /// wrongly and corrupt the program it is watching, so conditions are always
     /// parsed in expression position — by way of a `Return`, which is the one
     /// place the grammar insists on one.
+    ///
+    /// The evaluation runs with [`Runtime::strict_reads`] on, so a name that
+    /// was never assigned is an [`RuntimeError::UndefinedVariable`] rather than
+    /// `""`: this path is fed by a human at a prompt, and `print $contuer`
+    /// answering `""` reads as a variable the program really holds. Script code
+    /// keeps AutoIt's own behaviour, because that is what the script was
+    /// written against.
     pub fn evaluate_expression(&mut self, source: &str, span: Span) -> Result<Value, RuntimeError> {
         let wrapped = format!("Func __au3_expr__()\n    Return {source}\nEndFunc\n");
         let prog = autoitv3_ast::parse(&wrapped).map_err(|e| RuntimeError::Unsupported {
@@ -2329,7 +2362,14 @@ impl Runtime {
         };
         // Evaluated in the caller's frame: `evaluate_expression` deliberately
         // does not push one, so `$local` means what it means at the stop.
-        self.eval_expr(expr)
+        // The flag is saved and restored rather than cleared, so a nested
+        // evaluation (a `print` inside a breakpoint action, say) still leaves
+        // the outer one strict when it returns.
+        let strict = self.strict_reads;
+        self.strict_reads = true;
+        let out = self.eval_expr(expr);
+        self.strict_reads = strict;
+        out
     }
 
     pub fn execute_source(&mut self, src: &str, span: Span) -> Result<Value, RuntimeError> {
