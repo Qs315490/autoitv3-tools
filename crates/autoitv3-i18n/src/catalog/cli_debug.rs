@@ -53,7 +53,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("deleted watch {id}", "已删除 watch {id}"),
     ("deleted {count} breakpoints", "已删除 {count} 个断点"),
     ("error: {message}", "错误：{message}"),
-    ("eval <stmt> — run AutoIt source as a statement (assignments stick)", "eval <stmt> — 作为语句运行 AutoIt 源码（赋值会生效）"),
+    ("eval [<stmt>] — run AutoIt source as a statement (assignments stick); a bare `eval` reads lines until a lone `end`", "eval [<stmt>] — 作为语句运行 AutoIt 源码（赋值会生效）；裸 `eval` 逐行读取，直到单独一行 `end`"),
     ("finish — run until the current function returns", "finish — 运行直到当前函数返回"),
     ("frame [n] — select a frame (gdb numbering: #0 innermost); print/info locals act there", "frame [n] — 选择一个栈帧（gdb 编号：#0 为最内层）；print/info locals 在该帧生效"),
     ("func {pos}", "函数 {pos}"),

@@ -664,6 +664,10 @@ struct Shell {
     show_prompts: bool,
     /// Reached EOF on stdin, or the user typed `quit`.
     finished: bool,
+    /// The prompt to draw while a multi-line block is open, *named after the
+    /// block* — `eval> `, `commands 1> ` — so the terminal says which command
+    /// is asking for the next line ([`Shell::prompt`]). `None` at the top level.
+    continuation: Option<String>,
     /// Step policy for the next statement.
     step: StepMode,
     /// Stop on the first statement after the next `run`.
@@ -764,6 +768,7 @@ impl Shell {
             queue,
             show_prompts,
             finished: false,
+            continuation: None,
             step: StepMode::Run,
             stop_at_start: args.stop_at_start,
             current: None,
@@ -954,7 +959,15 @@ impl Shell {
     }
 
     /// The prompt, which shows where execution is stopped.
+    ///
+    /// While a multi-line block is open it is replaced by the block's own
+    /// prompt — `eval> `, `commands 1> ` — so "the next line goes to `eval`" is
+    /// something the terminal says outright instead of the block silently
+    /// swallowing whatever is typed next.
     fn prompt(&self) -> String {
+        if let Some(continuation) = &self.continuation {
+            return continuation.clone();
+        }
         match self.current {
             Some((span, _)) if self.paused => {
                 format!("(au3:{}:{}) ", span.start.line, span.start.col)
@@ -2512,8 +2525,13 @@ impl Shell {
     /// Two commands take a **multi-line block**: bare `eval` (AutoIt source
     /// until a line reading `end`), and bare `commands <id>` (debugger
     /// commands until `end`, applied as the breakpoint's on-hit actions).
-    /// Everything else — including an `eval` whose argument already carries
-    /// embedded newlines — passes through as one line.
+    /// While either block is open the prompt names it — `eval> `, `commands 1> `
+    /// (see [`continuation_prompt`]) — so "the next line is going to `eval`" is
+    /// something the session says out loud instead of only being implied.
+    ///
+    /// An `eval` written as one argument with embedded newlines is the same
+    /// block spelled on one line; its terminating `end` line is stripped here
+    /// so both readings agree.
     fn next_logical(&mut self, mut host: Option<&mut dyn DebugHost>) -> Option<String> {
         loop {
         let cmd = self.next_command(host.as_deref())?;
@@ -2527,17 +2545,9 @@ impl Shell {
         // Bare `eval`: collect AutoIt source until `end`.
         if word == "eval" && rest.is_empty() {
             let mut body = String::new();
-            loop {
-                match self.next_command(host.as_deref()) {
-                    None => break, // EOF: finalize with what we have
-                    Some(l) => {
-                        if l.trim().eq_ignore_ascii_case("end") {
-                            break;
-                        }
-                        body.push_str(&l);
-                        body.push('\n');
-                    }
-                }
+            for line in self.read_block_lines("eval", host.as_deref()) {
+                body.push_str(&line);
+                body.push('\n');
             }
             return Some(format!("eval {body}"));
         }
@@ -2545,20 +2555,12 @@ impl Shell {
         // Bare `commands <id>`: collect debugger commands until `end`.
         if word == "commands" {
             if let Ok(id) = rest.parse::<u32>() {
-                let mut actions: Vec<String> = Vec::new();
-                loop {
-                    match self.next_command(host.as_deref()) {
-                        None => break,
-                        Some(l) => {
-                            if l.trim().eq_ignore_ascii_case("end") {
-                                break;
-                            }
-                            if !l.trim().is_empty() {
-                                actions.push(l.trim().to_string());
-                            }
-                        }
-                    }
-                }
+                let actions: Vec<String> = self
+                    .read_block_lines(&format!("commands {id}"), host.as_deref())
+                    .into_iter()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
                 match host.as_deref_mut() {
                     Some(h) => {
                         h.set_breakpoint_actions(id, actions.clone());
@@ -2571,18 +2573,43 @@ impl Shell {
             return Some(cmd); // `commands <id> do …` / `off` stay one-liners
         }
 
-        // An `eval` written as one -c argument with embedded newlines: strip a
-        // trailing lone `end` line, so blocks read the same everywhere.
-        if word == "eval" && rest.contains('\n') {
-            if let Some(pos) = rest.rfind('\n') {
-                if rest[pos + 1..].trim().eq_ignore_ascii_case("end") {
-                    let body = &rest[..pos + 1];
-                    return Some(format!("eval {body}"));
-                }
-            }
+        // An `eval` written as one argument with embedded newlines is a block
+        // too, so strip its terminating `end` line. The guard is on the whole
+        // command rather than on `rest`: splitting `eval` off eats the newline
+        // right after it, which is why an *empty* block arrives here as a bare
+        // `end`. Passing that on as the body would evaluate the terminator
+        // itself (a stray `FuncRef(end)`); an empty body instead reaches
+        // `eval_command`, which says what `eval` expects.
+        if word == "eval" && trimmed.contains('\n') {
+            return Some(format!("eval {}", strip_block_end(rest)));
         }
         return Some(cmd);
         }
+    }
+
+    /// Read the lines of an open block up to a lone `end`.
+    ///
+    /// `block` is what the block was opened with (`eval`, `commands 1`); it
+    /// becomes the prompt for the duration, so a terminal answering the next
+    /// line reads `eval> ` — the line is going to `eval`, not to the ordinary
+    /// command loop. EOF finalizes the block with whatever it has, the way a
+    /// readline EOF ends the session.
+    fn read_block_lines(&mut self, block: &str, host: Option<&dyn DebugHost>) -> Vec<String> {
+        self.continuation = Some(continuation_prompt(block));
+        let mut lines = Vec::new();
+        loop {
+            match self.next_command(host) {
+                None => break,
+                Some(line) => {
+                    if line.trim().eq_ignore_ascii_case("end") {
+                        break;
+                    }
+                    lines.push(line);
+                }
+            }
+        }
+        self.continuation = None;
+        lines
     }
 }
 
@@ -2651,6 +2678,33 @@ fn split_command(line: &str) -> (String, String) {
     }
 }
 
+/// Strip the `end` that closes a block written on one command line.
+///
+/// `body` is what followed `eval` with leading whitespace already removed, so a
+/// body that is *only* the terminator arrives as a bare `"end"` (the newline
+/// before it went with the split). Trailing line endings are not content —
+/// `eval\n…\nend\n` has to read like `eval\n…\nend` — and an empty result is
+/// how an empty block reaches `eval_command` for its usage line instead of the
+/// terminator being evaluated as AutoIt source.
+fn strip_block_end(body: &str) -> &str {
+    let trimmed = body.trim_end();
+    match trimmed.rfind('\n') {
+        Some(at) if trimmed[at + 1..].trim().eq_ignore_ascii_case("end") => &body[..at + 1],
+        None if trimmed.trim().eq_ignore_ascii_case("end") => "",
+        _ => body,
+    }
+}
+
+/// The prompt drawn for each line of an open block: the block's own name plus
+/// `> `, so `eval` reads `eval> ` and `commands 1` reads `commands 1> `.
+///
+/// A bare `> ` (gdb's continuation) would say "something is still open"; naming
+/// the block says *what* the next line is going to, which is the point of the
+/// prompt in the first place.
+fn continuation_prompt(block: &str) -> String {
+    format!("{block}> ")
+}
+
 /// A call as the catchpoint banner shows it: the spelling the script used and
 /// the arguments it is about to be given, quoted the way AutoIt source is.
 fn format_call(name: &str, args: &[autoitv3_runtime::Value]) -> String {
@@ -2701,7 +2755,7 @@ fn help_for(topic: &str) -> String {
             tr("tbreak <line-expr> — one-shot breakpoint: run until it is reached").to_string()
         }
         "eval" => {
-            tr("eval <stmt> — run AutoIt source as a statement (assignments stick)").to_string()
+            tr("eval [<stmt>] — run AutoIt source as a statement (assignments stick); a bare `eval` reads lines until a lone `end`").to_string()
         }
         "ignore" => {
             tr("ignore <id> <count> — the next <count> would-be hits do not fire").to_string()
@@ -2746,3 +2800,7 @@ fn help_for(topic: &str) -> String {
 #[cfg(test)]
 #[path = "../../tests/unit/debug_completion.rs"]
 mod completion_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/debug_blocks.rs"]
+mod block_tests;

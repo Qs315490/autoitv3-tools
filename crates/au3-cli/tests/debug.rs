@@ -803,6 +803,46 @@ end", "run", "print $counter"],
 }
 
 #[test]
+fn an_empty_eval_block_reports_usage_instead_of_evaluating_end() {
+    let path = script("ml-eval-empty", SCRIPT);
+    // An empty block written as one -c argument. Splitting `eval` off eats the
+    // newline right after it, so `end` used to arrive at the interpreter as the
+    // statement to evaluate — and printed `FuncRef(end)`. An empty block is not
+    // an error, but it must say what `eval` wants instead of running its own
+    // terminator. Both spellings have to agree with the interactive one.
+    for block in ["eval\nend\n", "eval\nend"] {
+        let out = shell(&path, &[block, "quit"]);
+        assert!(out.contains("usage: eval <statement>"), "{block:?}:\n{out}");
+        assert!(!out.contains("FuncRef"), "{block:?}:\n{out}");
+    }
+}
+
+#[test]
+fn an_empty_eval_block_on_stdin_reports_usage() {
+    let path = script("ml-eval-empty-stdin", SCRIPT);
+    // The interactive/piped spelling: read a line at a time until `end`.
+    let out = run_with_stdin(&path, &[], "eval\nend\nquit\n");
+    assert!(out.contains("usage: eval <statement>"), "{out}");
+}
+
+#[test]
+fn an_eval_block_tolerates_a_newline_after_end() {
+    let path = script("ml-eval-inline-nl", SCRIPT);
+    let out = shell(
+        &path,
+        &["eval
+$counter = 41
+$counter += 1
+end
+", "run", "print $counter"],
+    );
+    // A trailing line ending after `end` is not body: the two statements still
+    // run, and the terminator is not evaluated (`FuncRef(end)` would show up).
+    assert!(has_line(&out, "42"), "{out}");
+    assert!(!out.contains("FuncRef"), "{out}");
+}
+
+#[test]
 fn a_multiline_commands_block_sets_all_actions() {
     let path = script("ml-commands", SCRIPT);
     let out = run_with_stdin(
