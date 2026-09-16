@@ -306,3 +306,17 @@ fn file_write_writes_binary_values_as_bytes() {
         let _ = std::fs::remove_file(dir.join(name));
     }
 }
+
+/// `IsPtr` answers from where a value came from, not from what it looks like.
+#[test]
+fn a_pointer_is_told_apart_from_a_number() {
+    let body = "Local $s = DllStructCreate(\"byte[4]\")\n\
+                Local $p = IsPtr(DllStructGetPtr($s)) ? 1 : 0\n\
+                Local $n = IsPtr(1234) ? 1 : 0\n\
+                Local $t = IsPtr(\"1234\") ? 1 : 0\n\
+                ConsoleWrite($p & \"|\" & $n & \"|\" & $t & @CRLF)\n";
+    let path = script("pointer", body);
+    let out = au3(&["run", path.to_str().unwrap()]);
+    assert!(out.contains("1|0|0"), "got:\n{out}");
+}
+

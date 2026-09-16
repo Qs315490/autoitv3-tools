@@ -18,7 +18,7 @@
 //! It also exposes the seams a debugger and a full runtime need — see
 //! [`crate::debug`] and [`crate::host`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use autoitv3_ast::ast::*;
@@ -141,6 +141,15 @@ pub struct Runtime {
     /// `None` until one is installed: the core deliberately names no concrete
     /// operating system (see `crate::platform`).
     platform: Option<Box<dyn Platform>>,
+    /// Values that came out of a pointer-typed operation.
+    ///
+    /// AutoIt's `Ptr` is a *base type*, not a number: `IsPtr` asks where the
+    /// value came from, so provenance has to be kept somewhere. It is kept here,
+    /// by value, because the platform layers hand back plain numbers — and the
+    /// model is deliberately coarse: the same number computed some other way is
+    /// answered "pointer" too. Nothing in the wild builds an address
+    /// arithmetically and then asks.
+    pointers: HashSet<i64>,
     /// Attached debugger (the debug-module seam).
     debugger: Option<Box<dyn Debugger>>,
     /// Breakpoints consulted before each statement.
@@ -379,6 +388,7 @@ impl Runtime {
             func_names: HashMap::new(),
             host: None,
             platform: None,
+            pointers: HashSet::new(),
             debugger: None,
             breakpoints: Breakpoints::new(),
             error: 0,
@@ -410,6 +420,16 @@ impl Runtime {
         let mut rt = Self::new();
         rt.load_program(prog);
         rt
+    }
+
+    /// Record that a value came out of a pointer-typed operation.
+    pub(crate) fn note_pointer(&mut self, value: i64) {
+        self.pointers.insert(value);
+    }
+
+    /// Whether a value is one a pointer-typed operation produced. `IsPtr`.
+    pub fn is_pointer(&self, value: i64) -> bool {
+        self.pointers.contains(&value)
     }
 
     /// The functions registered with `OnAutoItExitRegister`.
@@ -899,6 +919,67 @@ impl Runtime {
         Ok((value, target))
     }
 
+    /// The `DllCall` slots the caller declared as pointers: whether the return
+    /// value is one, and which argument positions are.
+    ///
+    /// Both are *positions*, so they can be read off whichever array the OS layer
+    /// hands back — and they are worked out before the call, because the call
+    /// takes `args` by value.
+    fn pointer_slots(&self, key: &str, args: &[Value]) -> (bool, Vec<usize>) {
+        if key != "dllcall" {
+            return (false, Vec::new());
+        }
+        let declared =
+            |raw: &str| raw.split(':').next().unwrap_or(raw).trim().to_ascii_lowercase();
+        let retval = args.get(1).is_some_and(|t| declared(&t.to_autoit_string()) == "ptr");
+        let mut writes = Vec::new();
+        for (index, pair) in args.get(3..).unwrap_or(&[]).chunks(2).enumerate() {
+            if pair.len() == 2 && declared(&pair[0].to_autoit_string()) == "ptr*" {
+                // The result array is `[return value, arg1, arg2, ...]`.
+                writes.push(index + 1);
+            }
+        }
+        (retval, writes)
+    }
+
+    /// Note the pointer values a call produced.
+    ///
+    /// Two shapes: functions whose *result* is a pointer by definition (`Ptr`,
+    /// `DllStructGetPtr`, `DllCallbackGetPtr`), and `DllCall`, where the
+    /// pointer-ness lives in the declared types — a `ptr` return, and every
+    /// `ptr*` parameter, whose written-back value AutoIt hands back as a `Ptr`.
+    /// A plain `ptr` parameter is *not* one: its slot in the result array echoes
+    /// the value the caller passed, with the type the caller passed it as.
+    fn note_pointers(&mut self, key: &str, slots: (bool, Vec<usize>), result: &Value) {
+        match key {
+            "ptr" | "dllstructgetptr" | "dllcallbackgetptr" => {
+                if result.is_number() {
+                    self.note_pointer(result.to_int());
+                }
+            }
+            "dllcall" => {
+                let Value::Array(items) = result else {
+                    return;
+                };
+                let (retval, writes) = slots;
+                let mut note = |v: Option<Value>| {
+                    if let Some(v) = v {
+                        if v.is_number() {
+                            self.note_pointer(v.to_int());
+                        }
+                    }
+                };
+                if retval {
+                    note(items.borrow().first().cloned());
+                }
+                for index in writes {
+                    note(items.borrow().get(index).cloned());
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Call a builtin or host function.
     ///
     /// The host is reached through a [`HostContext`] built from *disjoint*
@@ -919,6 +1000,9 @@ impl Runtime {
         // builtins, so a stale code cannot leak through one either.
         self.error = 0;
         self.extended = 0;
+        // The OS layer takes `args` by value, so the `DllCall` types that name the
+        // pointer slots are read off here, before the call happens.
+        let pointer_slots = self.pointer_slots(key, &args);
         // `span` is the call and `self.frames.len()` the frame making it, so a
         // catchpoint can show the call site even when the arguments were
         // computed by calls of their own (the last statement to run would then
@@ -942,6 +1026,7 @@ impl Runtime {
             DebugAction::Continue => {}
         }
         if let Some(v) = builtins::call(self, key, &args, span)? {
+            self.note_pointers(key, pointer_slots, &v);
             return Ok(v);
         }
         // An explicit host wins over the platform default.
@@ -950,6 +1035,7 @@ impl Runtime {
             let mut ctx = HostBridge { globals, error, extended, profile, options };
             if let Some(host) = host.as_mut() {
                 if let Some(v) = host.call(display, args.clone(), &mut ctx)? {
+                    self.note_pointers(key, pointer_slots, &v);
                     return Ok(v);
                 }
             }
@@ -982,6 +1068,7 @@ impl Runtime {
         }
 
         if let Some(v) = result {
+            self.note_pointers(key, pointer_slots, &v);
             return Ok(v);
         }
 

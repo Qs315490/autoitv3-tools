@@ -39,6 +39,11 @@
    见下文）、数组共享存储、`ReDim` 原地扩容、`Static`（函数级、跨调用共享）、
    `For To Step` / `For In`、复合赋值、`@error`/`@extended`、`Select`/`Switch`、
    递归与步数护栏。
+   指针也在这里：AutoIt 的 `Ptr` 是**基类型**，所以 `IsPtr` 问的是"这个值从哪来"。
+   运行时把 `ptr` 返回、`ptr*` 出参以及 `Ptr`/`DllStructGetPtr`/`DllCallbackGetPtr`
+   的结果按**数值**记下来（`note_pointer`/`is_pointer`）——比真正的类型标记粗（同一数值
+   换个来源也算指针），但足以让"句柄是不是真的"这类判断按 AutoIt 的答案走。`HWnd` 基类型
+   未建模（`IsHwnd` 恒 0）。
 2. **完整运行时的接口**（`host.rs`）——`Host` / `HostContext` / `NativeHost`：
    把 Win32、COM、GUI、DllCall 等原生能力注册进来，解释器核心不依赖任何平台。
 3. **调试接口**（`debug.rs`）——`Debugger`（每条语句回调，可返回

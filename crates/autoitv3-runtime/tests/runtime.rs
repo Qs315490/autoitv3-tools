@@ -2308,3 +2308,57 @@ fn the_start_register_directive_is_case_insensitive_and_may_be_unquoted() {
     rt.run_script().expect("starts");
     assert_eq!(rt.call_function("Get", vec![]).unwrap().to_int(), 9);
 }
+
+// ---------------------------------------------------------------------------
+// Pointer provenance (`IsPtr`)
+// ---------------------------------------------------------------------------
+
+/// A platform that answers `DllCall` the way a real one does: an array holding
+/// the return value and a copy of every argument, so a by-ref write shows up.
+struct DllPlatform;
+impl autoitv3_runtime::platform::Platform for DllPlatform {
+    fn name(&self) -> &'static str {
+        "dll"
+    }
+    fn provides(&self, name: &str) -> bool {
+        name.eq_ignore_ascii_case("DllCall")
+    }
+    fn call(
+        &mut self,
+        _name: &str,
+        args: Vec<Value>,
+        _ctx: &mut dyn HostContext,
+    ) -> Result<Option<Value>, autoitv3_runtime::RuntimeError> {
+        // `DllCall(dll, rettype, func, type, value, ...)`: the values sit at 4, 6, …
+        let mut out = vec![Value::Int(0x1000)];
+        out.extend(args.iter().skip(4).step_by(2).cloned());
+        Ok(Some(Value::array(out)))
+    }
+}
+
+#[test]
+fn isptr_answers_for_pointer_typed_slots_only() {
+    // AutoIt's `Ptr` is a base type, so the answer has to come from where the
+    // value was produced: a `ptr` return and a `ptr*` write-back are pointers, a
+    // `ptr` *input* (its slot echoes what the caller passed) is not, and neither
+    // is a number that was never near a pointer.
+    // The `ptr` input and the `ptr*` write-back carry different values, so the
+    // two spellings cannot be told apart by their value alone.
+    let src = "Func F()\n\
+               \x20   Local $r = DllCall(\"stub.dll\", \"ptr\", \"F\", \"ptr\", 42, \"ptr*\", 0)\n\
+               \x20   Local $t = \"\"\n\
+               \x20   $t &= IsPtr($r[0]) ? \"1\" : \"0\"\n\
+               \x20   $t &= \"|\" & (IsPtr($r[2]) ? \"1\" : \"0\")\n\
+               \x20   $t &= \"|\" & (IsPtr($r[1]) ? \"1\" : \"0\")\n\
+               \x20   $t &= \"|\" & (IsPtr(1234) ? \"1\" : \"0\")\n\
+               \x20   $t &= \"|\" & (IsPtr(\"1234\") ? \"1\" : \"0\")\n\
+               \x20   Return $t\n\
+               EndFunc\n";
+    let mut rt = rt(src);
+    rt.set_platform(Box::new(DllPlatform));
+    assert_eq!(
+        rt.call_function("F", vec![]).unwrap().to_autoit_string(),
+        "1|1|0|0|0"
+    );
+}
+

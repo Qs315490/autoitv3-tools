@@ -605,7 +605,17 @@ pub(crate) fn call(
         )),
         "isstring" => Value::Bool(matches!(args.first(), Some(Value::Str(_)))),
         "isbinary" => Value::Bool(matches!(args.first(), Some(Value::Binary(_)))),
-        "isptr" | "ishwnd" => Value::Bool(false),
+        // A pointer is a *base type* in AutoIt, not a number: the answer is
+        // whether the value came out of a pointer-typed operation (a `ptr`-typed
+        // `DllCall` return, a `ptr*` parameter written back, `Ptr`,
+        // `DllStructGetPtr`, `DllCallbackGetPtr`), which the runtime records as
+        // it happens. `IsHwnd` still answers 0: the HWnd base type is not
+        // modelled (a GUI handle here is a plain integer).
+        "isptr" => Value::Bool(
+            args.first()
+                .is_some_and(|v| v.is_number() && rt.is_pointer(v.to_int())),
+        ),
+        "ishwnd" => Value::Bool(false),
         "iskeyword" => Value::Bool(matches!(
             args.first(),
             Some(Value::Default) | Some(Value::Null)
