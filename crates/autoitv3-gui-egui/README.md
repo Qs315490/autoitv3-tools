@@ -38,7 +38,7 @@
 use autoitv3_platform::winemu::WindowsEmulation;
 use autoitv3_gui_egui::EguiBackend;
 
-// feature "gui-egui" 时也可用 WindowsEmulation::with_egui_backend()
+// feature "gui-egui-offscreen" 时也可用 WindowsEmulation::with_egui_backend()
 let backend = EguiBackend::new()
     .with_size(800, 600)
     .with_screenshot("/tmp/frame.png");   // GUISetState 时落一张 PNG
@@ -66,7 +66,7 @@ egui 是**可选依赖**，默认 `cargo test` 不编译它：
 
 ```bash
 cargo test -p autoitv3-gui-egui --features egui     # 离屏渲染 + PNG 的测试
-cargo test -p autoitv3-platform --features gui-egui # 平台接线（脚本建窗→截图）
+cargo test -p autoitv3-platform --features gui-egui-offscreen # 平台接线（脚本建窗→截图）
 ```
 
 > `~/.cargo` 只读的环境需要把 `CARGO_HOME` 指到可写目录才能拉取 egui（见上文「受限环境」）。

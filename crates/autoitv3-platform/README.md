@@ -348,9 +348,9 @@ S-box 与轮密钥只在每次解密开头算一次（此前是每个 16 字节�
   `HeadlessBackend`，要看窗口用 `au3 run --gui egui` / `au3 debug --gui egui`
   （构建时加 `--features gui-egui`）或直接用 `autoitv3-gui-egui` 的 `LiveBackend`
   （feature `window`：窗口归主线程、脚本跑在工作线程，点击/输入回灌
-  `GUIGetMsg`/`GUICtrlRead`）；本 crate 的 feature 就按后端命名：离屏画布出 PNG
-  截图用 `gui-egui`，真窗口后端则是 `gui-egui-window`（= `gui-egui` + 上面那个
-  crate 的 `window`）。
+  `GUIGetMsg`/`GUICtrlRead`）；本 crate 的 feature 按 `<后端>-<形态>` 命名：
+  离屏画布出 PNG 截图用 `gui-egui-offscreen`，真窗口后端则是 `gui-egui-window`
+  （= `gui-egui-offscreen` + 上面那个 crate 的 `window`）。
   后两种共用同一套控件绘制，三者看见的是同一份模型；
 - 写文件、回收站、驱动器映射、启动进程同样遵循 `ExecutionProfile`：确定性分析配置下被拒绝
   （`@error = 1`），也就不会生成 `.au3_registry` / `.au3_clipboard` / `.au3_recycle`；

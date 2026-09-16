@@ -1,10 +1,10 @@
 //! End-to-end: an AutoIt script's controls reach the egui renderer.
 //!
-//! Only built with the `gui-egui` feature. The emulation owns its backend, so
-//! the test wraps [`EguiBackend`] in a shared handle it can still snapshot after
-//! the run.
+//! Only built with the `gui-egui-offscreen` feature. The emulation owns its
+//! backend, so the test wraps [`EguiBackend`] in a shared handle it can still
+//! snapshot after the run.
 
-#![cfg(all(not(windows), feature = "gui-egui"))]
+#![cfg(all(not(windows), feature = "gui-egui-offscreen"))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

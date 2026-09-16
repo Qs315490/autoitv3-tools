@@ -13,8 +13,8 @@
 //! autoitv3-gui-egui = { path = "crates/autoitv3-gui-egui", features = ["egui"] }
 //! ```
 //!
-//! With the feature enabled, `autoitv3-platform`'s `gui-egui` feature wires the
-//! backend in through `WindowsEmulation::with_egui_backend()`.
+//! With the feature enabled, `autoitv3-platform`'s `gui-egui-offscreen` feature
+//! wires the backend in through `WindowsEmulation::with_egui_backend()`.
 //!
 //! The `window` feature adds [`LiveBackend`]: a real eframe window whose button
 //! clicks, menu picks, text edits and list selections are fed back into

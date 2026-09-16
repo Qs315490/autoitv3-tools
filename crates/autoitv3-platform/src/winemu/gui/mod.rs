@@ -3176,7 +3176,7 @@ fn parse_hotkey(s: &str) -> u16 {
     (modifiers << 8) | vk
 }
 
-#[cfg(all(test, feature = "gui-egui"))]
+#[cfg(all(test, feature = "gui-egui-offscreen"))]
 mod egui_render_tests {
     use super::*;
     use autoitv3_runtime::host::HostContext;

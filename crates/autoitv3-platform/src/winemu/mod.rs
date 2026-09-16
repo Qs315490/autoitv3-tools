@@ -726,9 +726,9 @@ impl WindowsEmulation {
 
     /// Install the optional egui **offscreen** renderer.
     ///
-    /// Compiled only with the `gui-egui` feature; the backend renders the model
-    /// to an RGBA buffer and can write a PNG, but opens no window.
-    #[cfg(feature = "gui-egui")]
+    /// Compiled only with the `gui-egui-offscreen` feature; the backend renders
+    /// the model to an RGBA buffer and can write a PNG, but opens no window.
+    #[cfg(feature = "gui-egui-offscreen")]
     pub fn with_egui_backend(self) -> Self {
         self.with_gui_backend(Box::new(autoitv3_gui_egui::EguiBackend::new()))
     }

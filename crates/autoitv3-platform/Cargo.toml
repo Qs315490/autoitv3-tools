@@ -9,7 +9,7 @@ autoitv3-i18n = { path = "../autoitv3-i18n" }
 autoitv3-ast = { path = "../autoitv3-ast" }
 autoitv3-gui-model = { path = "../autoitv3-gui-model" }
 autoitv3-runtime = { path = "../autoitv3-runtime" }
-# Optional GUI renderer: `gui-egui` pulls it (and egui) in.
+# Optional GUI renderer: `gui-egui-offscreen` pulls it (and egui) in.
 autoitv3-gui-egui = { path = "../autoitv3-gui-egui", optional = true }
 sha2 = "0.10"
 sha1 = "0.10"
@@ -52,15 +52,16 @@ windows-sys = { version = "0.61", features = [
 
 [features]
 default = []
-# Offscreen egui renderer for the GUI model. Off by default so the analysis
-# stack never depends on a windowing/font stack.
-gui-egui = ["dep:autoitv3-gui-egui", "autoitv3-gui-egui/egui"]
+# Offscreen egui renderer for the GUI model (`EguiBackend`: RGBA/PNG, no
+# window). Off by default so the analysis stack never depends on a
+# windowing/font stack.
+gui-egui-offscreen = ["dep:autoitv3-gui-egui", "autoitv3-gui-egui/egui"]
 # The same renderer in a real window (`LiveBackend`, the crate feature
 # `window`): a run that hands it to the emulation opens an actual window on the
 # host desktop, so GUI calls can be *seen* instead of only modelled. Pulls
-# eframe (and winit) in, so it stays opt-in — hence a feature of its own beside
-# `gui-egui`, named after the backend it belongs to.
-gui-egui-window = ["gui-egui", "autoitv3-gui-egui/window"]
+# eframe (and winit) in, so it stays opt-in. Named `<backend>-<variant>` beside
+# the offscreen one, which is the shape another backend (gtk, qt, …) follows.
+gui-egui-window = ["gui-egui-offscreen", "autoitv3-gui-egui/window"]
 
 [dev-dependencies]
 autoitv3-deobf = { path = "../autoitv3-deobf" }
