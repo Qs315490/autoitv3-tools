@@ -74,6 +74,7 @@ use autoitv3_gui_model::{
 };
 
 use super::dialogs;
+use crate::dialog_notice as notice;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     FillRect, GetObjectW, BITMAP, HBRUSH, HBITMAP,
@@ -2124,7 +2125,16 @@ impl GuiBackend for Win32Backend {
         text: &str,
         timeout: i64,
     ) -> Option<i64> {
-        Some(dialogs::message_box(flags, title, text, timeout))
+        let answer = dialogs::message_box(flags, title, text, timeout);
+        // The dialog is the only place its text ever appears, and a window
+        // cannot be grepped: print the same one-line summary the emulation
+        // does, so a console session (and a log pasted from one) can read what
+        // the script said and which button came back.
+        eprintln!(
+            "{}",
+            notice::msgbox_notice("[win32]", flags, title, text, answer)
+        );
+        Some(answer)
     }
 
     fn input_box(
@@ -2135,7 +2145,16 @@ impl GuiBackend for Win32Backend {
         password: bool,
         timeout: i64,
     ) -> Option<Option<String>> {
-        dialogs::input_box(title, prompt, default, password, timeout)
+        let answer = dialogs::input_box(title, prompt, default, password, timeout);
+        let shown = match &answer {
+            Some(Some(text)) => format!("{text:?}"),
+            _ => "cancelled".to_string(),
+        };
+        eprintln!(
+            "{}",
+            notice::inputbox_notice("[win32]", title, prompt, &shown)
+        );
+        answer
     }
 
     fn file_dialog(
@@ -2147,10 +2166,24 @@ impl GuiBackend for Win32Backend {
         default: &str,
         _options: i64,
     ) -> Option<Option<String>> {
-        match kind {
+        let answer = match kind {
             2 => dialogs::select_folder(title, initial),
             _ => dialogs::file_dialog(kind == 1, title, initial, filter, default, false),
-        }
+        };
+        let name = match kind {
+            2 => "FileSelectFolder",
+            1 => "FileSaveDialog",
+            _ => "FileOpenDialog",
+        };
+        let shown = match &answer {
+            Some(Some(path)) => format!("{path:?}"),
+            _ => "cancelled".to_string(),
+        };
+        eprintln!(
+            "{}",
+            notice::file_dialog_notice("[win32]", name, title, &shown)
+        );
+        answer
     }
 
     fn splash(&mut self, splash: &Splash, off: bool) -> bool {

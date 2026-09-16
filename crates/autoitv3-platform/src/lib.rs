@@ -50,6 +50,7 @@
 //! [`Host`](autoitv3_runtime::host::Host) can always override a
 //! platform-provided function.
 
+pub mod dialog_notice;
 pub mod elevate;
 pub mod linux;
 pub mod common;

@@ -3132,20 +3132,22 @@ fn arg_int(args: &[Value], i: usize) -> i64 {
 /// The `[winemu]` line for a `MsgBox` the emulation answered.
 ///
 /// The fields are the ones worth reading back: the flags, the title and the
-/// text (the text is usually the whole reason the script took a branch).
+/// text (the text is usually the whole reason the script took a branch). The
+/// shape is shared with the native backend, which prints the same line with a
+/// `[win32]` prefix.
 fn msgbox_notice(flags: i64, title: &str, text: &str, answer: i64) -> String {
-    format!("[winemu] MsgBox({flags}, {title:?}, {text:?}) -> {answer}")
+    crate::dialog_notice::msgbox_notice("[winemu]", flags, title, text, answer)
 }
 
 /// The `[winemu]` line for an `InputBox` the emulation answered or cancelled.
 fn inputbox_notice(title: &str, prompt: &str, answer: &str) -> String {
-    format!("[winemu] InputBox({title:?}, {prompt:?}) -> {answer}")
+    crate::dialog_notice::inputbox_notice("[winemu]", title, prompt, answer)
 }
 
 /// The `[winemu]` line for a `FileOpenDialog`/`FileSaveDialog`/
 /// `FileSelectFolder` the emulation answered or cancelled.
 fn file_dialog_notice(name: &str, title: &str, answer: &str) -> String {
-    format!("[winemu] {name}({title:?}) -> {answer}")
+    crate::dialog_notice::file_dialog_notice("[winemu]", name, title, answer)
 }
 
 // Unit tests live in `tests/unit/` so this file reads as implementation;
