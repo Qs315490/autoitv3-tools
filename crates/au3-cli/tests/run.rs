@@ -179,3 +179,45 @@ fn gui_window_without_the_feature_says_how_to_build_it() {
     assert!(out.contains("gui-window"), "got:\n{out}");
     assert!(out.contains("--features gui-window"), "got:\n{out}");
 }
+
+/// `FileWrite` takes "the text or binary data to write": a `Binary` value has to
+/// land as its **bytes**, a string as its text. Writing the hex rendering
+/// instead puts the ASCII `0x4D5A…` on disk where a loader expects `MZ`, which
+/// is what a script that extracts an embedded file does.
+#[test]
+fn file_write_writes_binary_values_as_bytes() {
+    let dir = std::env::temp_dir();
+    let names = ["au3-bin-raw.bin", "au3-bin-line.bin", "au3-bin-text.bin"];
+    for name in names {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    let path = script(
+        "binary-write",
+        "FileWrite(@TempDir & \"\\au3-bin-raw.bin\", Binary(\"0x4D5A9000\"))\n\
+         FileWriteLine(@TempDir & \"\\au3-bin-line.bin\", Binary(\"0x4D5A\"))\n\
+         FileWrite(@TempDir & \"\\au3-bin-text.bin\", \"0x4D5A9000\")\n\
+         ConsoleWrite(\"done\" & @CRLF)\n",
+    );
+    let out = au3(&["run", &path.to_string_lossy()]);
+    assert!(out.contains("done"), "the script ran:\n{out}");
+
+    assert_eq!(
+        std::fs::read(dir.join("au3-bin-raw.bin")).expect("raw written"),
+        b"MZ\x90\x00",
+        "the bytes, not the hex text"
+    );
+    // `FileWriteLine` appends its linefeed to binary data too, after the last
+    // byte (which is not a CR/LF here).
+    assert_eq!(
+        std::fs::read(dir.join("au3-bin-line.bin")).expect("line written"),
+        b"MZ\r\n"
+    );
+    // A string is still a string: `0x4D5A9000` is ten characters.
+    assert_eq!(
+        std::fs::read(dir.join("au3-bin-text.bin")).expect("text written"),
+        b"0x4D5A9000"
+    );
+    for name in names {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+}

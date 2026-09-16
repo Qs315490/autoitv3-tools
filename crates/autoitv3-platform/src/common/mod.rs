@@ -562,15 +562,28 @@ impl CommonPlatform {
     }
 
     fn file_write(&mut self, args: &[Value], line_mode: bool, ctx: &mut dyn HostContext) -> Value {
-        let text = arg_str(args, 1);
+        // AutoIt's second argument is "the text or binary data to write": a
+        // `Binary` value writes its **bytes**, everything else its string form.
+        // (Rendering a `Binary` as its hex text instead puts the ASCII `0x4D5A…`
+        // on disk where a loader expects `MZ`.)
+        let binary_data: Option<Vec<u8>> = match args.get(1) {
+            Some(Value::Binary(bytes)) => Some((**bytes).clone()),
+            _ => None,
+        };
+        let text = if binary_data.is_some() {
+            String::new()
+        } else {
+            arg_str(args, 1)
+        };
+        let mut payload = binary_data.clone().unwrap_or_else(|| text.clone().into_bytes());
         // `FileWriteLine` adds a DOS linefeed — "If the line does NOT end in
         // @CR or @LF then a @CRLF will be automatically added" — which covers
-        // the empty line too. `FileWrite` writes its text as it is.
-        let payload = if line_mode && !text.ends_with(['\r', '\n']) {
-            format!("{text}\r\n")
-        } else {
-            text
-        };
+        // the empty line too. `FileWrite` writes its data as it is.
+        let mut appended_linefeed = false;
+        if line_mode && !payload.ends_with(b"\r") && !payload.ends_with(b"\n") {
+            payload.extend_from_slice(b"\r\n");
+            appended_linefeed = true;
+        }
 
         // A *string* in place of a handle names the file: "the file will be
         // opened and closed during the function call ... filename will be
@@ -585,7 +598,7 @@ impl CommonPlatform {
                 .create(true)
                 .append(true)
                 .open(path.as_str())
-                .and_then(|mut file| file.write_all(payload.as_bytes()));
+                .and_then(|mut file| file.write_all(&payload));
             return Value::Int(i64::from(written.is_ok()));
         }
 
@@ -628,12 +641,18 @@ impl CommonPlatform {
             }
             None => (0, 0),
         };
-        let written = if binary { payload.len() } else { payload.chars().count() };
+        // A text write counts the characters the caller asked for (plus the
+        // linefeed `FileWriteLine` may have added); a binary write counts bytes.
+        let written = if binary {
+            payload.len()
+        } else {
+            text.chars().count() + if appended_linefeed { 2 } else { 0 }
+        };
         let Some(e) = self.entry_mut(handle) else {
             return Value::Int(0);
         };
         let _ = e.file.seek(SeekFrom::Start(byte_at as u64));
-        match e.file.write_all(payload.as_bytes()).and_then(|()| e.file.flush()) {
+        match e.file.write_all(&payload).and_then(|()| e.file.flush()) {
             Ok(()) => {
                 // The position moves past what was written.
                 e.cursor = cursor + written;
