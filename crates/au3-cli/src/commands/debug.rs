@@ -1652,25 +1652,35 @@ impl Shell {
             return;
         }
         let frames = host.frames();
+        let file = Path::new(&self.script)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.script.clone());
         if frames.is_empty() {
             // Top-level code: there is no activation record to show, but the
             // position still is one.
             match self.current {
-                Some((span, _)) => {
-                    println!("#0  <script> at {}:{}", span.start.line, span.start.col)
-                }
+                Some((span, _)) => println!("#0  <script> at {file}:{}", span.start.line),
                 None => println!("#0  <script>"),
             }
             return;
         }
-        // Innermost first, numbered from zero, the way gdb prints a stack.
+        // Innermost first, numbered from zero, the way gdb prints a stack; a
+        // frame's parameters are shown the way gdb shows arguments.
         for (i, frame) in frames.iter().rev().enumerate() {
             let name = frame.function.as_deref().unwrap_or("<script>");
+            let args: Vec<String> = frame
+                .params
+                .iter()
+                .map(|(k, v)| format!("{k}={}", format_value(v)))
+                .collect();
+            // gdb always prints the parentheses, empty ones included.
+            let args = format!("({})", args.join(", "));
             let at = frame
                 .span
-                .map(|s| format!("{}:{}", s.start.line, s.start.col))
+                .map(|s| format!("{file}:{}", s.start.line))
                 .unwrap_or_else(|| "-".to_string());
-            println!("#{i}  {name} at {at}");
+            println!("#{i}  {name}{args} at {at}");
         }
     }
 

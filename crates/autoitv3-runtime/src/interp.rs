@@ -77,6 +77,9 @@ struct Frame {
     span: Option<Span>,
     /// How many arguments the caller passed, for `@NumParams`.
     arg_count: usize,
+    /// The parameter names, in declaration order, so the debugger can print a
+    /// frame the way gdb does (`func(a=1, b="x")`). A `HashMap` has no order.
+    params: Vec<String>,
     /// Whether this frame called `SetError` (`extended_set`: `SetExtended`).
     ///
     /// Only what the function itself sets survives its return: a nested call
@@ -656,6 +659,11 @@ impl Runtime {
                     v.sort_by(|a, b| a.0.cmp(&b.0));
                     v
                 },
+                params: f
+                    .params
+                    .iter()
+                    .filter_map(|k| f.vars.get(k).map(|v| (k.clone(), v.clone())))
+                    .collect(),
             })
             .collect()
     }
@@ -943,6 +951,11 @@ impl Runtime {
             function: Some(display.clone()),
             span,
             arg_count: args.len(),
+            params: def
+                .params
+                .iter()
+                .map(|p| var_key(&p.name.name))
+                .collect(),
             error_set: false,
             extended_set: false,
         });

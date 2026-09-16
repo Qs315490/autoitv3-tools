@@ -107,7 +107,7 @@ fn stopat_holds_a_call_before_it_runs() {
         "the arguments are shown before the call:\n{out}"
     );
     // The stop is at the call itself, so the frame is the line that made it.
-    assert!(out.contains("#0  <script> at 1:1"), "got:\n{out}");
+    assert!(out.contains("#0  <script> at script.au3:1"), "got:\n{out}");
     // ... and the dialog still runs, answered by the headless backend.
     assert!(out.contains("after"), "the call ran on continue:\n{out}");
 }
@@ -201,8 +201,8 @@ fn next_steps_over_a_call_and_step_enters_it() {
     assert!(out.contains("Local $sum = $a + $b"), "got:\n{out}");
     assert!(has_line(&out, "1"), "print $a should be 1:\n{out}");
     // gdb numbering: #0 is the innermost frame.
-    assert!(out.contains("#0  Add at 5:5"), "got:\n{out}");
-    assert!(out.contains("#1  Main at 12:9"), "got:\n{out}");
+    assert!(out.contains("#0  Add(a=1, b=10) at script.au3:5"), "got:\n{out}");
+    assert!(out.contains("#1  Main() at script.au3:12"), "got:\n{out}");
 }
 
 #[test]
@@ -508,8 +508,8 @@ fn an_uncaught_error_stops_where_it_was_raised() {
     // Stopped on the failing statement, with the source line shown.
     assert!(has_line(&out, "     6      Return $list[$n]"), "got:\n{out}");
     // The frames that led there are still live.
-    assert!(out.contains("#0  Boom at 6:5"), "got:\n{out}");
-    assert!(out.contains("#1  Outer at 11:5"), "got:\n{out}");
+    assert!(out.contains("#0  Boom(n=5) at script.au3:6"), "got:\n{out}");
+    assert!(out.contains("#1  Outer() at script.au3:11"), "got:\n{out}");
     assert!(out.contains("n = 5"), "the failing frame's locals:\n{out}");
     assert!(has_line(&out, "10"), "print $x should be 10:\n{out}");
 }

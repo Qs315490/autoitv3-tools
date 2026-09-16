@@ -274,6 +274,9 @@ pub struct FrameInfo {
     pub span: Option<Span>,
     /// Local variables visible in this frame.
     pub locals: Vec<(String, Value)>,
+    /// The function's parameters, in the order they are declared, with the
+    /// values they were called with. Empty for top-level code.
+    pub params: Vec<(String, Value)>,
 }
 
 /// Callbacks the interpreter invokes while running.
