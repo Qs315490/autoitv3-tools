@@ -127,8 +127,11 @@ pub fn lang() -> Lang {
 /// The language named by the environment.
 ///
 /// `AU3_LANG` wins; otherwise the usual locale variables are consulted in
-/// order (`LC_ALL`, `LC_MESSAGES`, `LANG`) and mapped with
-/// [`Lang::from_str`]. An unset or unrecognised value means English.
+/// order (`LC_ALL`, `LC_MESSAGES`, `LANG`) and mapped with [`Lang::from_str`].
+/// A variable that names a language this crate does not have is *skipped* — the
+/// next source gets its turn — and when every source is silent the host's own
+/// language is asked ([`host_language`]), which is English everywhere except a
+/// Windows whose UI language says otherwise.
 pub fn lang_from_env() -> Lang {
     if let Some(value) = non_empty(std::env::var("AU3_LANG").ok().as_deref()) {
         if !value.eq_ignore_ascii_case("auto") {

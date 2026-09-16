@@ -144,7 +144,8 @@ au3 debug some.au3 --lang en     # 单次强制英文
   `--lang <LANG> … [默认值：auto] [可选值：auto, en, zh-CN]`。
 - 不写 `--lang` 时默认 `auto`，依次看：
   `AU3_LANG` → `LC_ALL` / `LC_MESSAGES` / `LANG` → **本机语言**。
-  前两个里 `zh*`（`zh_CN.UTF-8`、`zh-Hans`…）算中文、其它一律英文；
+  这几处里 `zh*`（`zh_CN.UTF-8`、`zh-Hans`…）算中文、`en*`/`C`/`POSIX` 算英文，
+  不认识的标签（`fr_FR`）**跳过**、继续找下一个来源；
   **Windows 上没有 `LANG` 这类变量**，所以最后一个来源是系统的用户界面语言
   （`GetUserDefaultLocaleName`），中文 Windows 不设任何环境变量也是中文。
   `LANG=C` 或 `CI` 里则是英文。

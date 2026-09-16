@@ -22,7 +22,7 @@ println!("{}", msg!("literal text"));                            // 返回 Strin
 - `set_lang(Lang)` / `lang()`：进程级全局，和 locale 一样。
 - `resolve(Option<&str>)` / `lang_from_env()`：`--lang` > `AU3_LANG` > `LC_ALL` /
   `LC_MESSAGES` / `LANG` > **本机语言**；`auto`、空值、未设置都走环境；
-  `zh*` → `zh-CN`，其它 → 英文。最后那一步在 Windows 上是
+  `zh*` → `zh-CN`，`en*`/`C`/`POSIX` → 英文，不认识的标签跳过、继续往下找。最后那一步在 Windows 上是
   `GetUserDefaultLocaleName()`（`src/windows_locale.rs`）——Windows 没有 `LANG`，
   不问系统的话中文 Windows 会一直显示英文。
 - `AU3_I18N_STRICT=1` 时，每个**没有译文**的键会往 stderr 打一行

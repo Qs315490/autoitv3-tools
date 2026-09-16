@@ -87,12 +87,17 @@ fn an_unknown_language_lists_the_ones_it_knows() {
     );
 }
 
+/// With nothing in the environment the tool follows the **host**: off Windows
+/// that is English (the POSIX variables are the whole story), on Windows it is
+/// the user's UI language, which is what `auto` asks the OS for.
 #[test]
-fn without_a_locale_the_tool_speaks_english() {
-    let out = au3(&["--help"], &[]);
-    let text = stdout(&out);
-    assert!(text.contains("Usage:"), "got:\n{text}");
-    assert!(!text.contains("用法:"), "got:\n{text}");
+fn without_a_locale_the_tool_uses_the_host_language() {
+    let text = stdout(&au3(&["--help"], &[]));
+    let english = text.contains("Usage:");
+    let chinese = text.contains("用法:");
+    assert!(english ^ chinese, "exactly one language:\n{text}");
+    #[cfg(not(windows))]
+    assert!(english, "off Windows the host language is English:\n{text}");
 }
 
 #[test]
@@ -103,9 +108,17 @@ fn the_locale_selects_the_language() {
     let en = stdout(&au3(&["--help"], &[("LANG", "en_US.UTF-8")]));
     assert!(en.contains("Usage:"), "got:\n{en}");
 
-    // Anything that is not English or Chinese falls back to English.
+    // A language we do not have (`fr_FR`) is skipped, so the *host* decides —
+    // English off Windows, the UI language on Windows. Either way the result
+    // has to match the run with no locale at all.
+    let language = |text: &str| (text.contains("Usage:"), text.contains("用法:"));
+    let host = stdout(&au3(&["--help"], &[]));
     let other = stdout(&au3(&["--help"], &[("LANG", "fr_FR.UTF-8")]));
-    assert!(other.contains("Usage:"), "got:\n{other}");
+    assert_eq!(
+        language(&other),
+        language(&host),
+        "an unknown locale is ignored, not forced to English:\n{other}"
+    );
 }
 
 #[test]
