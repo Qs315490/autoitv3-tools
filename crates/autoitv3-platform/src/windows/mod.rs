@@ -280,7 +280,7 @@ impl WindowsPlatform {
 /// module (`NULL`, `0` or the empty string) as opposed to a module name.
 fn is_null_module_name(value: &Value) -> bool {
     match value {
-        Value::Null | Value::Int(0) | Value::Bool(false) => true,
+        Value::Null | Value::Int(0) | Value::Ptr(0) | Value::Bool(false) => true,
         Value::Str(s) => s.is_empty(),
         _ => false,
     }

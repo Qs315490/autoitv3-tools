@@ -83,7 +83,9 @@ impl FileResourceLayer {
     /// value test would capture `FindResourceW("some.dll", …)`.
     fn is_own_module(value: Option<&Value>) -> bool {
         match value {
-            Some(Value::Int(handle)) => *handle == 0 || *handle as usize == FILE_MODULE,
+            Some(Value::Int(handle) | Value::Ptr(handle)) => {
+                *handle == 0 || *handle as usize == FILE_MODULE
+            }
             Some(_) => false,
             None => true,
         }
@@ -91,7 +93,7 @@ impl FileResourceLayer {
 
     /// The blob behind one of this layer's `HRSRC` handles.
     fn blob_of(&self, value: Option<&Value>) -> Option<usize> {
-        let Value::Int(handle) = value? else {
+        let (Value::Int(handle) | Value::Ptr(handle)) = value? else {
             return None;
         };
         let handle = *handle as usize;
@@ -144,7 +146,8 @@ impl FileResourceLayer {
 
     /// `LockResource(hGlobal)`: a real address into this layer's own bytes.
     fn lock_resource(&self, pairs: &[(String, Value)]) -> Option<Value> {
-        let Some(Value::Int(handle)) = pairs.first().map(|(_, value)| value) else {
+        let Some(Value::Int(handle) | Value::Ptr(handle)) = pairs.first().map(|(_, value)| value)
+        else {
             return None;
         };
         let address = (*handle as usize)
@@ -197,7 +200,7 @@ impl Platform for FileResourceLayer {
                 // on the *type*: AutoIt coerces a name to 0 numerically, so
                 // testing the value would capture `GetModuleHandleW("x.dll")`.)
                 let null = match pairs.first().map(|(_, value)| value) {
-                    Some(Value::Int(handle)) => *handle == 0,
+                    Some(Value::Int(handle) | Value::Ptr(handle)) => *handle == 0,
                     Some(_) => false,
                     None => true,
                 };

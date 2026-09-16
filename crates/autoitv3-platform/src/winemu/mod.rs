@@ -2394,7 +2394,7 @@ fn arg_str(args: &[Value], i: usize) -> String {
 /// Argument as an integer.
 /// Whether a `DllCall` pointer argument was passed as null.
 fn is_null_ptr(value: &Value) -> bool {
-    matches!(value, Value::Null) || (matches!(value, Value::Int(_)) && value.to_int() == 0)
+    matches!(value, Value::Null) || (matches!(value, Value::Int(_) | Value::Ptr(_)) && value.to_int() == 0)
 }
 
 fn arg_int(args: &[Value], i: usize) -> i64 {

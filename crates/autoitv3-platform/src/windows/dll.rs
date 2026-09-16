@@ -476,7 +476,7 @@ impl WindowsPlatform {
     /// The first argument is a library name or a module handle.
     fn resolve_module(&mut self, value: &Value) -> usize {
         match value {
-            Value::Int(handle) => *handle as usize,
+            Value::Int(handle) | Value::Ptr(handle) => *handle as usize,
             other => load_library(&other.to_autoit_string()),
         }
     }

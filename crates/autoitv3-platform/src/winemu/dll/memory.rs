@@ -111,7 +111,7 @@ impl WindowsEmulation {
     pub(in crate::winemu) fn c_string_arg(&self, value: Value) -> Option<String> {
         match value {
             Value::Str(text) => Some(text),
-            Value::Int(addr) => self.c_string_at(addr as u64, true),
+            Value::Int(addr) | Value::Ptr(addr) => self.c_string_at(addr as u64, true),
             _ => None,
         }
     }

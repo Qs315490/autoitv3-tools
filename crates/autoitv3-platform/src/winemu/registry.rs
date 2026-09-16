@@ -92,7 +92,7 @@ impl RegistryData {
             Some(_) => return None,
             None => match value {
                 Value::Binary(bytes) => RegistryData::Binary(bytes.as_ref().clone()),
-                Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
+                Value::Int(_) | Value::Ptr(_) | Value::Float(_) | Value::Bool(_) => {
                     RegistryData::Dword(value.to_int() as u32)
                 }
                 Value::Array(_) => RegistryData::MultiSz(strings_of(value)),

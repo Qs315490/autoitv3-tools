@@ -18,7 +18,7 @@
 //! It also exposes the seams a debugger and a full runtime need — see
 //! [`crate::debug`] and [`crate::host`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use autoitv3_ast::ast::*;
@@ -141,15 +141,6 @@ pub struct Runtime {
     /// `None` until one is installed: the core deliberately names no concrete
     /// operating system (see `crate::platform`).
     platform: Option<Box<dyn Platform>>,
-    /// Values that came out of a pointer-typed operation.
-    ///
-    /// AutoIt's `Ptr` is a *base type*, not a number: `IsPtr` asks where the
-    /// value came from, so provenance has to be kept somewhere. It is kept here,
-    /// by value, because the platform layers hand back plain numbers — and the
-    /// model is deliberately coarse: the same number computed some other way is
-    /// answered "pointer" too. Nothing in the wild builds an address
-    /// arithmetically and then asks.
-    pointers: HashSet<i64>,
     /// Attached debugger (the debug-module seam).
     debugger: Option<Box<dyn Debugger>>,
     /// Breakpoints consulted before each statement.
@@ -388,7 +379,6 @@ impl Runtime {
             func_names: HashMap::new(),
             host: None,
             platform: None,
-            pointers: HashSet::new(),
             debugger: None,
             breakpoints: Breakpoints::new(),
             error: 0,
@@ -420,16 +410,6 @@ impl Runtime {
         let mut rt = Self::new();
         rt.load_program(prog);
         rt
-    }
-
-    /// Record that a value came out of a pointer-typed operation.
-    pub(crate) fn note_pointer(&mut self, value: i64) {
-        self.pointers.insert(value);
-    }
-
-    /// Whether a value is one a pointer-typed operation produced. `IsPtr`.
-    pub fn is_pointer(&self, value: i64) -> bool {
-        self.pointers.contains(&value)
     }
 
     /// The functions registered with `OnAutoItExitRegister`.
@@ -923,9 +903,9 @@ impl Runtime {
     /// value is one, and which argument positions are.
     ///
     /// Both are *positions*, so they can be read off whichever array the OS layer
-    /// hands back — and they are worked out before the call, because the call
+    /// hands back - and they are worked out before the call, because the call
     /// takes `args` by value.
-    fn pointer_slots(&self, key: &str, args: &[Value]) -> (bool, Vec<usize>) {
+    fn dll_pointer_slots(key: &str, args: &[Value]) -> (bool, Vec<usize>) {
         if key != "dllcall" {
             return (false, Vec::new());
         }
@@ -942,45 +922,48 @@ impl Runtime {
         (retval, writes)
     }
 
-    /// Note the pointer values a call produced.
+    /// The slots above, marked as pointers on the way out.
     ///
-    /// Two shapes: functions whose *result* is a pointer by definition (`Ptr`,
-    /// `DllStructGetPtr`, `DllCallbackGetPtr`), and `DllCall`, where the
-    /// pointer-ness lives in the declared types — a `ptr` return, and every
-    /// `ptr*` parameter, whose written-back value AutoIt hands back as a `Ptr`.
-    /// A plain `ptr` parameter is *not* one: its slot in the result array echoes
-    /// the value the caller passed, with the type the caller passed it as.
-    fn note_pointers(&mut self, key: &str, slots: (bool, Vec<usize>), result: &Value) {
+    /// AutoIt's `Ptr` is a base type, so the pointer-ness has to travel *with the
+    /// value*: a `ptr` return and a `ptr*` write-back become `Value::Ptr`, while a
+    /// plain `ptr` argument's slot simply echoes what the caller passed (with the
+    /// type the caller passed it as). Functions whose result is a pointer whatever
+    /// it is (`Ptr`, `DllStructGetPtr`, `DllCallbackGetPtr`) are the other source.
+    fn tag_pointers(key: &str, slots: (bool, Vec<usize>), mut result: Value) -> Value {
         match key {
             "ptr" | "dllstructgetptr" | "dllcallbackgetptr" => {
-                if result.is_number() {
-                    self.note_pointer(result.to_int());
+                if let Value::Int(i) = result {
+                    result = Value::Ptr(i);
                 }
             }
             "dllcall" => {
-                let Value::Array(items) = result else {
-                    return;
-                };
-                let (retval, writes) = slots;
-                let mut note = |v: Option<Value>| {
-                    if let Some(v) = v {
-                        if v.is_number() {
-                            self.note_pointer(v.to_int());
+                if let Value::Array(items) = &result {
+                    let (retval, writes) = slots;
+                    let mut items = items.borrow_mut();
+                    fn mark(v: &mut Value) {
+                        if let Value::Int(i) = v {
+                            *v = Value::Ptr(*i);
                         }
                     }
-                };
-                if retval {
-                    note(items.borrow().first().cloned());
-                }
-                for index in writes {
-                    note(items.borrow().get(index).cloned());
+                    if retval {
+                        if let Some(v) = items.first_mut() {
+                            mark(v);
+                        }
+                    }
+                    for index in writes {
+                        if let Some(v) = items.get_mut(index) {
+                            mark(v);
+                        }
+                    }
                 }
             }
             _ => {}
         }
+        result
     }
 
     /// Call a builtin or host function.
+
     ///
     /// The host is reached through a [`HostContext`] built from *disjoint*
     /// fields of `self`, so no raw pointers or interior mutability are needed.
@@ -1002,7 +985,7 @@ impl Runtime {
         self.extended = 0;
         // The OS layer takes `args` by value, so the `DllCall` types that name the
         // pointer slots are read off here, before the call happens.
-        let pointer_slots = self.pointer_slots(key, &args);
+        let pointer_slots = Self::dll_pointer_slots(key, &args);
         // `span` is the call and `self.frames.len()` the frame making it, so a
         // catchpoint can show the call site even when the arguments were
         // computed by calls of their own (the last statement to run would then
@@ -1026,8 +1009,7 @@ impl Runtime {
             DebugAction::Continue => {}
         }
         if let Some(v) = builtins::call(self, key, &args, span)? {
-            self.note_pointers(key, pointer_slots, &v);
-            return Ok(v);
+            return Ok(Self::tag_pointers(key, pointer_slots, v));
         }
         // An explicit host wins over the platform default.
         if self.host.is_some() {
@@ -1035,8 +1017,7 @@ impl Runtime {
             let mut ctx = HostBridge { globals, error, extended, profile, options };
             if let Some(host) = host.as_mut() {
                 if let Some(v) = host.call(display, args.clone(), &mut ctx)? {
-                    self.note_pointers(key, pointer_slots, &v);
-                    return Ok(v);
+                    return Ok(Self::tag_pointers(key, pointer_slots, v));
                 }
             }
         }
@@ -1068,8 +1049,7 @@ impl Runtime {
         }
 
         if let Some(v) = result {
-            self.note_pointers(key, pointer_slots, &v);
-            return Ok(v);
+            return Ok(Self::tag_pointers(key, pointer_slots, v));
         }
 
         Err(RuntimeError::UndefinedFunction { name: display.to_string(), span: Some(span) })

@@ -619,10 +619,7 @@ pub(crate) fn call(
         // `DllStructGetPtr`, `DllCallbackGetPtr`), which the runtime records as
         // it happens. `IsHwnd` still answers 0: the HWnd base type is not
         // modelled (a GUI handle here is a plain integer).
-        "isptr" => flag(
-            args.first()
-                .is_some_and(|v| v.is_number() && rt.is_pointer(v.to_int())),
-        ),
+        "isptr" => flag(matches!(args.first(), Some(Value::Ptr(_)))),
         "ishwnd" => flag(false),
         "iskeyword" => flag(matches!(
             args.first(),
@@ -1106,6 +1103,9 @@ pub(crate) fn float_to_string(f: f64) -> String {
 fn var_get_type(v: Option<&Value>) -> &'static str {
     match v {
         None => "Keyword",
+        // A pointer is its own base type; the width question below is about
+        // integers, and AutoIt answers plain "Ptr" (measured).
+        Some(Value::Ptr(_)) => "Ptr",
         Some(Value::Int(i)) => {
             if i32::try_from(*i).is_ok() {
                 "Int32"

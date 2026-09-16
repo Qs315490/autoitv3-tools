@@ -973,7 +973,9 @@ Local $free = DllCallbackFree($h1)
 Local $after = DllCallbackGetPtr($h1)
 Return ($h2 > $h1) & ":" & ($ptr = $h1) & ":" & $free & ":" & $after & ":" & @error
 "#;
-    assert_eq!(text(win10(), body), "True:True:1:0:1");
+    // `DllCallbackGetPtr` hands back a pointer, so the freed one renders as the
+    // null pointer, and pointers print as hex (measured on the official interpreter).
+    assert_eq!(text(win10(), body), "True:True:1:0x0000000000000000:1");
 }
 
 #[test]
@@ -2192,7 +2194,7 @@ Return $h[0] & ":" & ($p[0] > 0) & ":" & DllStructGetData($t, 1) & ":" & $bad & 
 "#;
     let got = run(win10(), body).to_autoit_string();
     assert!(
-        got.starts_with(r"1:True:C:\Windows\kernel32.dll:0:1"),
+        got.starts_with(r"0x0000000000000001:True:C:\Windows\kernel32.dll:0:1"),
         "got {got}"
     );
 }

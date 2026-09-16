@@ -35,7 +35,7 @@ impl MapKey {
     /// their integer identity, everything else becomes its string form.
     pub fn from_value(v: &Value) -> MapKey {
         match v {
-            Value::Int(i) => MapKey::Int(*i),
+            Value::Int(i) | Value::Ptr(i) => MapKey::Int(*i),
             other => MapKey::Str(other.to_autoit_string()),
         }
     }
@@ -123,6 +123,14 @@ pub enum Value {
     Bool(bool),
     /// An integral number.
     Int(i64),
+    /// A pointer - AutoIt's `Ptr` **base type**.
+    ///
+    /// It behaves like an integer everywhere (arithmetic, comparison, `DllCall`
+    /// arguments), but it is a distinct type: `IsPtr` answers 1 for it, `IsInt`
+    /// does not, `VarGetType` says "Ptr", and turning it into a string gives hex
+    /// rather than decimal - all measured against the official x64 interpreter
+    /// (`0x` + 16 upper-case digits).
+    Ptr(i64),
     /// A floating point number.
     Float(f64),
     /// A string.
@@ -174,6 +182,7 @@ impl Value {
             Value::Default => "Default",
             Value::Bool(_) => "Bool",
             Value::Int(_) => "Int",
+            Value::Ptr(_) => "Ptr",
             Value::Float(_) => "Float",
             Value::Str(_) => "String",
             Value::Array(_) => "Array",
@@ -186,7 +195,10 @@ impl Value {
 
     /// True when this value is a number variant.
     pub fn is_number(&self) -> bool {
-        matches!(self, Value::Int(_) | Value::Float(_) | Value::Bool(_))
+        matches!(
+            self,
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Ptr(_)
+        )
     }
 
     /// AutoIt truthiness: `0`, `0.0`, `""` and `Null` are false.
@@ -200,7 +212,7 @@ impl Value {
         match self {
             Value::Null | Value::Default => false,
             Value::Bool(b) => *b,
-            Value::Int(i) => *i != 0,
+            Value::Int(i) | Value::Ptr(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::Array(_) | Value::Map(_) | Value::Binary(_) | Value::FuncRef(_)
@@ -212,7 +224,7 @@ impl Value {
     /// number, otherwise 0).
     pub fn to_int(&self) -> i64 {
         match self {
-            Value::Int(i) => *i,
+            Value::Int(i) | Value::Ptr(i) => *i,
             Value::Float(f) => *f as i64,
             Value::Bool(b) => *b as i64,
             Value::Str(s) => parse_number(s.trim()).unwrap_or(0.0) as i64,
@@ -223,7 +235,7 @@ impl Value {
     /// Convert to `f64` using AutoIt coercion rules.
     pub fn to_f64(&self) -> f64 {
         match self {
-            Value::Int(i) => *i as f64,
+            Value::Int(i) | Value::Ptr(i) => *i as f64,
             Value::Float(f) => *f,
             Value::Bool(b) => *b as i64 as f64,
             Value::Str(s) => parse_number(s.trim()).unwrap_or(0.0),
@@ -243,6 +255,7 @@ impl Value {
             Value::Default => String::new(),
             Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Value::Int(i) => i.to_string(),
+            Value::Ptr(i) => pointer_hex(*i),
             Value::Float(f) => format_float(*f),
             Value::Str(s) => s.clone(),
             Value::Array(_) => String::new(),
@@ -263,7 +276,7 @@ impl Value {
             Value::Null => LitKind::Null,
             Value::Default => LitKind::Default,
             Value::Bool(b) => LitKind::Bool(*b),
-            Value::Int(i) => LitKind::Int(*i),
+            Value::Int(i) | Value::Ptr(i) => LitKind::Int(*i),
             Value::Float(f) => LitKind::Float(*f),
             Value::Str(s) => LitKind::Str(s.clone()),
             _ => return None,
@@ -324,6 +337,7 @@ impl fmt::Debug for Value {
             Value::Default => write!(f, "Default"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int(i) => write!(f, "{i}"),
+            Value::Ptr(i) => write!(f, "Ptr({i})"),
             Value::Float(x) => write!(f, "{x}"),
             Value::Str(s) => write!(f, "{s:?}"),
             Value::Array(a) => write!(f, "Array(len={})", a.borrow().len()),
@@ -380,6 +394,15 @@ pub fn parse_number(s: &str) -> Option<f64> {
     };
     Some(if neg { -val } else { val })
 }
+/// AutoIt's string form of a pointer: `0x` and 16 upper-case hex digits.
+///
+/// Measured on the official x64 interpreter - `DllStructGetPtr($s)` prints
+/// `0x000001CA37350F60`, zero-padded to the pointer width of that build (the
+/// 64-bit one, which the emulation models by default).
+pub fn pointer_hex(value: i64) -> String {
+    format!("0x{:016X}", value as u64)
+}
+
 /// AutoIt's string form of a binary: `0x` followed by upper-case hex.
 pub fn binary_to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(2 + bytes.len() * 2);

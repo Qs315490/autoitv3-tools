@@ -320,3 +320,16 @@ fn a_pointer_is_told_apart_from_a_number() {
     assert!(out.contains("1|0|0"), "got:\n{out}");
 }
 
+
+
+/// A `Ptr` keeps its type: hex in strings, `Ptr` in `VarGetType`, and it is not
+/// an integer (`IsInt` answers 0) - all measured on the official interpreter.
+#[test]
+fn a_pointer_prints_as_hex_and_reports_its_type() {
+    let body = "Local $s = DllStructCreate(\"byte[4]\")\n\
+                Local $p = DllStructGetPtr($s)\n\
+                ConsoleWrite(String($p) & \"|\" & VarGetType($p) & \"|\" & IsInt($p) & @CRLF)\n";
+    let path = script("pointer-type", body);
+    let out = au3(&["run", path.to_str().unwrap()]);
+    assert!(out.contains("0x") && out.contains("|Ptr|0"), "got:\n{out}");
+}
