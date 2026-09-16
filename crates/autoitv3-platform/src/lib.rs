@@ -370,6 +370,15 @@ pub struct PlatformOptions {
     /// Lower-case function names routed to the emulation layer even when the
     /// native layer could answer. Empty by default.
     pub force_emulated: Vec<String>,
+    /// Answer `IsAdmin()` as an elevated user even though this process is not
+    /// one.
+    ///
+    /// A simulation knob: the CLI sets it when a script declares
+    /// `#RequireAdmin` and the run is a deterministic analysis, where really
+    /// elevating (a consent prompt and a second process) is a side effect the
+    /// profile exists to refuse. The script then takes its "already an
+    /// administrator" path without anything being raised.
+    pub assume_admin: bool,
 }
 
 /// A [`WindowsPlatform`] that declines the names in `declined`, letting the
@@ -459,7 +468,16 @@ pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform>
     let PlatformOptions {
         emulation,
         force_emulated,
+        assume_admin,
     } = options;
+    // A simulated elevation is a property of the *user* the script sees, so it
+    // travels with the emulation configuration (`AU3_WIN_ADMIN=0` picks a
+    // standard user otherwise) and with the native layer's own answer.
+    let emulation = if assume_admin {
+        emulation.with_admin(true)
+    } else {
+        emulation
+    };
     let emulated = emulation.is_enabled();
     let common = common_layer(&emulation);
     let declined: std::rc::Rc<[String]> = force_emulated
@@ -468,7 +486,7 @@ pub fn host_platform_with_options(options: PlatformOptions) -> Box<dyn Platform>
         .collect();
     #[cfg(windows)]
     {
-        let mut native = windows::WindowsPlatform::new();
+        let mut native = windows::WindowsPlatform::new().with_assumed_admin(assume_admin);
         if let Some(path) = emulation.module_path() {
             // The image under analysis answers `GetModuleHandleW(NULL)` so the
             // script reads its own resources (see `host_platform_with`).

@@ -203,8 +203,15 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 这个进程本身就是启动器起的副本时，既不会再起副本，也不会弹 UAC，也不会打印任何
 "跳过"说明——指令已经满足。（判据是解释器自己的 `IsAdmin()`，不是从命令行参数猜的；
 管理员这一条优先于 `--no-elevate`/`--deny spawn`，那两个开关不会把已满足的指令变成
-一行抱怨。）预设 profile（确定性/`--faithful`）不参与这个判断——那是"脚本自己能做什么"，
-提权是"脚本以什么身份跑"，两者无关。
+一行抱怨。）
+
+**确定性配置下不真申请，改成模拟**：`--deterministic`（以及 `evaluate`、
+`deobfuscate --evaluate` 的默认）遇到 `#RequireAdmin` 时**不**弹 UAC、**不**起副本——
+那正是这个配置要拒绝的副作用——而是把提权"模拟"出来：脚本的 `IsAdmin()` 按 `1` 回答，
+于是它走管理员那条分支，stderr 打一行
+`note: #RequireAdmin: the deterministic profile simulates the elevation instead of asking for it …`。
+`--no-elevate` / `--deny spawn` 仍然表示"不要满足这个指令"：那时连模拟也不做，脚本看到
+的是真实的、未提权的用户。
 
 非 Windows 主机没有提权机制：读到指令、打印一行说明，脚本照常在本进程里跑。
 

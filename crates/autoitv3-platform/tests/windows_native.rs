@@ -958,6 +958,7 @@ EndFunc
     rt.set_platform(host_platform_with_options(PlatformOptions {
         emulation: emu,
         force_emulated: vec!["RegRead".into(), "RegWrite".into(), "RegDelete".into()],
+        assume_admin: false,
     }));
     rt.set_profile(autoitv3_runtime::ExecutionProfile::faithful());
     // The emulated (in-memory) registry answers the round trip.

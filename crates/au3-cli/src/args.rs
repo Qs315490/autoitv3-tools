@@ -228,15 +228,20 @@ pub struct ProfileArgs {
 }
 
 impl ProfileArgs {
+    /// Which preset these arguments select, given the command's own default.
+    pub fn preset(&self, default: Preset) -> Preset {
+        if self.faithful {
+            Preset::Faithful
+        } else if self.deterministic {
+            Preset::Deterministic
+        } else {
+            default
+        }
+    }
+
     /// The profile these arguments select, given the command's own default.
     pub fn profile(&self, default: Preset) -> ExecutionProfile {
-        if self.faithful {
-            ExecutionProfile::faithful()
-        } else if self.deterministic {
-            ExecutionProfile::deterministic()
-        } else {
-            default.profile()
-        }
+        self.preset(default).profile()
     }
 }
 
@@ -338,6 +343,7 @@ impl WinEmuArgs {
         script: Option<&Path>,
         input_module: Option<&Path>,
         gui: Option<Box<dyn autoitv3_platform::winemu::GuiBackend>>,
+        assume_admin: bool,
     ) -> CliResult<Box<dyn Platform>> {
         let mut emu = WindowsEmulation::from_env();
         if self.no_win_emu {
@@ -437,6 +443,7 @@ impl WinEmuArgs {
         Ok(autoitv3_platform::host_platform_with_options(PlatformOptions {
             emulation: emu,
             force_emulated,
+            assume_admin,
         }))
     }
 }

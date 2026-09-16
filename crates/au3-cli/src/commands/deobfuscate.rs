@@ -115,12 +115,20 @@ pub fn run(args: &DeobfuscateArgs) -> CliResult<()> {
         let profile = args
             .effects
             .apply(args.profile.profile(crate::args::Preset::Deterministic))?;
+        // Evaluation is a deterministic run: a script that asks for
+        // administrator rights gets them simulated, not asked for.
+        let assume_admin =
+            crate::elevate::simulates(&prog, profile.is_deterministic(), false, false);
+        if assume_admin {
+            crate::elevate::note_simulated_elevation();
+        }
         // Evaluation here is analysis, not a run: never open a window, not
         // even the native one a Windows host would pick by itself.
         let platform = args.win.platform(
             Some(Path::new(&args.input)),
             input.resource_module.as_deref(),
             Some(Box::new(autoitv3_platform::winemu::HeadlessBackend::new())),
+            assume_admin,
         )?;
         // A build's script saw `@Compiled = 1`; evaluating it as a source
         // script would take the wrong branch wherever the macro is tested.

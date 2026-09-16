@@ -122,12 +122,19 @@ pub fn run(args: &EvaluateArgs) -> CliResult<()> {
     let profile = args
         .effects
         .apply(args.profile.profile(crate::args::Preset::Deterministic))?;
+    // Evaluation is a deterministic run: a script that asks for administrator
+    // rights gets them simulated, not asked for (see `crate::elevate`).
+    let assume_admin = crate::elevate::simulates(&prog, profile.is_deterministic(), false, false);
+    if assume_admin {
+        crate::elevate::note_simulated_elevation();
+    }
     // Evaluating a script is analysis, not a run: never open a window, not even
     // the native one a Windows host would pick by itself.
     let platform = args.win.platform(
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
         Some(Box::new(autoitv3_platform::winemu::HeadlessBackend::new())),
+        assume_admin,
     )?;
     let options = SubstituteOptions {
         inline_declarations: args.substitute.inline_tables,

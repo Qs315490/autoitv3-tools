@@ -53,6 +53,39 @@ fn note(text: &str) {
     eprintln!("{}{text}", tr("note: "));
 }
 
+/// Whether `#RequireAdmin` should be **simulated** rather than honoured.
+///
+/// A deterministic run never asks the OS for an elevated copy — a consent
+/// prompt and a second process are side effects, and refusing those is what the
+/// profile is for. `--no-elevate` and `--deny spawn` keep their meaning ("do
+/// not honour the directive"): nothing is simulated then either, so the script
+/// sees the ordinary, unelevated user.
+pub fn simulates(
+    program: &Program,
+    deterministic: bool,
+    no_elevate: bool,
+    spawn_denied: bool,
+) -> bool {
+    deterministic && !no_elevate && !spawn_denied && is_required(program)
+}
+
+/// Say that a deterministic run is *simulating* `#RequireAdmin` instead of
+/// asking the OS for a second, elevated process.
+///
+/// The profile refuses side effects, and a consent prompt plus a new process is
+/// the biggest one there is; the script still gets the administrator view it
+/// branched on (`IsAdmin()` answers 1), so the admin path is what gets
+/// analysed.
+pub fn note_simulated_elevation() {
+    eprintln!(
+        "{}",
+        tr(
+            "note: #RequireAdmin: the deterministic profile simulates the elevation instead of \
+             asking for it — `IsAdmin()` answers 1 and no consent prompt is raised"
+        )
+    );
+}
+
 /// What `#RequireAdmin` calls for, decided before anything is done about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {

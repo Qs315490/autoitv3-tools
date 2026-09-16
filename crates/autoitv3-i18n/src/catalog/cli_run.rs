@@ -106,4 +106,10 @@ pub static ENTRIES: &[(&str, &str)] = &[
     // the elevated `#RequireAdmin` copy's console note (printed by `main.rs`)
     ("note: #RequireAdmin: elevated, sharing the console of process {pid}", "注意：#RequireAdmin：已提升权限，输出接在进程 {pid} 的控制台上"),
     ("note: #RequireAdmin: elevated, but process {pid} has no console to share,           so this output has a window of its own", "注意：#RequireAdmin：已提升权限，但进程 {pid} 没有可共用的控制台，          输出会单独开一个窗口"),
+    // A deterministic run of an admin script: nothing is raised, the script is
+    // simply told it is an administrator.
+    (
+        "note: #RequireAdmin: the deterministic profile simulates the elevation instead of asking for it — `IsAdmin()` answers 1 and no consent prompt is raised",
+        "注意：#RequireAdmin：确定性配置模拟提权、不真申请 — `IsAdmin()` 返回 1，也不会弹 UAC 同意框",
+    ),
 ];

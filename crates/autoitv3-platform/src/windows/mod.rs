@@ -102,6 +102,10 @@ pub struct WindowsPlatform {
     /// Handle of `resource_module` once mapped as an image resource; 0 means
     /// "not loaded yet".
     resource_base: usize,
+    /// Answer `IsAdmin()` as an elevated user (`PlatformOptions::assume_admin`):
+    /// a deterministic analysis of a `#RequireAdmin` script simulates the
+    /// elevation instead of raising a UAC prompt.
+    assumed_admin: bool,
 }
 
 impl WindowsPlatform {
@@ -121,6 +125,15 @@ impl WindowsPlatform {
     /// the script's own view of "the current module".
     pub fn with_resource_module(mut self, path: impl AsRef<std::path::Path>) -> Self {
         self.resource_module = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Answer `IsAdmin()` as an elevated user without being one
+    /// ([`PlatformOptions::assume_admin`](crate::PlatformOptions::assume_admin)):
+    /// a deterministic analysis of a `#RequireAdmin` script simulates the
+    /// elevation instead of raising a UAC prompt and starting a second process.
+    pub fn with_assumed_admin(mut self, assumed: bool) -> Self {
+        self.assumed_admin = assumed;
         self
     }
 
@@ -501,7 +514,7 @@ impl Platform for WindowsPlatform {
             "drivesetlabel" => drive::drive_set_label(&args, ctx),
             // ---------------- system / shell ----------------
             "memgetstats" => misc::mem_get_stats(ctx),
-            "isadmin" => Value::Int(i64::from(misc::is_admin())),
+            "isadmin" => Value::Int(i64::from(self.assumed_admin || misc::is_admin())),
             "shellexecute" => misc::shell_execute(&args, ctx),
             "shellexecutewait" => misc::shell_execute_wait(&args, ctx),
             "runas" => misc::run_as(&args, ctx, false),

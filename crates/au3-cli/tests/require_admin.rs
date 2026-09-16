@@ -21,13 +21,22 @@ fn script(tag: &str, body: &str) -> PathBuf {
 
 /// Run `au3 <args>` and return `(succeeded, stdout and stderr folded together)`.
 fn au3(args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_au3"))
-        .args(args)
+    au3_env(args, &[])
+}
+
+/// [`au3`] with extra environment variables — `AU3_WIN_ADMIN=0` makes the
+/// emulation answer `IsAdmin()` for a standard user, which is how the
+/// simulated elevation can be told apart from the real answer off Windows.
+fn au3_env(args: &[&str], envs: &[(&str, &str)]) -> (bool, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_au3"));
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run au3");
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let out = cmd.output().expect("run au3");
     (
         out.status.success(),
         format!(
@@ -191,4 +200,79 @@ fn debug_without_the_directive_says_nothing() {
     let (ok, out) = au3(&["debug", &path.to_string_lossy(), "-c", "run", "-c", "quit"]);
     assert!(ok, "got:\n{out}");
     assert!(!out.contains("#RequireAdmin"), "got:\n{out}");
+}
+
+// ---------------------------------------------------------------------------
+// The deterministic profile simulates the elevation
+// ---------------------------------------------------------------------------
+
+/// A standard-user emulation (`AU3_WIN_ADMIN=0`) is what makes the difference
+/// visible: the simulation answers `IsAdmin()` = 1 without asking the OS for
+/// anything, and a faithful run leaves the answer alone.
+const IS_ADMIN: &str = "#RequireAdmin\nConsoleWrite(\"IsAdmin=\" & IsAdmin() & @CRLF)\n";
+
+#[test]
+fn a_deterministic_run_simulates_the_elevation() {
+    let path = script("simulate", IS_ADMIN);
+    let (ok, out) = au3_env(
+        &["run", &path.to_string_lossy(), "--deterministic"],
+        &[("AU3_WIN_ADMIN", "0")],
+    );
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("note: #RequireAdmin: the deterministic profile simulates the elevation"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("IsAdmin=1"), "the script sees an administrator:\n{out}");
+    assert!(
+        !out.contains("elevation is a Windows mechanism"),
+        "nothing was asked of the OS:\n{out}"
+    );
+}
+
+#[test]
+fn a_deterministic_debug_session_simulates_the_elevation_too() {
+    let path = script("simulate-debug", IS_ADMIN);
+    let (ok, out) = au3_env(
+        &[
+            "debug",
+            &path.to_string_lossy(),
+            "--deterministic",
+            "-c",
+            "run",
+            "-c",
+            "quit",
+        ],
+        &[("AU3_WIN_ADMIN", "0")],
+    );
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("note: #RequireAdmin: the deterministic profile simulates the elevation"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("IsAdmin=1"), "got:\n{out}");
+}
+
+#[test]
+fn no_elevate_still_declines_the_simulation() {
+    let path = script("simulate-no-elevate", IS_ADMIN);
+    let (ok, out) = au3_env(
+        &[
+            "run",
+            &path.to_string_lossy(),
+            "--deterministic",
+            "--no-elevate",
+        ],
+        &[("AU3_WIN_ADMIN", "0")],
+    );
+    assert!(ok, "got:\n{out}");
+    assert!(
+        out.contains("note: #RequireAdmin: --no-elevate"),
+        "got:\n{out}"
+    );
+    assert!(
+        !out.contains("simulates the elevation"),
+        "nothing is simulated when the directive is refused:\n{out}"
+    );
+    assert!(out.contains("IsAdmin=0"), "the real answer stands:\n{out}");
 }

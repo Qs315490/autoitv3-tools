@@ -64,8 +64,8 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Result as RustyResult};
 
 use crate::args::{
-    CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, ProfileArgs, StepArgs,
-    WinEmuArgs, load_input_included,
+    CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
+    StepArgs, WinEmuArgs, load_input_included,
 };
 
 use crate::output::format_value;
@@ -248,11 +248,23 @@ fn session(args: &DebugArgs, gui: Option<GuiFactory>) -> CliResult<()> {
     let hand_over = std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && args.gui != GuiMode::Window;
+    // A deterministic session simulates the elevation (see `run.rs`): asking
+    // the OS for a second process is exactly what the profile refuses, and the
+    // script is told it is an administrator so its admin path is what gets
+    // debugged.
+    let simulate_elevation = crate::elevate::simulates(
+        &prog,
+        args.profile.preset(Preset::Faithful) == Preset::Deterministic,
+        args.no_elevate,
+        spawn_denied,
+    );
     let stays_here = crate::elevate::is_required(&prog)
         && !hand_over
         && !args.no_elevate
         && !spawn_denied;
-    if stays_here {
+    if simulate_elevation {
+        crate::elevate::note_simulated_elevation();
+    } else if stays_here {
         eprintln!(
             "{}",
             tr(
@@ -328,10 +340,22 @@ fn build_runtime(
 ) -> Runtime {
     let mut rt = Runtime::with_program(prog);
     // A factory, not a backend: each runtime gets its own handle to the window.
+    // The runtime is rebuilt on every `run`, so the simulated elevation is
+    // recomputed here rather than carried through the session.
+    let assume_admin = crate::elevate::simulates(
+        prog,
+        args.profile.preset(Preset::Faithful) == Preset::Deterministic,
+        args.no_elevate,
+        args.effects
+            .deny
+            .iter()
+            .any(|kind| EffectKind::from_name(kind) == Some(EffectKind::Spawn)),
+    );
     let platform = args.win.platform(
         Some(Path::new(&args.input)),
         resource_module,
         gui.as_ref().map(|make| make()),
+        assume_admin,
     );
     match platform {
         Ok(platform) => rt.set_platform(platform),

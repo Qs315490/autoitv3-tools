@@ -25,8 +25,8 @@ use autoitv3_runtime::{Flow, Runtime, Value};
 use clap::Args;
 
 use crate::args::{
-    CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, ProfileArgs, StepArgs,
-    WinEmuArgs, load_input_included, parse_arg_value,
+    CliError, CliResult, CompiledArgs, EffectArgs, GuiMode, IncludeArgs, Preset, ProfileArgs,
+    StepArgs, WinEmuArgs, load_input_included, parse_arg_value,
 };
 
 use crate::output::format_value;
@@ -163,21 +163,30 @@ fn execute(
     let profile = args
         .effects
         .apply(args.profile.profile(crate::args::Preset::Faithful))?;
-    // `#RequireAdmin` is about the *process*, not the script: an unelevated run
-    // starts an elevated copy of this program and stops here, before the first
-    // statement (see `crate::elevate`). The preset profiles do not enter into
-    // it — refusing the script's own `Run()` calls is a different question from
-    // which token it runs with — but a user who said `--deny spawn` does, as
-    // does `--no-elevate`.
+    // `#RequireAdmin` is about the *process*, not the script: an unelevated
+    // faithful run starts an elevated copy of this program and stops here,
+    // before the first statement (see `crate::elevate`). A user who said
+    // `--deny spawn` refuses that too, as does `--no-elevate`.
     //
-    // `--gui window` is the exception: the window lives in this process, so
-    // there is nothing to hand over, and the directive is only reported.
+    // The deterministic profile simulates instead: asking the OS would mean a
+    // consent prompt and a second process, exactly the side effects that
+    // profile exists to refuse. The script is told it is an administrator
+    // (`IsAdmin()` answers 1) so its admin path is the one being analysed.
+    //
+    // `--gui window` is the exception to the hand-over: the window lives in
+    // this process, so there is nothing to hand over, and the directive is only
+    // reported.
     let spawn_denied = args
         .effects
         .deny
         .iter()
         .any(|kind| EffectKind::from_name(kind) == Some(EffectKind::Spawn));
-    if args.gui == GuiMode::Window {
+    let deterministic = args.profile.preset(Preset::Faithful) == Preset::Deterministic;
+    let simulate_elevation =
+        crate::elevate::simulates(&prog, deterministic, args.no_elevate, spawn_denied);
+    if simulate_elevation {
+        crate::elevate::note_simulated_elevation();
+    } else if args.gui == GuiMode::Window {
         if crate::elevate::is_required(&prog) {
             eprintln!(
                 "{}",
@@ -200,6 +209,7 @@ fn execute(
         Some(Path::new(&args.input)),
         input.resource_module.as_deref(),
         gui,
+        simulate_elevation,
     )?);
     // A `.exe`/`.a3x` input is a compiled build, so `@Compiled` answers 1 the
     // way it did for the program the script came out of; `--compiled` /
