@@ -1130,3 +1130,17 @@ fn gui_auto_is_accepted() {
     let out = shell_with(&path, &["--gui", "auto"], &["quit"]);
     assert!(!out.contains("invalid value"), "got:\n{out}");
 }
+
+/// The environment notes describe the process, not a run: a session builds a
+/// runtime at startup and again on every `run`, and repeating the same line
+/// there is noise. This script sits alone in its scratch directory, so the
+/// "nothing to read resources from" note is the one that comes up.
+#[test]
+fn environment_notes_are_printed_once_per_process() {
+    let path = script("notes-once", "ConsoleWrite(\"hi\" & @CRLF)\n");
+    let out = shell(&path, &["run", "quit"]);
+    let count = out
+        .matches("no resource image or extracted resource files found")
+        .count();
+    assert_eq!(count, 1, "the note repeated, got:\n{out}");
+}

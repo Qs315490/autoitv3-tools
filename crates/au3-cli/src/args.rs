@@ -353,6 +353,25 @@ fn expand_emulate_area(raw: &str) -> CliResult<Vec<String>> {
     Ok(names.iter().map(|n| n.to_string()).collect())
 }
 
+/// Print one of the `#` environment notes, once per process.
+///
+/// Resolving the resource module happens every time a platform stack is built,
+/// and a `debug` session builds one at startup and again on every `run` — so the
+/// same note would repeat once per `run` even though the answer cannot change
+/// while the process lives. Each distinct note is printed the first time it
+/// comes up, which is also the only time it carries information.
+fn note_once(text: impl std::fmt::Display) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let text = text.to_string();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.insert(text.clone()) {
+        eprintln!("{text}");
+    }
+}
+
 impl WinEmuArgs {
     /// Build the platform stack these arguments select.
     ///
@@ -423,6 +442,11 @@ impl WinEmuArgs {
             })?;
             emu = emu.with_arch(arch);
         }
+        // The image answers the resource chain on both hosts — the emulation
+        // parses it with `PeImage` off Windows, the native layer maps it as a
+        // resource-only image on it — so it is resolved for whoever is in the
+        // stack rather than for the emulation alone: `--no-win-emu` still leaves
+        // the native layer reading it.
         if let Some(path) = &self.resource_module {
             if !Path::new(path).is_file() {
                 return Err(CliError::failure(msg!(
@@ -431,28 +455,22 @@ impl WinEmuArgs {
                 )));
             }
             emu = emu.with_module_file(path);
-        } else if !self.no_win_emu && emu.module_path().is_none() {
+        } else if emu.module_path().is_none()
+            && (!self.no_win_emu || autoitv3_platform::native_reads_resource_image())
+        {
             if let Some(path) = input_module {
                 // The input *was* the build, so its resources are the ones the
                 // script reads — no sibling search needed.
-                let shown = path.display().to_string();
-                eprintln!(
-                    "{}",
-                    msg!(
-                        "# resource module: {path} (the input build; override with --resource-module)",
-                        path = shown
-                    )
-                );
+                note_once(msg!(
+                    "# resource module: {path} (the input build; override with --resource-module)",
+                    path = path.display().to_string()
+                ));
                 emu = emu.with_module_file(path);
             } else if let Some(found) = find_resource_module(script) {
-                let shown = found.display().to_string();
-                eprintln!(
-                    "{}",
-                    msg!(
-                        "# resource module: {path} (found next to the script; override with --resource-module)",
-                        path = shown
-                    )
-                );
+                note_once(msg!(
+                    "# resource module: {path} (found next to the script; override with --resource-module)",
+                    path = found.display().to_string()
+                ));
                 emu = emu.with_module_file(found);
             }
         }
@@ -461,10 +479,9 @@ impl WinEmuArgs {
             // image does, so the payload alone is enough to analyse a build.
             let dirs = resource_search_dirs(script);
             if emu.module_path().is_none() && !has_staged_resources(&dirs) {
-                eprintln!(
-                    "{}",
-                    tr("# no resource image or extracted resource files found: resource calls will fail")
-                );
+                note_once(tr(
+                    "# no resource image or extracted resource files found: resource calls will fail",
+                ));
             }
             emu = emu.with_resource_dirs(dirs);
         }

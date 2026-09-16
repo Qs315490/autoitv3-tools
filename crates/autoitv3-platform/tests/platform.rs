@@ -5,8 +5,8 @@
 //! matters as the first layer of the stack.
 
 use autoitv3_platform::{
-    host_platform, host_platform_with, native_gui_backend, CompositePlatform, LinuxPlatform,
-    CommonPlatform, WindowsEmulation,
+    host_platform, host_platform_with, native_gui_backend, native_reads_resource_image,
+    CompositePlatform, LinuxPlatform, CommonPlatform, WindowsEmulation,
 };
 use autoitv3_runtime::platform::Platform;
 use autoitv3_runtime::{ExecutionProfile, Runtime, Value};
@@ -69,6 +69,14 @@ fn host_platform_stacks_emulation_common_and_system() {
 #[test]
 fn the_native_gui_backend_is_windows_only() {
     assert_eq!(native_gui_backend().is_some(), cfg!(windows));
+}
+
+/// The resource image is read by the emulation everywhere, and by the native
+/// layer on Windows as well — which is what keeps it meaningful there when the
+/// emulation is left out (`--no-win-emu`).
+#[test]
+fn the_native_layer_reads_the_resource_image_only_on_windows() {
+    assert_eq!(native_reads_resource_image(), cfg!(windows));
 }
 
 #[test]

@@ -260,6 +260,11 @@ au3 debug setup.au3 --no-elevate   # 就在本进程里调，stderr 说明原因
 | `--no-win-emu` | `AU3_WIN_EMU=0` | 启用（非 Windows 主机） |
 | `--emulate <AREA>` | — | 不启用；`AREA`=`registry`（Reg*）/`clipboard`（Clip*）/具体函数名，可重复 |
 
+选出来的 PE 镜像（`--resource-module`/`AU3_RESOURCE_MODULE`，或输入构建本身，或脚本旁自动找到的那张）
+**同时**交给仿真层和 Windows 原生层，所以 `--no-win-emu` 不影响它——那个开关只抽掉仿真层，Windows
+上原生层照样把镜像按资源映射进来。`# resource module: …`、`# no resource image …` 这类环境说明
+**每个进程只打印一次**（`debug` 每次 `run` 都重建 runtime，不收敛就会一行行刷）。
+
 **两个预设，默认按命令分**。`run` 与 `debug` 默认 `--faithful`（AutoIt 自己的语义：
 真实延时、真实熵、真实副作用）——跑脚本就该做脚本说的事；`evaluate` 与
 `deobfuscate --evaluate` 默认 `--deterministic`（跳过 `Sleep`、`Random` 固定种子、

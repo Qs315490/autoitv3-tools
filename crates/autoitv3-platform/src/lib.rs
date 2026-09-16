@@ -113,6 +113,20 @@ pub fn native_gui_backend() -> Option<Box<dyn winemu::GuiBackend>> {
     }
 }
 
+/// Whether this build's native layer reads the configured resource image.
+///
+/// Off Windows the image is only ever read by the emulation layer, which parses
+/// it with `PeImage`; with the emulation left out nothing reads it. On Windows
+/// `WindowsPlatform` maps it itself with
+/// `LoadLibraryExW(path, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE)`, so an image
+/// still matters there even with `--no-win-emu` / `AU3_WIN_EMU=0`.
+///
+/// A caller deciding whether to look for the image at all has to ask this: the
+/// emulation switch alone does not answer it on Windows.
+pub const fn native_reads_resource_image() -> bool {
+    cfg!(windows)
+}
+
 /// The GUI backend a fresh [`WindowsEmulation`] starts with.
 ///
 /// [`native_gui_backend`] where there is one, and
