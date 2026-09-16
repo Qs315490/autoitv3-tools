@@ -23,7 +23,8 @@ use std::path::Path;
 use autoitv3_i18n::{msg, tr};
 use autoitv3_unpack::script;
 use autoitv3_unpack::{
-    candidates_from_dir, candidates_from_image, select_entries, unpack, write_candidates,
+    candidates_from_dir, candidates_from_image, resources_from_image, select_entries, unpack,
+    write_resources,
 };
 use clap::Args;
 
@@ -56,9 +57,15 @@ pub struct UnpackArgs {
     #[arg(long, value_name = "SPEC")]
     pub at: Option<String>,
 
-    /// Write the build's resource files out into this directory, one file each
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["script", "raw", "table", "at"])]
+    /// Extract the build's resource files into this directory, one type per
+    /// subdirectory (the default is <input>.unpacked next to the input)
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["script", "payload", "raw", "table", "at"])]
     pub dir: Option<String>,
+
+    /// Decode the resource-packed payload and emit its entries, instead of
+    /// extracting the resources
+    #[arg(long, conflicts_with = "script")]
+    pub payload: bool,
 
     #[command(flatten)]
     pub output: OutputArgs,
@@ -69,10 +76,26 @@ pub fn run(args: &UnpackArgs) -> CliResult<()> {
     if args.script {
         return run_script(args);
     }
-    if let Some(dir) = &args.dir {
-        return run_resources(args, Path::new(dir));
+    // --raw/--table/--at only mean something for the packed payload, so asking
+    // for one of them is asking for that payload rather than for the files.
+    if args.payload || args.raw || args.table || args.at.is_some() {
+        return run_payload(args);
     }
-    run_payload(args)
+    let default_dir = default_extract_dir(&args.input);
+    let dir = args.dir.as_deref().unwrap_or(default_dir.as_str());
+    run_resources(args, Path::new(dir))
+}
+
+/// The directory the default extraction writes into: <input>.unpacked.
+fn default_extract_dir(input: &str) -> String {
+    let path = Path::new(input);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unpacked".to_string());
+    path.with_file_name(format!("{stem}.unpacked"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// `--dir`: write the resources the build carries out as files.
@@ -84,25 +107,31 @@ pub fn run(args: &UnpackArgs) -> CliResult<()> {
 /// that, run without `--dir`.
 fn run_resources(args: &UnpackArgs, dir: &Path) -> CliResult<()> {
     let path = Path::new(&args.input);
-    let resources = if path.is_dir() {
+    let resources: Vec<(String, String, Vec<u8>)> = if path.is_dir() {
         candidates_from_dir(path)
+            .map_err(|e| CliError::failure(e.to_string()))?
+            .into_iter()
+            // A staged directory holds the files the wrapper added, and those
+            // are RT_RCDATA unless the directive said otherwise: the layout
+            // records no other type.
+            .map(|(name, bytes)| ("RCDATA".to_string(), name, bytes))
+            .collect()
     } else {
-        candidates_from_image(path)
-    }
-    .map_err(|e| CliError::failure(e.to_string()))?;
+        resources_from_image(path).map_err(|e| CliError::failure(e.to_string()))?
+    };
     if resources.is_empty() {
         return Err(CliError::failure(msg!(
             "{path}: no resources to look at",
             path = path.display()
         )));
     }
-    let written = write_candidates(dir, &resources).map_err(|e| CliError::failure(e.to_string()))?;
-    for ((name, bytes), file) in resources.iter().zip(written.iter()) {
+    let written = write_resources(dir, &resources).map_err(|e| CliError::failure(e.to_string()))?;
+    for ((kind, name, bytes), file) in resources.iter().zip(written.iter()) {
         eprintln!(
             "{}",
             msg!(
                 "  {name} -> {path} ({bytes} bytes)",
-                name = name,
+                name = format!("{kind}/{name}"),
                 path = file.display(),
                 bytes = bytes.len()
             )

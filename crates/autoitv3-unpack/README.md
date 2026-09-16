@@ -92,18 +92,25 @@ au3 unpack chunk.bin  --script                   # 裸 chunk（已 dump 出来�
 自动落到真正的那个。反过来，一旦某个容器能一路解到脚本，校验也已经证明它确实是
 编译器写的 chunk，而不是巧合。
 
-## 解包资源载荷（`au3 unpack`）
+## 解出资源文件（默认行为）
+
+`au3 unpack <PATH>` 不给别的开关时，把产物带的资源写成文件：给 PE 枚举它**全部类型**的
+资源，给目录用 AutoIt3Wrapper 落盘的 `__NAME`/`__Res64/NAME`/`__ResImage/_NAME`；每条按
+资源名写进自己类型对应的子目录（`RCDATA/SCRIPT`、`ICON/1`、`MANIFEST/1`……），默认落在
+输入旁边的 `<input>.unpacked/`，`--dir DIR` 换位置。`#AutoIt3Wrapper_Res_File_Add` 加进去的
+文件就是这些 `RCDATA` 条目；名字里不能当文件名的字符会压平，同一类型里重名加 `.N`。
+
+## 解包资源载荷（`au3 unpack --payload`）
 
 有些编译产物把载荷加密后放进 4 个 `RT_RCDATA` 资源（一个 loader + 三个 member），
-只有它自己的脚本能读回来。`au3 unpack` 直接按该格式解码，**不需要 `.au3`，
+只有它自己的脚本能读回来。`au3 unpack --payload` 直接按该格式解码，**不需要 `.au3`，
 也不需要那个几 MB 的 `.exe`**：
 
 ```bash
-au3 unpack ./staged/          # 目录：AutoIt3Wrapper 落盘的 __NAME / __Res64/NAME / __ResImage/_NAME
-au3 unpack build.exe          # 或者直接给 PE，自动枚举它的 RT_RCDATA
-au3 unpack build.exe --dir out/   # 把资源文件逐个落盘到 out/（_Res_File_Add 加进去的文件就在这里）
-au3 unpack build.exe --raw    # --raw 输出拼接后的整段文本，默认一行一条
-au3 unpack build.exe --table  # --table 带 1-based 索引编号
+au3 unpack build.exe --payload   # 解码打包载荷，条目一行一条打到 stdout
+au3 unpack ./staged/ --payload   # 目录：AutoIt3Wrapper 落盘的 __NAME / __Res64/NAME / __ResImage/_NAME
+au3 unpack build.exe --raw       # --raw 输出拼接后的整段文本
+au3 unpack build.exe --table     # --table 带 1-based 索引编号
 au3 unpack build.exe --at 152,1263,3147-3149   # 只取这几项
 ```
 

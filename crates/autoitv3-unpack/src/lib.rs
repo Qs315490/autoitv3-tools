@@ -48,7 +48,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use autoitv3_i18n::{msg, tr};
-use autoitv3_platform::{CipherAlg, HashAlg, PeImage};
+use autoitv3_platform::{CipherAlg, HashAlg, PeImage, Selector};
 
 pub use script::{CompiledScript, FileKind, ScriptFile, ScriptVersion};
 
@@ -243,26 +243,29 @@ pub fn candidates_from_image(path: impl AsRef<Path>) -> Result<Vec<(String, Vec<
     Ok(out)
 }
 
-/// Write `candidates` into `dir`, one file per resource.
+/// Write `resources` under `dir`, one file each, grouped by resource type.
 ///
 /// This is the read-back the `#AutoIt3Wrapper_Res_File_Add` files are for: a
-/// build keeps every added file as an `RT_RCDATA` resource under the name the
-/// directive gave it, so writing the candidates out hands those files back
-/// without the build's script being involved. A name that is not usable as a
-/// file name (a path, a colon, an empty numeric id) is flattened, and a name
-/// that collides with one already written gets a `.N` suffix.
+/// build keeps every added file as a resource under the name that directive
+/// gave it, so writing them out hands those files back without the build's
+/// script being involved. A name that is not usable as a file name (a path, a
+/// colon, an empty numeric id) is flattened, and a name that collides with one
+/// already written in the same type directory gets a `.N` suffix.
 ///
 /// Returns the paths written, in order.
-pub fn write_candidates(
+pub fn write_resources(
     dir: impl AsRef<Path>,
-    candidates: &[(String, Vec<u8>)],
+    resources: &[(String, String, Vec<u8>)],
 ) -> Result<Vec<PathBuf>, Error> {
     let dir = dir.as_ref();
     std::fs::create_dir_all(dir).map_err(|e| Error::Io(e.to_string()))?;
-    let mut used: Vec<String> = Vec::new();
+    let mut used: Vec<(String, String)> = Vec::new();
     let mut written: Vec<PathBuf> = Vec::new();
-    for (index, (name, bytes)) in candidates.iter().enumerate() {
-        let file = dir.join(unique_file_name(&mut used, name, index + 1));
+    for (index, (kind, name, bytes)) in resources.iter().enumerate() {
+        let kind_dir = sanitize_component(kind);
+        let sub = dir.join(&kind_dir);
+        std::fs::create_dir_all(&sub).map_err(|e| Error::Io(e.to_string()))?;
+        let file = sub.join(unique_file_name(&mut used, &kind_dir, name, index + 1));
         std::fs::write(&file, bytes).map_err(|e| Error::Io(e.to_string()))?;
         written.push(file);
     }
@@ -270,8 +273,34 @@ pub fn write_candidates(
 }
 
 /// A resource name turned into a file name that is unique within `used`.
-fn unique_file_name(used: &mut Vec<String>, name: &str, index: usize) -> String {
-    let cleaned: String = name
+fn unique_file_name(
+    used: &mut Vec<(String, String)>,
+    kind_dir: &str,
+    name: &str,
+    index: usize,
+) -> String {
+    let cleaned = sanitize_component(name);
+    let base = if cleaned == "UNKNOWN" {
+        format!("resource_{index}")
+    } else {
+        cleaned
+    };
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while used
+        .iter()
+        .any(|(k, u)| k.eq_ignore_ascii_case(kind_dir) && u.eq_ignore_ascii_case(&candidate))
+    {
+        candidate = format!("{base}.{n}");
+        n += 1;
+    }
+    used.push((kind_dir.to_string(), candidate.clone()));
+    candidate
+}
+
+/// A string reduced to what one directory or file name can carry.
+fn sanitize_component(text: &str) -> String {
+    let cleaned: String = text
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
@@ -282,19 +311,96 @@ fn unique_file_name(used: &mut Vec<String>, name: &str, index: usize) -> String 
         })
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').to_string();
-    let base = if cleaned.is_empty() {
-        format!("resource_{index}")
+    if cleaned.is_empty() {
+        "UNKNOWN".to_string()
     } else {
         cleaned
-    };
-    let mut candidate = base.clone();
-    let mut n = 2;
-    while used.iter().any(|u| u.eq_ignore_ascii_case(&candidate)) {
-        candidate = format!("{base}.{n}");
-        n += 1;
     }
-    used.push(candidate.clone());
-    candidate
+}
+
+/// Every resource of a PE image, as (type, name, bytes).
+///
+/// Where `candidates_from_image` keeps only the RT_RCDATA entries the
+/// packed-payload search cares about, this is what `au3 unpack` writes out:
+/// every type the image declares, so the files a build added with
+/// `#AutoIt3Wrapper_Res_File_Add` come back next to its icons, manifest and
+/// version block. The type is the directory its entry belongs in.
+pub fn resources_from_image(
+    path: impl AsRef<Path>,
+) -> Result<Vec<(String, String, Vec<u8>)>, Error> {
+    let path = path.as_ref();
+    let image = PeImage::load(path).map_err(Error::Io)?;
+    if let Some(packer) = image.packer {
+        return Err(Error::Packed(packer.to_string()));
+    }
+    Ok(image
+        .resources
+        .iter()
+        .map(|r| {
+            (
+                type_dir_name(&r.type_sel),
+                resource_name(&r.name_sel),
+                r.data.clone(),
+            )
+        })
+        .collect())
+}
+
+/// The directory a resource type is written under.
+///
+/// The names are Windows' own — RT_RCDATA is 10, and the RT_ prefix is
+/// dropped — so a tree reads like RCDATA/SCRIPT, ICON/1, MANIFEST/1. A type
+/// with no name of its own keeps its number rather than being folded into
+/// something wrong.
+fn type_dir_name(selector: &Selector) -> String {
+    if let Some(name) = selector
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        return sanitize_component(name);
+    }
+    let named = match selector.id {
+        Some(1) => "CURSOR",
+        Some(2) => "BITMAP",
+        Some(3) => "ICON",
+        Some(4) => "MENU",
+        Some(5) => "DIALOG",
+        Some(6) => "STRING",
+        Some(7) => "FONTDIR",
+        Some(8) => "FONT",
+        Some(9) => "ACCELERATOR",
+        Some(10) => "RCDATA",
+        Some(11) => "MESSAGETABLE",
+        Some(12) => "GROUP_CURSOR",
+        Some(14) => "GROUP_ICON",
+        Some(16) => "VERSION",
+        Some(17) => "DLGINCLUDE",
+        Some(19) => "PLUGPLAY",
+        Some(20) => "VXD",
+        Some(21) => "ANICURSOR",
+        Some(22) => "ANIICON",
+        Some(23) => "HTML",
+        Some(24) => "MANIFEST",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    match selector.id {
+        Some(other) => format!("TYPE_{other}"),
+        None => "UNKNOWN".to_string(),
+    }
+}
+
+/// A resource's own name, as a file name (a numeric id keeps its digits).
+fn resource_name(selector: &Selector) -> String {
+    match (&selector.name, selector.id) {
+        (Some(name), _) if !name.trim().is_empty() => name.trim().to_string(),
+        (_, Some(id)) => id.to_string(),
+        _ => String::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------

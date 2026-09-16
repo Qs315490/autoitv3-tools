@@ -87,8 +87,8 @@ pub enum Command {
     #[command(visible_aliases = ["dbg"])]
     Debug(commands::debug::DebugArgs),
 
-    /// Recover a build's payload: its compiled script (`--script`) or a
-    /// resource-packed payload
+    /// Recover what a build carries: its resource files (the default), its
+    /// compiled script (`--script`) or a resource-packed payload (`--payload`)
     #[command(visible_aliases = ["unp"])]
     Unpack(commands::unpack::UnpackArgs),
 }

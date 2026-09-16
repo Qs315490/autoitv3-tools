@@ -118,20 +118,32 @@ fn candidates_are_written_out_as_one_file_each() {
     // repeat gets a suffix instead of overwriting the first file.
     let dir = std::env::temp_dir().join(format!("au3-unpack-write-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let candidates = vec![
-        ("File_Add.dat".to_string(), vec![1u8, 2, 3]),
-        ("C:\\dir\\odd:name".to_string(), vec![9]),
-        ("file_add.DAT".to_string(), vec![4]),
-        (String::new(), vec![7]),
+    let resources = vec![
+        ("RCDATA".to_string(), "File_Add.dat".to_string(), vec![1u8, 2, 3]),
+        ("RCDATA".to_string(), "file_add.DAT".to_string(), vec![4]),
+        ("ICON".to_string(), "1".to_string(), vec![9]),
+        ("CUSTOM TYPE".to_string(), String::new(), vec![7]),
     ];
-    let written = write_candidates(&dir, &candidates).expect("writes");
-    let names: Vec<String> = written
+    let written = write_resources(&dir, &resources).expect("writes");
+    let rel: Vec<String> = written
         .iter()
-        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|p| {
+            p.strip_prefix(&dir)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
         .collect();
+    // One directory per resource type, the resource's own name inside it; a
+    // repeat inside a type gets a suffix rather than overwriting the first.
     assert_eq!(
-        names,
-        vec!["File_Add.dat", "C__dir_odd_name", "file_add.DAT.2", "resource_4"]
+        rel,
+        vec![
+            "RCDATA/File_Add.dat",
+            "RCDATA/file_add.DAT.2",
+            "ICON/1",
+            "CUSTOM TYPE/resource_4"
+        ]
     );
     assert_eq!(std::fs::read(&written[0]).unwrap(), vec![1, 2, 3]);
     assert_eq!(std::fs::read(&written[3]).unwrap(), vec![7]);
