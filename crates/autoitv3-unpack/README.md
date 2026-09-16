@@ -101,6 +101,7 @@ au3 unpack chunk.bin  --script                   # 裸 chunk（已 dump 出来�
 ```bash
 au3 unpack ./staged/          # 目录：AutoIt3Wrapper 落盘的 __NAME / __Res64/NAME / __ResImage/_NAME
 au3 unpack build.exe          # 或者直接给 PE，自动枚举它的 RT_RCDATA
+au3 unpack build.exe --dir out/   # 把资源文件逐个落盘到 out/（_Res_File_Add 加进去的文件就在这里）
 au3 unpack build.exe --raw    # --raw 输出拼接后的整段文本，默认一行一条
 au3 unpack build.exe --table  # --table 带 1-based 索引编号
 au3 unpack build.exe --at 152,1263,3147-3149   # 只取这几项

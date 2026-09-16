@@ -71,6 +71,11 @@ pub static ENTRIES: &[(&str, &str)] = &[
         "已解包：加载器 {loader}，成员 {members0}/{members1}/{members2}（已考虑 {resources} 个资源）",
     ),
     ("  {entries} entries, {bytes} bytes", "  {entries} 个条目，{bytes} 字节"),
+    ("  {name} -> {path} ({bytes} bytes)", "  {name} -> {path}（{bytes} 字节）"),
+    (
+        "{count} resource file(s) written to {dir}",
+        "{count} 个资源文件已写入 {dir}",
+    ),
     (
         "evaluated: {globals} globals, {tables} tables, {inlined} values inlined, {calls} calls resolved",
         "已求值：{globals} 个全局变量，{tables} 个表，内联 {inlined} 个值，解析 {calls} 个调用",

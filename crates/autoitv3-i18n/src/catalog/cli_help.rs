@@ -83,6 +83,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ("Emit the concatenated payload instead of one entry per line", "输出拼接后的负载，而非每行一个条目"),
     ("Number the entries, so an index can be read straight off a disassembly or a debugger session", "为条目编号，便于直接从反汇编或调试器会话中读取索引"),
     ("Only these entries: a 1-based index, or a comma-separated list with inclusive ranges (`152`, `1-5,3148`)", "仅这些条目：从 1 开始的索引，或用逗号分隔且范围闭合的列表（`152`、`1-5,3148`）"),
+    ("Write the build's resource files out into this directory, one file each", "把产物里的资源文件逐个写入这个目录"),
     // Runtime messages from `args.rs`.
     ("unknown effect {shown} (try file, env, registry, clipboard, spawn, shutdown, net, process)", "未知的副作用 {shown}（请尝试 file、env、registry、clipboard、spawn、shutdown、net、process）"),
     ("effect {shown} given to both --allow and --deny", "副作用 {shown} 同时传给了 --allow 和 --deny"),

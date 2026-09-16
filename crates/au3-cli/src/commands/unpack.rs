@@ -22,7 +22,9 @@ use std::path::Path;
 
 use autoitv3_i18n::{msg, tr};
 use autoitv3_unpack::script;
-use autoitv3_unpack::{candidates_from_dir, candidates_from_image, select_entries, unpack};
+use autoitv3_unpack::{
+    candidates_from_dir, candidates_from_image, select_entries, unpack, write_candidates,
+};
 use clap::Args;
 
 use crate::args::{CliError, CliResult, OutputArgs};
@@ -54,6 +56,10 @@ pub struct UnpackArgs {
     #[arg(long, value_name = "SPEC")]
     pub at: Option<String>,
 
+    /// Write the build's resource files out into this directory, one file each
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["script", "raw", "table", "at"])]
+    pub dir: Option<String>,
+
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -63,7 +69,54 @@ pub fn run(args: &UnpackArgs) -> CliResult<()> {
     if args.script {
         return run_script(args);
     }
+    if let Some(dir) = &args.dir {
+        return run_resources(args, Path::new(dir));
+    }
     run_payload(args)
+}
+
+/// `--dir`: write the resources the build carries out as files.
+///
+/// A build made with `#AutoIt3Wrapper_Res_File_Add` keeps each added file as an
+/// `RT_RCDATA` resource named by that directive, so writing the image's
+/// resources out under their own names hands those files back. The packed
+/// payload some builds hide in the same resources is *not* what this does — for
+/// that, run without `--dir`.
+fn run_resources(args: &UnpackArgs, dir: &Path) -> CliResult<()> {
+    let path = Path::new(&args.input);
+    let resources = if path.is_dir() {
+        candidates_from_dir(path)
+    } else {
+        candidates_from_image(path)
+    }
+    .map_err(|e| CliError::failure(e.to_string()))?;
+    if resources.is_empty() {
+        return Err(CliError::failure(msg!(
+            "{path}: no resources to look at",
+            path = path.display()
+        )));
+    }
+    let written = write_candidates(dir, &resources).map_err(|e| CliError::failure(e.to_string()))?;
+    for ((name, bytes), file) in resources.iter().zip(written.iter()) {
+        eprintln!(
+            "{}",
+            msg!(
+                "  {name} -> {path} ({bytes} bytes)",
+                name = name,
+                path = file.display(),
+                bytes = bytes.len()
+            )
+        );
+    }
+    eprintln!(
+        "{}",
+        msg!(
+            "{count} resource file(s) written to {dir}",
+            count = written.len(),
+            dir = dir.display()
+        )
+    );
+    Ok(())
 }
 
 /// `--script`: locate the compiled script and print its source.

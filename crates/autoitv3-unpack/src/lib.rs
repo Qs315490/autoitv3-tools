@@ -243,6 +243,60 @@ pub fn candidates_from_image(path: impl AsRef<Path>) -> Result<Vec<(String, Vec<
     Ok(out)
 }
 
+/// Write `candidates` into `dir`, one file per resource.
+///
+/// This is the read-back the `#AutoIt3Wrapper_Res_File_Add` files are for: a
+/// build keeps every added file as an `RT_RCDATA` resource under the name the
+/// directive gave it, so writing the candidates out hands those files back
+/// without the build's script being involved. A name that is not usable as a
+/// file name (a path, a colon, an empty numeric id) is flattened, and a name
+/// that collides with one already written gets a `.N` suffix.
+///
+/// Returns the paths written, in order.
+pub fn write_candidates(
+    dir: impl AsRef<Path>,
+    candidates: &[(String, Vec<u8>)],
+) -> Result<Vec<PathBuf>, Error> {
+    let dir = dir.as_ref();
+    std::fs::create_dir_all(dir).map_err(|e| Error::Io(e.to_string()))?;
+    let mut used: Vec<String> = Vec::new();
+    let mut written: Vec<PathBuf> = Vec::new();
+    for (index, (name, bytes)) in candidates.iter().enumerate() {
+        let file = dir.join(unique_file_name(&mut used, name, index + 1));
+        std::fs::write(&file, bytes).map_err(|e| Error::Io(e.to_string()))?;
+        written.push(file);
+    }
+    Ok(written)
+}
+
+/// A resource name turned into a file name that is unique within `used`.
+fn unique_file_name(used: &mut Vec<String>, name: &str, index: usize) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').to_string();
+    let base = if cleaned.is_empty() {
+        format!("resource_{index}")
+    } else {
+        cleaned
+    };
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while used.iter().any(|u| u.eq_ignore_ascii_case(&candidate)) {
+        candidate = format!("{base}.{n}");
+        n += 1;
+    }
+    used.push(candidate.clone());
+    candidate
+}
+
 // ---------------------------------------------------------------------------
 // Unpacking
 // ---------------------------------------------------------------------------
