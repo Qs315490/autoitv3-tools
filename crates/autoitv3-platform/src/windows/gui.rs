@@ -80,9 +80,11 @@ use windows_sys::Win32::Graphics::Gdi::{
     FillRect, GetObjectW, BITMAP, HBRUSH, HBITMAP,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint,
-    GetStockObject, InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, SelectObject,
-    SetBkColor, SetTextColor, TextOutW, UpdateWindow, HDC, PAINTSTRUCT,
+    BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
+    CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, GetDC, GetStockObject,
+    InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, ReleaseDC, SelectObject,
+    SetBkColor, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW, UpdateWindow, HDC,
+    PAINTSTRUCT, SRCCOPY,
 };
 use windows_sys::Win32::Graphics::GdiPlus::{
     GdipCreateBitmapFromFile, GdipCreateHBITMAPFromBitmap, GdipDisposeImage, GdipGetImageHeight,
@@ -1473,7 +1475,26 @@ impl Win32Backend {
         let Some(loaded) = load_image(&path, icon) else {
             return;
         };
-        unsafe { SendMessageW(state.hwnd, message, kind as usize, loaded.handle as isize) };
+        // Official scales the picture to the control's rect (measured); a
+        // `STATIC` paints bitmaps 1:1, so hand it a pre-stretched copy when the
+        // script named a size and the file differs from it.
+        let handle = if !icon && control.width > 0 && control.height > 0 {
+            let (native_width, native_height) = image_size(loaded.handle);
+            if native_width != control.width || native_height != control.height {
+                match stretch_bitmap(loaded.handle, control.width, control.height) {
+                    Some(scaled) => unsafe {
+                        DeleteObject(loaded.handle);
+                        scaled
+                    },
+                    None => loaded.handle,
+                }
+            } else {
+                loaded.handle
+            }
+        } else {
+            loaded.handle
+        };
+        unsafe { SendMessageW(state.hwnd, message, kind as usize, handle as isize) };
         // A picture with no size of its own takes the file's size.
         if !icon && control.width == 0 && control.height == 0 && loaded.width > 0 {
             unsafe {
@@ -1487,7 +1508,12 @@ impl Win32Backend {
                 )
             };
         }
-        state.image_handle = Some(loaded);
+        state.image_handle = Some(LoadedImage {
+            handle,
+            icon: loaded.icon,
+            width: loaded.width,
+            height: loaded.height,
+        });
     }
 
     /// Remember the colours a control was given, which its parent's window
@@ -2615,6 +2641,66 @@ fn load_image(path: &str, icon: bool) -> Option<LoadedImage> {
         width,
         height,
     })
+}
+
+/// A copy of `bitmap` stretched to `(width, height)`.
+///
+/// Official `GUICtrlCreatePic` **scales** the picture to the rect the script
+/// asked for (measured: a 607x303 file in a 400x300 control fills it edge to
+/// edge). A `STATIC` with `SS_BITMAP` can only paint 1:1, so the scaled copy
+/// is made up front and that is what the control receives.
+fn stretch_bitmap(bitmap: HBITMAP, width: i32, height: i32) -> Option<HBITMAP> {
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    unsafe {
+        let screen = GetDC(std::ptr::null_mut());
+        if screen.is_null() {
+            return None;
+        }
+        let memory = CreateCompatibleDC(screen);
+        let scaled = CreateCompatibleBitmap(screen, width, height);
+        let source = CreateCompatibleDC(screen);
+        let result = if memory.is_null() || scaled.is_null() || source.is_null() {
+            if !scaled.is_null() {
+                DeleteObject(scaled);
+            }
+            None
+        } else {
+            let old_memory = SelectObject(memory, scaled as _);
+            let old_source = SelectObject(source, bitmap as _);
+            SetStretchBltMode(memory, 3);
+            let drawn = StretchBlt(
+                memory,
+                0,
+                0,
+                width,
+                height,
+                source,
+                0,
+                0,
+                image_size(bitmap).0,
+                image_size(bitmap).1,
+                SRCCOPY,
+            ) != 0;
+            SelectObject(memory, old_memory);
+            SelectObject(source, old_source);
+            if drawn {
+                Some(scaled)
+            } else {
+                DeleteObject(scaled);
+                None
+            }
+        };
+        if !memory.is_null() {
+            DeleteDC(memory);
+        }
+        if !source.is_null() {
+            DeleteDC(source);
+        }
+        ReleaseDC(std::ptr::null_mut(), screen);
+        result
+    }
 }
 
 /// The pixel size of a bitmap GDI loaded.
