@@ -100,12 +100,12 @@ pub fn run(args: &UnpackArgs) -> CliResult<()> {
 /// a compiled script that still has its `#AutoIt3Wrapper_Res_File_Add` lines.
 /// `None` when there is nothing to read: the image has no script chunk, the
 /// source does not parse, or no directive names a resource.
-fn staged_paths(path: &Path) -> Option<Vec<(String, String)>> {
+fn staged_paths(path: &Path) -> Option<(Vec<(String, String)>, String)> {
     let compiled = script::from_image(path).ok()?;
     let source = compiled.source().ok()?;
     let program = autoitv3_ast::parse(&source).ok()?;
     let wanted = crate::args::wrapper_resources(&program);
-    (!wanted.is_empty()).then_some(wanted)
+    (!wanted.is_empty()).then_some((wanted, source))
 }
 
 /// The directory the default extraction writes into: <input>.unpacked.
@@ -154,7 +154,7 @@ fn run_resources(args: &UnpackArgs, dir: &Path) -> CliResult<()> {
     // the image carries is written in the staging layout instead.
     let staged = if !args.all && path.is_file() { staged_paths(path) } else { None };
     match staged {
-        Some(wanted) => {
+        Some((wanted, source)) => {
             let missing: Vec<&String> = wanted
                 .iter()
                 .filter(|(name, _)| {
@@ -172,6 +172,25 @@ fn run_resources(args: &UnpackArgs, dir: &Path) -> CliResult<()> {
             }
             let written =
                 write_staged(dir, &wanted, &resources).map_err(|e| CliError::failure(e.to_string()))?;
+            // The script came out of the same image and is half the answer:
+            // write it next to the resources it names, under the input's stem.
+            let script_name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned() + ".au3")
+                .unwrap_or_else(|| "script.au3".to_string());
+            let script_path = dir.join(&script_name);
+            std::fs::write(&script_path, &source).map_err(|e| {
+                CliError::failure(msg!("{path}: {error}", path = script_path.display(), error = e.to_string()))
+            })?;
+            eprintln!(
+                "{}",
+                msg!(
+                    "  {name} -> {path} ({bytes} bytes)",
+                    name = script_name,
+                    path = script_path.display(),
+                    bytes = source.len(),
+                )
+            );
             for (_name, path, bytes) in &written {
                 eprintln!(
                     "{}",

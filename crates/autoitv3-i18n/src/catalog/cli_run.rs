@@ -66,6 +66,7 @@ pub static ENTRIES: &[(&str, &str)] = &[
     ),
     ("  {sub_type} {name} ({bytes} bytes)", "  {sub_type} {name}（{bytes} 字节）"),
     ("{path}: no resources to look at", "{path}：没有可查看的资源"),
+    ("{path}: {error}", "{path}：{error}"),
     (
         "unpacked: loader {loader}, members {members0}/{members1}/{members2} ({resources} resources considered)",
         "已解包：加载器 {loader}，成员 {members0}/{members1}/{members2}（已考虑 {resources} 个资源）",
