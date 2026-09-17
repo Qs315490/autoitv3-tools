@@ -136,6 +136,9 @@ fn docked(
 
 /// `$LVS_EX_CHECKBOXES`: a `ListView` whose items carry a check box.
 const LVS_EX_CHECKBOXES: i64 = 0x0000_0004;
+/// `WS_EX_MDICHILD`: a subform style that makes `GUICreate`'s left/top
+/// relative to the owner's client area (measured on the official interpreter).
+const WS_EX_MDICHILD: i64 = 0x40;
 
 /// The bits a part reports through `GUICtrlRead`: its own checked, focus and
 /// default-button state.
@@ -780,13 +783,12 @@ impl GuiState {
                 };
                 let width = arg_int(args, 1).max(1) as i32;
                 let height = arg_int(args, 2).max(1) as i32;
-                // A subform carries `WS_EX_MDICHILD` (0x40) in its exstyle; the official
+                // A subform carries `WS_EX_MDICHILD` in its exstyle; the official
                 // interpreter then treats left/top as **relative to the owner's client
                 // area** (measured: an owned popup at (4,32) over a main at (578,263)
                 // lands at (579,292) on screen, inside the owner). Everything else keeps
                 // screen coordinates. The model stores screen rects, so add the owner's
                 // client origin here.
-                let WS_EX_MDICHILD: i64 = 0x40;
                 let mut x = position(3, width, desktop_width);
                 let mut y = position(4, height, desktop_height);
                 if let Some(owner_handle) = owner {
