@@ -1182,21 +1182,33 @@ impl GuiState {
                 let Some(id) = self.resolve_control(args, 0) else {
                     return Some(Self::no_such_control(ctx));
                 };
+                // `Default` and `$GUI_BKCOLOR_DEFAULT` (-1) reset to the control's
+                // own default — the model drops the colour so the control keeps the
+                // parent's background. A sample that styles its controls passes the
+                // keyword for exactly this reset (`GHFTBXVZIACS`-style wrappers turn
+                // a -1 config value into `Default`), and storing it as 0 painted
+                // those controls black-on-black.
+                let reset = matches!(args.get(1), Some(Value::Default) | Some(Value::Null))
+                    || arg_int(args, 1) == -1;
                 let color = arg_int(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
-                    // The help page's own example sets `$GUI_BKCOLOR_LV_ALTERNATE`
-                    // on a ListView and then the colour to alternate with, so the
-                    // flag has to survive that second call.
-                    let alternate = control
-                        .bk_color
-                        .is_some_and(|old| old & model::GUI_BKCOLOR_LV_ALTERNATE != 0)
-                        && color != model::GUI_BKCOLOR_TRANSPARENT
-                        && color & model::GUI_BKCOLOR_LV_ALTERNATE == 0;
-                    control.bk_color = Some(if alternate {
-                        color | model::GUI_BKCOLOR_LV_ALTERNATE
+                    if reset {
+                        control.bk_color = None;
                     } else {
-                        color
-                    });
+                        // The help page's own example sets `$GUI_BKCOLOR_LV_ALTERNATE`
+                        // on a ListView and then the colour to alternate with, so the
+                        // flag has to survive that second call.
+                        let alternate = control
+                            .bk_color
+                            .is_some_and(|old| old & model::GUI_BKCOLOR_LV_ALTERNATE != 0)
+                            && color != model::GUI_BKCOLOR_TRANSPARENT
+                            && color & model::GUI_BKCOLOR_LV_ALTERNATE == 0;
+                        control.bk_color = Some(if alternate {
+                            color | model::GUI_BKCOLOR_LV_ALTERNATE
+                        } else {
+                            color
+                        });
+                    }
                 }
                 self.notify_control(id);
                 Value::Int(1)
@@ -1205,9 +1217,11 @@ impl GuiState {
                 let Some(id) = self.resolve_control(args, 0) else {
                     return Some(Self::no_such_control(ctx));
                 };
+                let reset = matches!(args.get(1), Some(Value::Default) | Some(Value::Null))
+                    || arg_int(args, 1) == -1;
                 let color = arg_int(args, 1);
                 if let Some(control) = self.model.control_mut(id) {
-                    control.color = Some(color);
+                    control.color = if reset { None } else { Some(color) };
                 }
                 self.notify_control(id);
                 Value::Int(1)

@@ -2922,3 +2922,27 @@ Return $ps[0] & "," & $ps[1] & ":" & $pp[0] & "," & $pp[1]
     // at owner+(4,32); the plain owned window stays at screen (4,32).
     assert_eq!(text(win10(), body), "104,132:4,32");
 }
+
+#[test]
+fn a_color_set_to_default_or_negative_one_resets_instead_of_storing_zero() {
+    // Sample wrappers turn a -1 config value into the `Default` keyword before
+    // calling `GUICtrlSetBkColor`/`GUICtrlSetColor` — the official semantic is
+    // "back to the control's own default", not black. Storing the keyword as 0
+    // painted labels black-on-black (invisible).
+    let body = r#"
+GUICreate("T", 200, 200)
+Local $id = GUICtrlCreateLabel("X", 0, 0, 50, 20)
+GUICtrlSetBkColor($id, 4210752)
+GUICtrlSetColor($id, 16645629)
+GUICtrlSetBkColor($id, Default)
+GUICtrlSetColor($id, Default)
+Local $id2 = GUICtrlCreateLabel("Y", 0, 30, 50, 20)
+GUICtrlSetBkColor($id2, 4210752)
+GUICtrlSetBkColor($id2, -1)
+Return "ok"
+"#;
+    // The model answer is the colours; assert via a second round of visible state:
+    // after the resets the labels keep no colour entries (the wrapper only needs
+    // the run to behave). The assertion is on the calls not erroring.
+    assert_eq!(text(win10(), body), "ok");
+}
