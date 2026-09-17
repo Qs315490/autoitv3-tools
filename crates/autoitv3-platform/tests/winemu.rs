@@ -2123,7 +2123,6 @@ Return $p[2] & "x" & $p[3] & " msg " & $msg
 }
 
 #[test]
-#[test]
 fn guigetmsg_in_advanced_mode_hands_back_an_array() {
     // Measured on the official x64 interpreter: `GUIGetMsg(1)` is the advanced
     // mode - the event comes back as [event, window, control-hwnd, control-id,
@@ -2138,6 +2137,7 @@ fn guigetmsg_in_advanced_mode_hands_back_an_array() {
     assert_eq!(text(win10(), body), "Int32:0:5:0:0:Int32:0");
 }
 
+#[test]
 fn a_user_resize_reaches_wingetpos_and_guigetmsg() {
     // What a live window sends after the user drags an edge.
     let seen = Rc::new(RefCell::new(Vec::new()));
