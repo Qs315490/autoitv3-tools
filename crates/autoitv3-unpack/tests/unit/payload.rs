@@ -164,3 +164,56 @@ fn candidates_are_written_out_as_one_file_each() {
     assert_eq!(std::fs::read(&grouped[3]).unwrap(), vec![7]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn staging_paths_come_from_the_directives_the_script_carries() {
+    // The first field is where the wrapper staged the file on the build
+    // machine, the third is the resource name the image carries: that pair is
+    // where an extraction belongs. A missing name falls back to the file's own,
+    // and a repeated resource is not listed twice.
+    let source = concat!(
+        "#AutoIt3Wrapper_Res_File_Add=__ResImage\\_ABC, RT_RCDATA, ABC, 0
+",
+        "#AutoIt3Wrapper_Res_File_Add=__Res64\\DEF, RT_RCDATA, DEF, 0
+",
+        "#AutoIt3Wrapper_Res_File_Add=__GHI
+",
+        "#AutoIt3Wrapper_Res_File_Add=__ResImage\\_ABC, RT_RCDATA, ABC, 0
+",
+        "#AutoIt3Wrapper_Res_Version=1.2.3.4
+",
+    );
+    let wanted = staging_paths_from_source(source);
+    assert_eq!(
+        wanted,
+        vec![
+            ("ABC".to_string(), "__ResImage\\_ABC".to_string()),
+            ("DEF".to_string(), "__Res64\\DEF".to_string()),
+            ("__GHI".to_string(), "__GHI".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn staged_writes_only_what_the_script_asks_for() {
+    let dir = std::env::temp_dir().join(format!("au3-unpack-staged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let wanted = vec![
+        ("ABC".to_string(), "__ResImage\\_ABC".to_string()),
+        ("GONE".to_string(), "__Res64\\GONE".to_string()),
+    ];
+    let resources = vec![
+        ("RCDATA".to_string(), "ABC".to_string(), vec![1u8, 2, 3]),
+        ("RCDATA".to_string(), "EXTRA".to_string(), vec![9]),
+    ];
+    let written = write_staged(&dir, &wanted, &resources).expect("writes");
+    // `GONE` is not in the image and `EXTRA` is not in the script: neither is
+    // written, and the one that is sits at the path the directive named.
+    assert_eq!(written.len(), 1);
+    assert_eq!(
+        std::fs::read(dir.join("__ResImage").join("_ABC")).unwrap(),
+        vec![1, 2, 3]
+    );
+    assert!(!dir.join("__Res64").join("GONE").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

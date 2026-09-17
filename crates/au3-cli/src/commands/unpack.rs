@@ -24,7 +24,7 @@ use autoitv3_i18n::{msg, tr};
 use autoitv3_unpack::script;
 use autoitv3_unpack::{
     candidates_from_dir, candidates_from_image, resources_from_image, select_entries, unpack,
-    write_resources, Layout,
+    write_resources, write_staged, Layout,
 };
 use clap::Args;
 
@@ -72,6 +72,11 @@ pub struct UnpackArgs {
     #[arg(long)]
     pub by_type: bool,
 
+    /// Extract every resource, not only the ones the script's
+    /// `#AutoIt3Wrapper_Res_File_Add` lines name
+    #[arg(long)]
+    pub all: bool,
+
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -89,6 +94,18 @@ pub fn run(args: &UnpackArgs) -> CliResult<()> {
     let default_dir = default_extract_dir(&args.input);
     let dir = args.dir.as_deref().unwrap_or(default_dir.as_str());
     run_resources(args, Path::new(dir))
+}
+
+/// The staging paths the build's own script asks for, when the image carries
+/// a compiled script that still has its `#AutoIt3Wrapper_Res_File_Add` lines.
+/// `None` when there is nothing to read: the image has no script chunk, the
+/// source does not parse, or no directive names a resource.
+fn staged_paths(path: &Path) -> Option<Vec<(String, String)>> {
+    let compiled = script::from_image(path).ok()?;
+    let source = compiled.source().ok()?;
+    let program = autoitv3_ast::parse(&source).ok()?;
+    let wanted = crate::args::wrapper_resources(&program);
+    (!wanted.is_empty()).then_some(wanted)
 }
 
 /// The directory the default extraction writes into: <input>.unpacked.
@@ -130,30 +147,79 @@ fn run_resources(args: &UnpackArgs, dir: &Path) -> CliResult<()> {
             path = path.display()
         )));
     }
-    let layout = if args.by_type { Layout::ByType } else { Layout::Stage };
-    let written =
-        write_resources(dir, &resources, layout).map_err(|e| CliError::failure(e.to_string()))?;
-    for ((_, _, bytes), file) in resources.iter().zip(written.iter()) {
-        let relative = file.strip_prefix(dir).unwrap_or(file).display().to_string();
-        eprintln!(
-            "{}",
-            msg!(
-                "  {name} -> {path} ({bytes} bytes)",
-                name = relative,
-                path = file.display(),
-                bytes = bytes.len()
-            )
-        );
+    // The script decides where its resources go: when the image carries a
+    // compiled script with `#AutoIt3Wrapper_Res_File_Add` lines, each one
+    // names both the resource and the path it was staged at, so that is where
+    // the bytes belong. Without such a table — or with `--all` — everything
+    // the image carries is written in the staging layout instead.
+    let staged = if !args.all && path.is_file() { staged_paths(path) } else { None };
+    match staged {
+        Some(wanted) => {
+            let missing: Vec<&String> = wanted
+                .iter()
+                .filter(|(name, _)| {
+                    // `resources_from_image` yields `(type, name, bytes)`.
+                    !resources.iter().any(|(_, n, _)| n.eq_ignore_ascii_case(name))
+                })
+                .map(|(name, _)| name)
+                .collect();
+            if !missing.is_empty() {
+                return Err(CliError::failure(msg!(
+                    "{path}: the script wants resource(s) the image does not carry: {names}",
+                    path = path.display(),
+                    names = missing.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", "),
+                )));
+            }
+            let written =
+                write_staged(dir, &wanted, &resources).map_err(|e| CliError::failure(e.to_string()))?;
+            for (_name, path, bytes) in &written {
+                eprintln!(
+                    "{}",
+                    msg!(
+                        "  {name} -> {path} ({bytes} bytes)",
+                        name = path,
+                        path = dir.join(path.replace('\\', "/")).display(),
+                        bytes = bytes.len(),
+                    )
+                );
+            }
+            eprintln!(
+                "{}",
+                msg!(
+                    "{count} resource file(s) written to {dir}",
+                    count = written.len(),
+                    dir = dir.display(),
+                )
+            );
+            return Ok(());
+        }
+        None => {
+            let layout = if args.by_type { Layout::ByType } else { Layout::Stage };
+            let written = write_resources(dir, &resources, layout)
+                .map_err(|e| CliError::failure(e.to_string()))?;
+            for ((_, _, bytes), file) in resources.iter().zip(written.iter()) {
+                let relative = file.strip_prefix(dir).unwrap_or(file).display().to_string();
+                eprintln!(
+                    "{}",
+                    msg!(
+                        "  {name} -> {path} ({bytes} bytes)",
+                        name = relative,
+                        path = file.display(),
+                        bytes = bytes.len(),
+                    )
+                );
+            }
+            eprintln!(
+                "{}",
+                msg!(
+                    "{count} resource file(s) written to {dir}",
+                    count = written.len(),
+                    dir = dir.display(),
+                )
+            );
+            Ok(())
+        }
     }
-    eprintln!(
-        "{}",
-        msg!(
-            "{count} resource file(s) written to {dir}",
-            count = written.len(),
-            dir = dir.display()
-        )
-    );
-    Ok(())
 }
 
 /// `--script`: locate the compiled script and print its source.

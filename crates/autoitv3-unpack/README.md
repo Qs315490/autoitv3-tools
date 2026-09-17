@@ -94,13 +94,17 @@ au3 unpack chunk.bin  --script                   # 裸 chunk（已 dump 出来�
 
 ## 解出资源文件（默认行为）
 
-`au3 unpack <PATH>` 不给别的开关时，把产物带的资源写成文件，用的是 AutoIt3Wrapper 落盘时
-的 **staging 路径**：每个资源写成 `__ResImage/_NAME`（本 crate 的读取端 `find_resource_file`
-正是按这个形状找的），默认落在输入旁边的 `<input>.unpacked/`，`--dir DIR` 换位置；
-`--by-type` 改成按资源类型分目录（`RCDATA/SCRIPT`、`ICON/1`、`MANIFEST/1`……）。
-`#AutoIt3Wrapper_Res_File_Add` 加进去的文件就是这些 `RCDATA` 条目；名字里不能当文件名的
-字符会压平，重名加 `.N`。解出来的目录可以直接当 staging 目录用——`--payload` 认得它，
-`au3 run` 也能从里面读资源。
+`au3 unpack <PATH>` 不给别的开关时，**先解出编译脚本**，再按脚本里
+`#AutoIt3Wrapper_Res_File_Add` 指令（`file[, section[, name[, lang]]]`）落盘：第一参数
+就是 wrapper 构建时把文件放在哪（`__ResImage\\_NAME`、`__Res64\\NAME`、`__NAME`），第三参数
+是镜像里的资源名——解出的字节写回第一参数那个路径，解出来的目录直接就是一份 staging
+目录（`--payload` 认得它，`au3 run` 也能从里面读资源）。脚本点名了镜像里没有的资源，或
+某个点名资源没被解出，都会报错而不是悄悄少文件。
+
+脚本解不出来、或没有一条 `Res_File_Add` 时，退回全量：把镜像**全部**资源按 staging 布局
+（`__ResImage/_NAME`）写出；`--all` 强制全量，`--by-type` 改成按资源类型分目录
+（`RCDATA/SCRIPT`、`ICON/1`……）。默认落在输入旁边的 `<input>.unpacked/`，`--dir DIR`
+换位置；名字里不能当文件名的字符会压平，重名加 `.N`。
 
 ## 解包资源载荷（`au3 unpack --payload`）
 

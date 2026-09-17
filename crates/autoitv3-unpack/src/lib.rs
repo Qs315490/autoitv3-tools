@@ -431,6 +431,89 @@ fn resource_name(selector: &Selector) -> String {
     }
 }
 
+
+/// The staging paths a build's `#AutoIt3Wrapper_Res_File_Add` lines name, as
+/// `(resource name, path as written)` pairs.
+///
+/// The directive's first field is where the wrapper staged the file on the
+/// build machine (`__ResImage\_RES…`, `__Res64\…`, `__…`), and its third field
+/// is the resource name the compiled image carries — so the pair is exactly
+/// where an extraction should put the bytes for a resource lookup to find
+/// them again. The syntax is `file[, section[, name[, language]]]`; a missing
+/// name falls back to the file's own, as the wrapper documents.
+pub fn staging_paths_from_source(source: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in source.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("#AutoIt3Wrapper_Res_File_Add") else {
+            continue;
+        };
+        let value = rest.trim_start_matches(['=', ' ']).trim();
+        if value.is_empty() {
+            continue;
+        }
+        let value = value.trim_matches('"');
+        let mut fields = value.split(',').map(str::trim);
+        let Some(file) = fields.next().filter(|f| !f.is_empty()) else {
+            continue;
+        };
+        let _section = fields.next();
+        let resource = fields
+            .next()
+            .filter(|f| !f.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                Path::new(file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| file.to_string())
+            });
+        let pair = (resource, file.to_string());
+        if !out.iter().any(|(r, _)| r.eq_ignore_ascii_case(&pair.0)) {
+            out.push(pair);
+        }
+    }
+    out
+}
+
+/// Write embedded resources out under the staging paths a build named.
+///
+/// `wanted` maps each resource name to the path its
+/// `#AutoIt3Wrapper_Res_File_Add` line staged the file at; a resource whose
+/// name is not in the map is skipped, because the script never asks for it.
+/// The paths are written as given (with `\` read as a separator), so the
+/// output directory is a staging directory a resource lookup accepts. A path
+/// that already exists is an error rather than something to overwrite.
+///
+/// Returns the `(resource name, path, bytes)` triples that were written.
+pub fn write_staged(
+    dir: impl AsRef<Path>,
+    wanted: &[(String, String)],
+    resources: &[(String, String, Vec<u8>)],
+) -> Result<Vec<(String, String, Vec<u8>)>, Error> {
+    let dir = dir.as_ref();
+    std::fs::create_dir_all(dir).map_err(|e| Error::Io(e.to_string()))?;
+    let mut written = Vec::new();
+    for (name, path) in wanted {
+        let Some((_, _, bytes)) = resources
+            .iter()
+            .find(|(_, n, _)| n.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+        let target = dir.join(path.replace('\\', "/"));
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::Io(e.to_string()))?;
+        }
+        if target.exists() {
+            return Err(Error::Io(format!("{}: already exists", target.display())));
+        }
+        std::fs::write(&target, bytes).map_err(|e| Error::Io(e.to_string()))?;
+        written.push((name.clone(), path.clone(), bytes.clone()));
+    }
+    Ok(written)
+}
+
 // ---------------------------------------------------------------------------
 // Unpacking
 // ---------------------------------------------------------------------------
