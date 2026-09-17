@@ -780,13 +780,30 @@ impl GuiState {
                 };
                 let width = arg_int(args, 1).max(1) as i32;
                 let height = arg_int(args, 2).max(1) as i32;
+                // A subform carries `WS_EX_MDICHILD` (0x40) in its exstyle; the official
+                // interpreter then treats left/top as **relative to the owner's client
+                // area** (measured: an owned popup at (4,32) over a main at (578,263)
+                // lands at (579,292) on screen, inside the owner). Everything else keeps
+                // screen coordinates. The model stores screen rects, so add the owner's
+                // client origin here.
+                let WS_EX_MDICHILD: i64 = 0x40;
+                let mut x = position(3, width, desktop_width);
+                let mut y = position(4, height, desktop_height);
+                if let Some(owner_handle) = owner {
+                    if arg_int(args, 6) & WS_EX_MDICHILD != 0 {
+                        if let Some(owner_window) = self.model.window(owner_handle) {
+                            x = owner_window.x + x;
+                            y = owner_window.y + y;
+                        }
+                    }
+                }
                 let window = Window {
                     handle,
                     title: arg_str(args, 0),
                     width,
                     height,
-                    x: position(3, width, desktop_width),
-                    y: position(4, height, desktop_height),
+                    x,
+                    y,
                     style: arg_int(args, 5),
                     exstyle: arg_int(args, 6),
                     visible: false,

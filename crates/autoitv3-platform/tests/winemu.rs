@@ -2901,3 +2901,24 @@ Return $pa[0] & "," & $pa[1] & ":" & $pb[0] & "," & $pb[1] & ":" & $pc[0] & "," 
     // frame hangs outside it, within a few pixels of the official answer).
     assert_eq!(text(win10(), body), "312,234:312,234:20,30");
 }
+
+#[test]
+fn an_mdichild_subform_is_positioned_relative_to_its_owner() {
+    // Measured on the official x64 interpreter (wine): a subform whose exstyle
+    // carries `WS_EX_MDICHILD` (0x40) is placed relative to its owner's client
+    // area — an owned popup at (4,32) over a main at (578,263) landed on screen
+    // at (579,292), inside the owner. Without the style the same coordinates
+    // stay screen coordinates (measured: a mask at (10,10) really sat at
+    // screen (10,10) while its owner was centred elsewhere).
+    let body = r#"
+Local $main = GUICreate("m", 761, 551, 100, 100, 2147483648)
+Local $sub = GUICreate("", 759, 521, 4, 32, 2147483648, 192, $main)
+Local $plain = GUICreate("", 100, 100, 4, 32, 2147483648, 128, $main)
+Local $ps = WinGetPos($sub)
+Local $pp = WinGetPos($plain)
+Return $ps[0] & "," & $ps[1] & ":" & $pp[0] & "," & $pp[1]
+"#;
+    // Main is at (100,100) (explicit, no centring); the MDICHILD subform lands
+    // at owner+(4,32); the plain owned window stays at screen (4,32).
+    assert_eq!(text(win10(), body), "104,132:4,32");
+}
