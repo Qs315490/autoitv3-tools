@@ -2881,3 +2881,23 @@ Return IsHWnd($mask) & ":" & IsHWnd($by_title) & ":" & WinGetState($mask)
 "#;
     assert_eq!(text(win10(), body), "1:1:13");
 }
+
+#[test]
+fn guicreate_centres_a_window_when_left_or_top_is_default() {
+    // Measured on the official x64 interpreter (1920x1080 desktop): a 400x300
+    // window with no left/top lands with its outer frame centred (758,375).
+    // A missing or `-1` coordinate means "default position", not the corner;
+    // an explicit 0 or more is used as-is.
+    let body = r#"
+Local $a = GUICreate("a", 400, 300)
+Local $pa = WinGetPos($a)
+Local $b = GUICreate("b", 400, 300, -1, -1)
+Local $pb = WinGetPos($b)
+Local $c = GUICreate("c", 100, 100, 20, 30)
+Local $pc = WinGetPos($c)
+Return $pa[0] & "," & $pa[1] & ":" & $pb[0] & "," & $pb[1] & ":" & $pc[0] & "," & $pc[1]
+"#;
+    // The headless desktop is 1024x768; the client area is centred (the real
+    // frame hangs outside it, within a few pixels of the official answer).
+    assert_eq!(text(win10(), body), "312,234:312,234:20,30");
+}

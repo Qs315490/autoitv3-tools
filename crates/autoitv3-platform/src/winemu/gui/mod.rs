@@ -762,13 +762,31 @@ impl GuiState {
                     }
                     None => None,
                 };
+                // A missing or `-1` left/top is the *default position*: the
+                // official interpreter centres the window on the desktop
+                // (measured: 400x300 on a 1024x768 desktop lands at 758,375 —
+                // the client area centred, the frame hanging outside).
+                let (desktop_width, desktop_height) = self.desktop_size();
+                let position = |index: usize, extent: i32, desktop: i32| -> i32 {
+                    let asked = match args.get(index) {
+                        Some(value) => value.to_int(),
+                        None => -1,
+                    };
+                    if asked >= 0 {
+                        asked as i32
+                    } else {
+                        ((desktop - extent) / 2).max(0)
+                    }
+                };
+                let width = arg_int(args, 1).max(1) as i32;
+                let height = arg_int(args, 2).max(1) as i32;
                 let window = Window {
                     handle,
                     title: arg_str(args, 0),
-                    width: arg_int(args, 1) as i32,
-                    height: arg_int(args, 2) as i32,
-                    x: arg_int(args, 3) as i32,
-                    y: arg_int(args, 4) as i32,
+                    width,
+                    height,
+                    x: position(3, width, desktop_width),
+                    y: position(4, height, desktop_height),
                     style: arg_int(args, 5),
                     exstyle: arg_int(args, 6),
                     visible: false,
