@@ -101,7 +101,7 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics,
-    GetParent, GetWindowRect, SetWindowLongW,
+    GetParent, GetWindowLongW, GetWindowRect, SetLayeredWindowAttributes, SetWindowLongW,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsIconic, IsWindow, IsZoomed,
     LoadCursorW, LoadImageW, MoveWindow, PeekMessageW, RegisterClassExW, SendMessageW, SetCursor,
     SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
@@ -128,6 +128,10 @@ const WS_GROUP: u32 = 0x0002_0000;
 const WS_BORDER: u32 = 0x0080_0000;
 const WS_VSCROLL: u32 = 0x0020_0000;
 const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
+// `WinSetTrans` turns a window layered; `GWL_EXSTYLE` reads the word back.
+const WS_EX_LAYERED: i32 = 0x0008_0000;
+const GWL_EXSTYLE: i32 = -20;
+const LWA_ALPHA: u32 = 2;
 
 // `ShowWindow` commands.
 const SW_HIDE: i32 = 0;
@@ -660,6 +664,12 @@ pub struct Win32Backend {
     /// Which windows were last pushed on top, so the z-order is only changed
     /// when the model asks for a different one.
     topmost: HashMap<i64, bool>,
+    /// The alpha each window was last given, so `WinSetTrans` only costs a
+    /// call when the degree changed (`None` = no degree set yet).
+    transparency: HashMap<i64, Option<i32>>,
+    /// Which windows currently carry the layered style, so dropping the degree
+    /// removes it exactly once.
+    layered: HashMap<i64, bool>,
     /// The control that was last given the input focus.
     focused: Option<i64>,
     /// The splash, progress and tooltip windows this backend has open.
@@ -692,6 +702,8 @@ impl Win32Backend {
             applied: HashMap::new(),
             frames: HashMap::new(),
             topmost: HashMap::new(),
+            transparency: HashMap::new(),
+            layered: HashMap::new(),
             focused: None,
             feedback: dialogs::Feedback::default(),
             tooltips: HashMap::new(),
@@ -831,6 +843,25 @@ impl Win32Backend {
                 )
             };
             self.topmost.insert(window.handle, window.topmost);
+        }
+        // `WinSetTrans`: the layered style plus an alpha. The model stores the
+        // degree; this only costs a call when it changed.
+        if self.transparency.get(&window.handle) != Some(&window.transparency) {
+            match window.transparency {
+                Some(degree) => unsafe {
+                    let exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+                    SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_LAYERED);
+                    SetLayeredWindowAttributes(hwnd, 0, degree as u8, LWA_ALPHA);
+                    self.layered.insert(window.handle, true);
+                },
+                None if self.layered.contains_key(&window.handle) => unsafe {
+                    let exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+                    SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle & !WS_EX_LAYERED);
+                    self.layered.remove(&window.handle);
+                },
+                None => {}
+            }
+            self.transparency.insert(window.handle, window.transparency);
         }
         if let Some(focus) = window.focus {
             if self.focused != Some(focus) {

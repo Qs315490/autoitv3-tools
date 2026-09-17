@@ -197,7 +197,8 @@ pub const FUNCTIONS: &[&str] = &[
     "WinActivate", "WinActive", "WinClose", "WinExists", "WinGetCaretPos", "WinGetClassList",
     "WinGetClientSize", "WinGetHandle", "WinGetPos", "WinGetProcess", "WinGetState",
     "WinGetText", "WinGetTitle", "WinKill", "WinList", "WinMenuSelectItem", "WinMinimizeAll",
-    "WinMinimizeAllUndo", "WinMove", "WinSetOnTop", "WinSetState", "WinSetTitle", "WinWait",
+    "WinMinimizeAllUndo", "WinMove", "WinSetOnTop", "WinSetState", "WinSetTitle", "WinSetTrans",
+    "WinWait",
     "WinWaitActive", "WinWaitClose", "WinWaitNotActive", "StatusbarGetText",
     // controls
     "ControlClick", "ControlCommand", "ControlDisable", "ControlEnable", "ControlFocus",
@@ -768,6 +769,7 @@ impl GuiState {
                     icon: None,
                     focus: None,
                     topmost: false,
+                    transparency: None,
                     resizing: 0,
                     on_events: std::collections::HashMap::new(),
                     controls: Vec::new(),
@@ -1449,6 +1451,26 @@ impl GuiState {
                     self.resize_window(handle, width as i32, height as i32);
                     self.notify_window(handle);
                 }
+                Value::Int(1)
+            }
+            "winsettrans" => {
+                // `WinSetTrans(title, text, degree)`: 0 (invisible) .. 255
+                // (opaque). Measured on the official x64 interpreter: a live
+                // window answers 1 with `@error` 0 — even for a degree out of
+                // the range — while a window that does not exist answers **0
+                // with `@error` 0**, unlike most window functions. The text
+                // argument is the window-text filter every `Win*` takes; the
+                // model keeps the degree so a renderer can apply it, and the
+                // semantics never gate on it.
+                let Some(handle) = self.window_arg(args, 0) else {
+                    return Some(Value::Int(0));
+                };
+                let degree = arg_int(args, 2).clamp(0, 255) as i32;
+                if let Some(window) = self.model.window_mut(handle) {
+                    window.transparency = Some(degree);
+                }
+                self.notify_window(handle);
+                ctx.set_error(0, 0);
                 Value::Int(1)
             }
             "winactivate" => {

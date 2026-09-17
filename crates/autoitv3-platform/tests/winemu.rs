@@ -2847,3 +2847,22 @@ fn isint_and_isnumber_follow_the_official_predicates() {
 "#;
     assert_eq!(text(win10(), body), "1:0:0:1:0:0:0:1:0:0");
 }
+
+#[test]
+fn winsettrans_answers_like_the_official_one() {
+    // Measured on the official x64 interpreter: a live window answers 1 with
+    // `@error` 0 — even for a degree out of the 0..255 range — while a window
+    // that does not exist answers **0 with `@error` 0**, unlike most window
+    // functions.
+    let body = r#"
+GUICreate("T", 100, 100)
+Local $r1 = WinSetTrans("T", "", 128)
+Local $e1 = @error
+Local $r2 = WinSetTrans("T", "", 300)
+Local $e2 = @error
+Local $r3 = WinSetTrans("NoSuchWinZZZ", "", 100)
+Local $e3 = @error
+Return $r1 & ":" & $e1 & ":" & $r2 & ":" & $e2 & ":" & $r3 & ":" & $e3
+"#;
+    assert_eq!(text(win10(), body), "1:0:1:0:0:0");
+}

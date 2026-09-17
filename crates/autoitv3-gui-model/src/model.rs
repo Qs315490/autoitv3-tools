@@ -369,6 +369,10 @@ pub struct Window {
     pub focus: Option<i64>,
     /// `WinSetOnTop`/`$GUI_ONTOP`: the window stays above the others.
     pub topmost: bool,
+    /// `WinSetTrans`: 0 (invisible) .. 255 (opaque), or `None` while no
+    /// script has set it. A renderer that can blend uses it; the semantics
+    /// never gate on it.
+    pub transparency: Option<i32>,
     pub resizing: i64,
     /// `GUISetOnEvent` handlers by `$GUI_EVENT_*` id: one function per event, so
     /// a window can answer a close and a minimise differently.
@@ -864,6 +868,7 @@ impl Window {
             icon: None,
             focus: None,
             topmost: false,
+            transparency: None,
             resizing: 0,
             on_events: std::collections::HashMap::new(),
             controls: Vec::new(),
