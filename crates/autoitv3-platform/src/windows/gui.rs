@@ -476,6 +476,12 @@ unsafe extern "system" fn wnd_proc(
             // The parent is asked for the brush a child is painted with, which
             // is how `GUICtrlSetBkColor`/`GUICtrlSetColor` reach a real control.
             WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
+                if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                    eprintln!(
+                        "[gui-trace] ctlcolor msg={message:#x} lparam={lparam:#x} entry={:?}",
+                        state.colors.get(&(lparam as usize))
+                    );
+                }
                 let (foreground, background) = state.colors.get(&(lparam as usize)).copied()?;
                 let hdc = wparam as HDC;
                 if let Some(foreground) = foreground {
