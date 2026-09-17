@@ -477,12 +477,8 @@ unsafe extern "system" fn wnd_proc(
             // is how `GUICtrlSetBkColor`/`GUICtrlSetColor` reach a real control.
             WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
                 if std::env::var_os("AU3_GUI_TRACE").is_some() {
-                    let known = self.controls.iter().find_map(|(id, ctl)| {
-                        (hwnd_key(ctl.hwnd) == lparam as usize)
-                            .then(|| (*id, ctl.control.kind, ctl.control.text.clone()))
-                    });
                     eprintln!(
-                        "[gui-trace] ctlcolor msg={message:#x} lparam={lparam:#x} entry={:?} control={known:?}",
+                        "[gui-trace] ctlcolor msg={message:#x} lparam={lparam:#x} entry={:?}",
                         state.colors.get(&(lparam as usize))
                     );
                 }
@@ -1546,6 +1542,12 @@ impl Win32Backend {
         }
         let hwnd = state.hwnd;
         let background = control.background();
+        if std::env::var_os("AU3_GUI_TRACE").is_some() {
+            eprintln!(
+                "[gui-trace] colors id={} kind={:?} text={:?} color={:?} bk={:?} bg={background:?}",
+                control.id, control.kind, control.text, control.color, control.bk_color
+            );
+        }
         let _ = with_shared(|shared| {
             shared.colors.insert(hwnd_key(hwnd), (control.color, background));
         });
