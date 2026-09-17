@@ -762,7 +762,14 @@ impl Win32Backend {
     fn sync_window(&mut self, window: &Window) {
         self.init();
         let style = window_style(window) | if window.visible { WS_VISIBLE } else { 0 };
-        let exstyle = window.exstyle.max(0) as u32;
+        // `WS_EX_MDICHILD` (0x40) marks a subform whose `GUICreate` coordinates are
+        // relative to its owner (the model keeps it for that). Win32 itself refuses
+        // to create such a window unless the parent is a real MDI client — with a
+        // plain owner `CreateWindowExW` fails and the window, with every control on
+        // it, silently never appears. Strip the bit here; the ownership and the
+        // coordinate semantics stay with the model.
+        const WS_EX_MDICHILD: u32 = 0x40;
+        let exstyle = window.exstyle.max(0) as u32 & !WS_EX_MDICHILD;
         let frame = frame_size(style, exstyle);
         let (client_width, client_height) = (window.width.max(1), window.height.max(1));
         let (width, height) = (client_width + frame.0, client_height + frame.1);
