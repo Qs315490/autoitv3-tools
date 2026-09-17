@@ -2866,3 +2866,18 @@ Return $r1 & ":" & $e1 & ":" & $r2 & ":" & $e2 & ":" & $r3 & ":" & $e3
 "#;
     assert_eq!(text(win10(), body), "1:0:1:0:0:0");
 }
+
+#[test]
+fn guicreate_names_an_owner_with_its_last_argument() {
+    // Official `GUICreate`'s last argument owns the new window to another one
+    // — the shape behind every "mask form" that shows a translucent overlay
+    // above its parent. The model keeps the link; a `Ptr` names the window,
+    // anything else is a title.
+    let body = r#"
+Local $main = GUICreate("main", 400, 300)
+Local $mask = GUICreate("", 380, 280, 10, 10, -1, -1, $main)
+Local $by_title = GUICreate("", 100, 100, -1, -1, -1, -1, "main")
+Return IsHWnd($mask) & ":" & IsHWnd($by_title) & ":" & WinGetState($mask)
+"#;
+    assert_eq!(text(win10(), body), "1:1:13");
+}

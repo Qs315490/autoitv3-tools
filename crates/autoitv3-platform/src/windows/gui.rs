@@ -769,6 +769,13 @@ impl Win32Backend {
             None => {
                 let title = to_wide(&window.title);
                 let class = to_wide(WINDOW_CLASS);
+                // `GUICreate`'s last argument owns the new window to another
+                // one; the owner has to exist first, which a script's order
+                // guarantees (the model carries the handle).
+                let owner = window
+                    .owner
+                    .and_then(|handle| self.windows.get(&handle).copied())
+                    .unwrap_or(std::ptr::null_mut());
                 let hwnd = unsafe {
                     CreateWindowExW(
                         exstyle,
@@ -779,7 +786,7 @@ impl Win32Backend {
                         window.y,
                         width,
                         height,
-                        std::ptr::null_mut(),
+                        owner,
                         std::ptr::null_mut(),
                         GetModuleHandleW(std::ptr::null()),
                         std::ptr::null(),

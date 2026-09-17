@@ -749,6 +749,19 @@ impl GuiState {
             // ---------------- GUI window ----------------
             "guicreate" => {
                 let handle = self.model.alloc_window();
+                // The last argument names an *owner* window: a `Ptr` handle is
+                // the window itself, anything else is a title (the same rule
+                // every `Win*` function follows). Official behaviour ties the
+                // new window above its owner — the sample's transparent mask
+                // subforms are built this way.
+                let owner = match args.get(7) {
+                    Some(Value::Ptr(handle)) => self.model.window(*handle).map(|_| *handle),
+                    Some(value) => {
+                        let spec = value.to_autoit_string();
+                        if spec.is_empty() { None } else { self.model.resolve_window(&spec) }
+                    }
+                    None => None,
+                };
                 let window = Window {
                     handle,
                     title: arg_str(args, 0),
@@ -770,6 +783,7 @@ impl GuiState {
                     focus: None,
                     topmost: false,
                     transparency: None,
+                    owner,
                     resizing: 0,
                     on_events: std::collections::HashMap::new(),
                     controls: Vec::new(),

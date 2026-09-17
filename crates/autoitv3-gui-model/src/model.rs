@@ -373,6 +373,10 @@ pub struct Window {
     /// script has set it. A renderer that can blend uses it; the semantics
     /// never gate on it.
     pub transparency: Option<i32>,
+    /// The owner window `GUICreate`'s last argument named, if any. An owned
+    /// window sits above its owner and dies with it; the model keeps the link
+    /// so a renderer can pass the real `HWND` on and z-order follows.
+    pub owner: Option<i64>,
     pub resizing: i64,
     /// `GUISetOnEvent` handlers by `$GUI_EVENT_*` id: one function per event, so
     /// a window can answer a close and a minimise differently.
@@ -869,6 +873,7 @@ impl Window {
             focus: None,
             topmost: false,
             transparency: None,
+            owner: None,
             resizing: 0,
             on_events: std::collections::HashMap::new(),
             controls: Vec::new(),
