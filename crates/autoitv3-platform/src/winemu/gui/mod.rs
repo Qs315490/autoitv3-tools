@@ -572,6 +572,46 @@ impl GuiState {
     /// from inside a call — and the runtime runs it as soon as this one returns.
     /// An event nobody registered for is still returned, which is what keeps a
     /// script that mixes the two styles working.
+    /// [`poll_message`](Self::poll_message) with provenance: the event value
+    /// plus where it came from — the window handle for a close or system event,
+    /// the model control id for a control or menu one. The idle answer is
+    /// `(0, None, None)`, the same "no message" the plain mode reports as 0.
+    fn poll_message_source(
+        &mut self,
+        ctx: &mut dyn HostContext,
+    ) -> (i64, Option<i64>, Option<i64>) {
+        for event in self.backend.poll() {
+            self.events.push_back(event);
+        }
+        self.polls += 1;
+        if let Some(event) = self.events.pop_front() {
+            if self.dispatch_event(&event, ctx) {
+                return (0, None, None);
+            }
+            let control = match &event {
+                GuiEvent::Control(id) | GuiEvent::Menu(id) => Some(*id),
+                _ => None,
+            };
+            let window = match &event {
+                GuiEvent::Close(handle) => Some(*handle),
+                GuiEvent::System(_) => self.model.current_window,
+                _ => control
+                    .and_then(|id| self.model.control(id))
+                    .map(|control| control.window),
+            };
+            return (event.message(), window, control);
+        }
+        if let Some(limit) = self.auto_close {
+            if self.polls >= limit {
+                self.auto_close = None;
+                if !self.dispatch_event(&GuiEvent::System(GUI_EVENT_CLOSE), ctx) {
+                    return (GUI_EVENT_CLOSE, self.model.current_window, None);
+                }
+            }
+        }
+        (0, None, None)
+    }
+
     fn poll_message(&mut self, ctx: &mut dyn HostContext) -> i64 {
         for event in self.backend.poll() {
             self.events.push_back(event);
@@ -768,6 +808,30 @@ impl GuiState {
             }
             "guigetmsg" => {
                 ctx.set_error(0, 0);
+                // `GUIGetMsg(1)` is the advanced mode: the event comes back as
+                // an array — [event, window, control-hwnd, control-id] and a
+                // trailing slot the interpreter fills with 0 — instead of the
+                // bare event value. Measured on the official x64 interpreter:
+                // with no message pending the array is five zeros, @error 0.
+                if arg_int(args, 0) != 0 {
+                    let (event, window, control) = self.poll_message_source(ctx);
+                    let ctrl_id = control
+                        .and_then(|id| self.model.control(id))
+                        .map(|control| control.id)
+                        .unwrap_or(0);
+                    let ctrl_window = control
+                        .and_then(|id| self.model.control(id))
+                        .map(|control| control.window)
+                        .or(window)
+                        .unwrap_or(0);
+                    return Some(Value::array(vec![
+                        Value::Int(event),
+                        Value::Int(ctrl_window),
+                        Value::Int(ctrl_id),
+                        Value::Int(ctrl_id),
+                        Value::Int(0),
+                    ]));
+                }
                 Value::Int(self.poll_message(ctx))
             }
             "guigetcursorinfo" => {
