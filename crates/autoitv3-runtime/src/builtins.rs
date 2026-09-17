@@ -606,21 +606,39 @@ pub(crate) fn call(
         }
 
         // ---------------- type predicates ----------------
-        "isnumber" => flag(args.first().map(|v| v.is_number()).unwrap_or(false)),
-        "isint" => flag(matches!(
+        // `IsNumber` answers for a *number*, and a `Bool`/`Ptr` is not one
+        // (measured: `IsNumber(True)` and `IsNumber(Ptr(1))` are 0). The
+        // comparison operators still take them as numbers — the predicate is
+        // stricter than the arithmetic.
+        "isnumber" => flag(matches!(
             args.first(),
-            Some(Value::Int(_)) | Some(Value::Bool(_))
+            Some(Value::Int(_)) | Some(Value::Float(_))
         )),
+        // `IsInt` asks for an integer value: `IsInt(1.0)` is 1 (the float
+        // has no fraction), `IsInt(True)` is 0 (a Bool is its own type), and
+        // a string is never an integer (measured).
+        "isint" => flag(match args.first() {
+            Some(Value::Int(_)) => true,
+            Some(Value::Float(f)) => f.fract() == 0.0,
+            Some(Value::Str(s)) => crate::value::parse_number(s)
+                .is_some_and(|f| f.fract() == 0.0),
+            _ => false,
+        }),
         "isstring" => flag(matches!(args.first(), Some(Value::Str(_)))),
         "isbinary" => flag(matches!(args.first(), Some(Value::Binary(_)))),
         // A pointer is a *base type* in AutoIt, not a number: the answer is
         // whether the value came out of a pointer-typed operation (a `ptr`-typed
         // `DllCall` return, a `ptr*` parameter written back, `Ptr`,
         // `DllStructGetPtr`, `DllCallbackGetPtr`), which the runtime records as
-        // it happens. `IsHwnd` still answers 0: the HWnd base type is not
-        // modelled (a GUI handle here is a plain integer).
+        // it happens. A GUI handle is the `Hwnd` flavour of the same base
+        // type: `IsHWnd` answers for the handles the GUI layer minted (a
+        // `DllCall` `hwnd` return is a plain `Ptr` and answers 0).
         "isptr" => flag(matches!(args.first(), Some(Value::Ptr(_)))),
-        "ishwnd" => flag(false),
+        "ishwnd" => flag(
+            args.first()
+                .map(|v| rt.is_hwnd_value(v))
+                .unwrap_or(false),
+        ),
         "iskeyword" => flag(matches!(
             args.first(),
             Some(Value::Default) | Some(Value::Null)
@@ -697,9 +715,23 @@ pub(crate) fn call(
         // registry, COM, DllCall, GUI, console) belongs to a `Platform`
         // implementation: a silent stub in this table would both invent a
         // value and shadow the platform that could answer properly.
-        // `Ptr`/`HWnd` only retype a value as a handle; the emulation keeps
-        // handles as plain integers, so the conversion is the identity.
-        "ptr" | "hwnd" => Value::Int(args.first().map(|a| a.to_int()).unwrap_or(0)),
+        // `Ptr` answers a `Ptr` even for a plain number (measured), so the
+        // conversion is no longer the identity: it retypes. `HWnd` is the
+        // stricter cousin — it answers a live GUI handle for the value a GUI
+        // call produced (in any of its spellings: the `Ptr` itself, `Int()`
+        // of it, or its `0x…` string) and fails for everything else
+        // (`@error` 1, `Ptr(0)`); the flavour survives the retype because
+        // the registry is keyed by value.
+        "ptr" => Value::Ptr(args.first().map(|a| a.to_int()).unwrap_or(0)),
+        "hwnd" => {
+            let handle = args.first().map(|a| a.to_int()).unwrap_or(0);
+            if rt.hwnd_registered(handle) {
+                Value::Ptr(handle)
+            } else {
+                rt.set_error_value(1, 0);
+                Value::Ptr(0)
+            }
+        }
         "vargettype" => Value::Str(var_get_type(args.first()).to_string()),
         // AutoIt runs these when the process exits; see `Runtime::exit_handlers`.
         "onautoitexitregister" => {
@@ -817,15 +849,9 @@ pub(crate) fn call(
         "isbool" => flag(matches!(args.first(), Some(Value::Bool(_)))),
         "isfloat" => {
             // AutoIt asks whether the value has a *fractional component*, so an
-            // integral float (`1.0`) is not a float in this sense.
-            let frac = match args.first() {
-                Some(Value::Float(f)) => f.fract() != 0.0,
-                Some(Value::Str(s)) => crate::value::parse_number(s)
-                    .map(|f| f.fract() != 0.0)
-                    .unwrap_or(false),
-                _ => false,
-            };
-            flag(frac)
+            // integral float (`1.0`) is not a float in this sense, and a
+            // string is never one (measured: `IsFloat("1.5")` is 0).
+            flag(matches!(args.first(), Some(Value::Float(f)) if f.fract() != 0.0))
         }
         "bitrotate" => {
             let value = args.first().map(|v| v.to_int()).unwrap_or(0);

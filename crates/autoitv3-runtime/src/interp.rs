@@ -141,6 +141,13 @@ pub struct Runtime {
     /// `None` until one is installed: the core deliberately names no concrete
     /// operating system (see `crate::platform`).
     platform: Option<Box<dyn Platform>>,
+    /// The GUI handles minted so far, shared with the platform layer.
+    ///
+    /// `IsHWnd`/`HWnd` answer from this set; the GUI layer registers each
+    /// handle it produces through the host context, so the flavour travels
+    /// with the value even through arithmetic that would strip a dedicated
+    /// `Value` variant (see `HwndSet`).
+    hwnds: crate::value::HwndSet,
     /// Attached debugger (the debug-module seam).
     debugger: Option<Box<dyn Debugger>>,
     /// Breakpoints consulted before each statement.
@@ -381,6 +388,7 @@ impl Runtime {
             func_names: HashMap::new(),
             host: None,
             platform: None,
+            hwnds: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new())),
             debugger: None,
             breakpoints: Breakpoints::new(),
             error: 0,
@@ -696,6 +704,31 @@ impl Runtime {
         self.extended = extended;
     }
 
+    /// Record a GUI handle as live, so `IsHWnd`/`HWnd` can answer for it.
+    pub fn register_hwnd(&mut self, handle: i64) {
+        self.hwnds.borrow_mut().insert(handle);
+    }
+
+    /// Drop a GUI handle (a window or control the script deleted).
+    pub fn forget_hwnd(&mut self, handle: i64) {
+        self.hwnds.borrow_mut().remove(&handle);
+    }
+
+    /// Whether the value names a live GUI handle (the `Hwnd` flavour of
+    /// `Ptr`).
+    pub fn is_hwnd_value(&self, value: &Value) -> bool {
+        match value {
+            Value::Ptr(i) => self.hwnds.borrow().contains(i),
+            _ => false,
+        }
+    }
+
+    /// Whether the *number* names a live GUI handle, whatever type carries it
+    /// (`HWnd()` accepts the Int()/string forms of a handle the same way).
+    pub fn hwnd_registered(&self, handle: i64) -> bool {
+        self.hwnds.borrow().contains(&handle)
+    }
+
     /// Record that the running function called `SetError` (`extended`: that it
     /// called `SetExtended`), which is what lets the codes outlive it.
     pub(crate) fn mark_error_set(&mut self, extended: bool) {
@@ -932,6 +965,9 @@ impl Runtime {
     /// plain `ptr` argument's slot simply echoes what the caller passed (with the
     /// type the caller passed it as). Functions whose result is a pointer whatever
     /// it is (`Ptr`, `DllStructGetPtr`, `DllCallbackGetPtr`) are the other source.
+    /// `Ptr()` itself answers a `Ptr` even for a number (measured), and a
+    /// `Ptr()` of a live GUI handle stays a GUI handle — the registry is keyed
+    /// by value, so the flavour survives the retype.
     fn tag_pointers(key: &str, slots: (bool, Vec<usize>), mut result: Value) -> Value {
         match key {
             "ptr" | "dllstructgetptr" | "dllcallbackgetptr" => {
@@ -1016,8 +1052,8 @@ impl Runtime {
         }
         // An explicit host wins over the platform default.
         if self.host.is_some() {
-            let Runtime { globals, error, extended, profile, options, host, .. } = self;
-            let mut ctx = HostBridge { globals, error, extended, profile, options };
+            let Runtime { globals, error, extended, profile, options, host, hwnds, .. } = self;
+            let mut ctx = HostBridge { globals, error, extended, profile, options, hwnds: hwnds.clone() };
             if let Some(host) = host.as_mut() {
                 if let Some(v) = host.call(display, args.clone(), &mut ctx)? {
                     return Ok(Self::tag_pointers(key, pointer_slots, v));
@@ -1029,8 +1065,8 @@ impl Runtime {
         let mut result = None;
         let mut pending: Vec<(String, Vec<Value>)> = Vec::new();
         if self.platform.is_some() {
-            let Runtime { globals, error, extended, profile, options, platform, .. } = self;
-            let mut ctx = HostBridge { globals, error, extended, profile, options };
+            let Runtime { globals, error, extended, profile, options, platform, hwnds, .. } = self;
+            let mut ctx = HostBridge { globals, error, extended, profile, options, hwnds: hwnds.clone() };
             if let Some(p) = platform.as_mut() {
                 result = p.call(display, args, &mut ctx)?;
                 pending = p.take_pending_callbacks();
@@ -1541,14 +1577,14 @@ impl Runtime {
                 span: Some(span),
             });
         };
-        let Runtime { globals, error, extended, profile, options, platform, .. } = self;
+        let Runtime { globals, error, extended, profile, options, platform, hwnds, .. } = self;
         let Some(platform) = platform.as_mut() else {
             return Err(RuntimeError::Unsupported {
                 what: msg!("member access `.{member}` (no platform installed)", member = member),
                 span: Some(span),
             });
         };
-        let mut ctx = HostBridge { globals, error, extended, profile, options };
+        let mut ctx = HostBridge { globals, error, extended, profile, options, hwnds: hwnds.clone() };
         platform
             .obj_get(&obj, member, &mut ctx)
             .map(|v| v.unwrap_or(Value::Null))
@@ -1569,14 +1605,14 @@ impl Runtime {
                 span: Some(span),
             });
         };
-        let Runtime { globals, error, extended, profile, options, platform, .. } = self;
+        let Runtime { globals, error, extended, profile, options, platform, hwnds, .. } = self;
         let Some(platform) = platform.as_mut() else {
             return Err(RuntimeError::Unsupported {
                 what: msg!("method call `.{member}()` (no platform installed)", member = member),
                 span: Some(span),
             });
         };
-        let mut ctx = HostBridge { globals, error, extended, profile, options };
+        let mut ctx = HostBridge { globals, error, extended, profile, options, hwnds: hwnds.clone() };
         platform
             .obj_call(&obj, member, &args, &mut ctx)
             .map(|v| v.unwrap_or(Value::Null))
@@ -3058,6 +3094,7 @@ struct HostBridge<'a> {
     extended: &'a mut i64,
     profile: &'a ExecutionProfile,
     options: &'a HashMap<String, Value>,
+    hwnds: crate::value::HwndSet,
 }
 
 impl HostContext for HostBridge<'_> {
@@ -3084,6 +3121,14 @@ impl HostContext for HostBridge<'_> {
 
     fn option(&self, name: &str) -> Option<Value> {
         self.options.get(&var_key(name)).cloned()
+    }
+
+    fn register_hwnd(&mut self, handle: i64) {
+        self.hwnds.borrow_mut().insert(handle);
+    }
+
+    fn forget_hwnd(&mut self, handle: i64) {
+        self.hwnds.borrow_mut().remove(&handle);
     }
 }
 /// Copy a literal's values into a declared array, position by position.

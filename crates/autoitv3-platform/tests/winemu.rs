@@ -2138,6 +2138,26 @@ fn guigetmsg_in_advanced_mode_hands_back_an_array() {
 }
 
 #[test]
+fn a_control_event_names_its_window_and_cursor_in_advanced_mode() {
+    // Measured on the official x64 interpreter: with an event pending [1] is
+    // the window as a `Ptr` (the `Hwnd` flavour: `IsHWnd` answers 1), [2]
+    // is the control's own `Ptr` (a close event answers 0 there) and [3]/[4]
+    // are the cursor position — the same numbers `GUIGetCursorInfo` leads
+    // with.
+    let emu = win10().with_gui_events(vec![GuiEvent::Control(1)]);
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $id = GUICtrlCreateButton("go", 0, 0)
+Local $b = GUIGetMsg(1)
+Return $b[0] & ":" & VarGetType($b[1]) & ":" & IsHWnd($b[1]) & ":" & $b[1] & ":" & VarGetType($b[2]) & ":" & IsHWnd($b[2]) & ":" & $b[2] & ":" & $b[3] & ":" & $b[4]
+"#;
+    assert_eq!(
+        text(emu, body),
+        "1:Ptr:1:0x0000000000010000:Ptr:1:0x0000000000000001:0:0"
+    );
+}
+
+#[test]
 fn a_user_resize_reaches_wingetpos_and_guigetmsg() {
     // What a live window sends after the user drags an edge.
     let seen = Rc::new(RefCell::new(Vec::new()));
@@ -2745,4 +2765,85 @@ $log = $msg & ":" & $log
     let emu = win10().with_gui_events(vec![GuiEvent::Control(1)]);
     let rt = run_whole(emu, src);
     assert_eq!(global(&rt, "log"), "1:");
+}
+
+#[test]
+fn a_gui_handle_is_the_hwnd_flavour_of_ptr() {
+    // Measured on the official x64 interpreter: `GUICreate` answers a `Ptr`
+    // that also satisfies `IsHWnd`, is not an `Int` and prints as `0x` +
+    // 16 hex digits; `DllCall`'s plain `Ptr` values never satisfy `IsHWnd`
+    // and neither do numbers or `Ptr(-1)`.
+    let body = r#"
+Local $h = GUICreate("T", 100, 100)
+Local $w = WinGetHandle("T")
+Return VarGetType($h) & ":" & IsHWnd($h) & ":" & IsPtr($h) & ":" & IsInt($h) & ":" & String($h) _
+    & ":" & VarGetType($w) & ":" & IsHWnd($w) & ":" & ($w = $h) _
+    & ":" & IsHWnd(0) & ":" & IsHWnd("123") & ":" & IsHWnd(Ptr(-1)) & ":" & IsHWnd(1234)
+"#;
+    assert_eq!(
+        text(win10(), body),
+        "Ptr:1:1:0:0x0000000000010000:Ptr:1:True:0:0:0:0"
+    );
+}
+
+#[test]
+fn hwnd_converts_only_a_live_handle_and_keeps_the_flavour() {
+    // `HWnd()` answers the same handle for the value a GUI call produced —
+    // the `Ptr`, `Int()` of it, or its `0x…` spelling — and fails for a
+    // value no GUI call made (`@error` 1, `Ptr(0)`, `IsHWnd` 0).
+    // `Ptr($h)` keeps the flavour because the registry is keyed by value.
+    let body = r#"
+Local $h = GUICreate("T", 100, 100)
+Local $r1 = HWnd($h)
+Local $e1 = @error
+Local $r2 = HWnd(Int($h))
+Local $e2 = @error
+Local $r3 = HWnd(String($h))
+Local $e3 = @error
+Local $r4 = HWnd(65537)
+Local $e4 = @error
+Local $r5 = HWnd(0)
+Local $e5 = @error
+Local $p = Ptr($h)
+Return ($r1 = $h) & ":" & $e1 & ":" & IsHWnd($r1) _
+    & ":" & ($r2 = $h) & ":" & $e2 _
+    & ":" & ($r3 = $h) & ":" & $e3 _
+    & ":" & $e4 & ":" & VarGetType($r4) & ":" & IsHWnd($r4) _
+    & ":" & $e5 & ":" & IsHWnd($r5) _
+    & ":" & IsHWnd($p) & ":" & IsPtr($p)
+"#;
+    assert_eq!(
+        text(win10(), body),
+        "True:0:1:True:0:True:0:1:Ptr:0:1:0:1:1"
+    );
+}
+
+#[test]
+fn a_window_function_takes_a_ptr_handle_but_not_an_int() {
+    // `WinGetState($fg[0])` on a `DllCall` `hwnd` names the window by its
+    // pointer, while `WinGetState(Int($h))` treats the number as a title and
+    // fails (measured).
+    let body = r#"
+Local $h = GUICreate("T", 100, 100)
+GUISetState(@SW_SHOW)
+Local $s = WinGetState($h)
+Local $e1 = @error
+Local $i = Int($h)
+Local $s2 = WinGetState($i)
+Local $e2 = @error
+Return $s & ":" & $e1 & ":" & $s2 & ":" & $e2
+"#;
+    assert_eq!(text(win10(), body), "15:0:0:1");
+}
+
+#[test]
+fn isint_and_isnumber_follow_the_official_predicates() {
+    // Measured: `IsInt(1.0)` is 1 (no fraction), `IsInt(True)` is 0, a
+    // string is never an integer, and `IsNumber` answers only for numbers —
+    // a `Bool` or a `Ptr` is not one.
+    let body = r#"Return IsInt(1.0) & ":" & IsInt(True) & ":" & IsInt("1.5") & ":" & IsInt("12") _
+    & ":" & IsNumber(True) & ":" & IsNumber(Ptr(1)) & ":" & IsNumber("123") & ":" & IsNumber(1) _
+    & ":" & IsFloat("1.5") & ":" & IsBool(1)
+"#;
+    assert_eq!(text(win10(), body), "1:0:0:1:0:0:0:1:0:0");
 }

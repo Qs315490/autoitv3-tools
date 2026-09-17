@@ -274,6 +274,9 @@ pub struct GuiState {
     /// `@GUI_CtrlId`/`@GUI_WinHandle`/`@GUI_CtrlHandle` for the callback that
     /// was queued last: the event the helper function is running for.
     event_macros: Option<(i64, i64)>,
+    /// Every window/control handle this layer has minted, shared with the
+    /// runtime so `IsHWnd`/`HWnd` can answer for the values.
+    hwnds: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<i64>>>,
 }
 
 impl Default for GuiState {
@@ -298,7 +301,20 @@ impl GuiState {
             current_tabitem: None,
             pending: Vec::new(),
             event_macros: None,
+            hwnds: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Record a minted handle so the runtime's `IsHWnd`/`HWnd` answer for
+    /// it; `forget` drops one the script deleted.
+    fn register_hwnd(&mut self, ctx: &mut dyn HostContext, handle: i64) {
+        self.hwnds.borrow_mut().insert(handle);
+        ctx.register_hwnd(handle);
+    }
+
+    fn forget_hwnd(&mut self, ctx: &mut dyn HostContext, handle: i64) {
+        self.hwnds.borrow_mut().remove(&handle);
+        ctx.forget_hwnd(handle);
     }
 
     /// The `GUISetOnEvent`/`GUICtrlSetOnEvent` functions the events asked for.
@@ -758,8 +774,9 @@ impl GuiState {
                 };
                 self.model.add_window(window);
                 self.notify_window(handle);
+                self.register_hwnd(ctx, handle);
                 ctx.set_error(0, 0);
-                Value::Int(handle)
+                Value::Ptr(handle)
             }
             "guidelete" => {
                 let handle = self.window_arg(args, 0);
@@ -767,6 +784,7 @@ impl GuiState {
                     Some(handle) => {
                         let ok = self.model.remove_window(handle);
                         self.backend.on_window_removed(handle);
+                        self.forget_hwnd(ctx, handle);
                         ctx.set_error(if ok { 0 } else { 1 }, 0);
                         Value::Int(i64::from(ok))
                     }
@@ -804,7 +822,12 @@ impl GuiState {
                             == Some(ControlKind::TabItem)
                     });
                 ctx.set_error(if handle.is_some() { 0 } else { 1 }, 0);
-                Value::Int(previous)
+                if previous != 0 {
+                    self.register_hwnd(ctx, previous);
+                    Value::Ptr(previous)
+                } else {
+                    Value::Int(0)
+                }
             }
             "guigetmsg" => {
                 ctx.set_error(0, 0);
@@ -814,6 +837,11 @@ impl GuiState {
                 // bare event value. Measured on the official x64 interpreter:
                 // with no message pending the array is five zeros, @error 0.
                 if arg_int(args, 0) != 0 {
+                    // Measured on the official x64 interpreter: with no message
+                    // pending the array is five zeros (all Int); with one, [1]
+                    // is the window as a `Ptr`, [2] the control's HWND as a
+                    // `Ptr` (0 for a close event) and [3]/[4] the cursor
+                    // position — `GUIGetCursorInfo`'s first two answers.
                     let (event, window, control) = self.poll_message_source(ctx);
                     let ctrl_id = control
                         .and_then(|id| self.model.control(id))
@@ -824,12 +852,25 @@ impl GuiState {
                         .map(|control| control.window)
                         .or(window)
                         .unwrap_or(0);
+                    let (cx, cy) = self.model.mouse;
+                    let window_value = if ctrl_window != 0 {
+                        self.register_hwnd(ctx, ctrl_window);
+                        Value::Ptr(ctrl_window)
+                    } else {
+                        Value::Int(0)
+                    };
+                    let control_value = if ctrl_id != 0 {
+                        self.register_hwnd(ctx, ctrl_id);
+                        Value::Ptr(ctrl_id)
+                    } else {
+                        Value::Int(0)
+                    };
                     return Some(Value::array(vec![
                         Value::Int(event),
-                        Value::Int(ctrl_window),
-                        Value::Int(ctrl_id),
-                        Value::Int(ctrl_id),
-                        Value::Int(0),
+                        window_value,
+                        control_value,
+                        Value::Int(i64::from(cx)),
+                        Value::Int(i64::from(cy)),
                     ]));
                 }
                 Value::Int(self.poll_message(ctx))
@@ -946,6 +987,7 @@ impl GuiState {
                 };
                 let ok = self.model.remove_control(id);
                 self.backend.on_control_removed(id);
+                self.forget_hwnd(ctx, id);
                 ctx.set_error(if ok { 0 } else { 1 }, 0);
                 Value::Int(i64::from(ok))
             }
@@ -1306,8 +1348,19 @@ impl GuiState {
             // ---------------- windows ----------------
             "winexists" => Value::Int(i64::from(self.window_arg(args, 0).is_some())),
             "wingethandle" => {
-                ctx.set_error(0, 0);
-                Value::Int(self.window_arg(args, 0).unwrap_or(0))
+                match self.window_arg(args, 0) {
+                    Some(handle) => {
+                        self.register_hwnd(ctx, handle);
+                        ctx.set_error(0, 0);
+                        Value::Ptr(handle)
+                    }
+                    None => {
+                        // A failed lookup answers a plain `Ptr` — not a GUI
+                        // handle — with `@error` 1 (measured).
+                        ctx.set_error(1, 0);
+                        Value::Ptr(0)
+                    }
+                }
             }
             "wingettitle" => {
                 let title = self
@@ -1468,13 +1521,22 @@ impl GuiState {
             "winlist" => {
                 let mut out: Vec<Value> = Vec::new();
                 let mut items: Vec<Value> = Vec::new();
-                for window in self.model.windows.iter().flatten() {
-                    if window.visible {
-                        items.push(Value::array(vec![
-                            Value::Str(window.title.clone()),
-                            Value::Int(window.handle),
-                        ]));
-                    }
+                let visible: Vec<i64> = self
+                    .model
+                    .windows
+                    .iter()
+                    .flatten()
+                    .filter(|window| window.visible)
+                    .map(|window| window.handle)
+                    .collect();
+                for handle in visible {
+                    self.register_hwnd(ctx, handle);
+                    let title = self
+                        .model
+                        .window(handle)
+                        .map(|w| w.title.clone())
+                        .unwrap_or_default();
+                    items.push(Value::array(vec![Value::Str(title), Value::Ptr(handle)]));
                 }
                 out.push(Value::Int(items.len() as i64));
                 out.extend(items);
@@ -2624,6 +2686,12 @@ impl GuiState {
 
     /// Resolve the window argument at `index`, defaulting to the current one.
     fn window_arg(&self, args: &[Value], index: usize) -> Option<i64> {
+        // A `Ptr` is a *handle*: `WinGetState($fg[0])` on a `DllCall`
+        // `hwnd` answers the window the pointer names, while an `Int` or a
+        // string is a title (and `WinGetState(Int($h))` fails — measured).
+        if let Some(Value::Ptr(handle)) = args.get(index) {
+            return self.model.window(*handle).map(|_| *handle);
+        }
         let spec = args
             .get(index)
             .map(|v| v.to_autoit_string())

@@ -58,6 +58,16 @@ pub trait HostContext {
         }
         allowed
     }
+    /// Record a GUI handle as live, so `IsHWnd`/`HWnd` can answer for the
+    /// value. The GUI layer calls this for every handle it mints; the default
+    /// keeps a bare host's handles unflavoured.
+    fn register_hwnd(&mut self, handle: i64) {
+        let _ = handle;
+    }
+    /// Drop a GUI handle (a window or control the script deleted).
+    fn forget_hwnd(&mut self, handle: i64) {
+        let _ = handle;
+    }
 }
 
 /// Report a refused side effect on stderr, once per kind per process.

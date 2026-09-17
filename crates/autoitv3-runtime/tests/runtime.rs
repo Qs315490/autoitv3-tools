@@ -984,9 +984,10 @@ fn isbool_and_isfloat() {
         call(src, "F", vec![Value::Float(1.0)]),
         Value::Int(0)
     ));
+    // A string is never a float — measured: `IsFloat("1.5")` is 0.
     assert!(matches!(
         call(src, "F", vec![Value::str("2.25")]),
-        Value::Int(1)
+        Value::Int(0)
     ));
 }
 

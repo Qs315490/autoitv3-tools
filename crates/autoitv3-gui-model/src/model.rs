@@ -549,11 +549,10 @@ impl GuiModel {
         if spec.is_empty() {
             return self.active_window();
         }
-        if let Ok(handle) = spec.parse::<i64>() {
-            if self.window(handle).is_some() {
-                return Some(handle);
-            }
-        }
+        // Numeric text is a *title*, never a handle: `WinGetState(Int($h))`
+        // and `WinGetState("0x…")` both fail on the official interpreter —
+        // a handle travels as a `Ptr` value, which the callers dispatch
+        // before the string path.
         let needle = spec.to_ascii_lowercase();
         self.windows
             .iter()

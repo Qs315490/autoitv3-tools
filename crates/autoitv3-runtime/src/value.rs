@@ -44,6 +44,19 @@ impl MapKey {
 /// A shared, mutable AutoIt `Map`.
 pub type MapRef = Rc<RefCell<BTreeMap<MapKey, Value>>>;
 
+/// The GUI window/control handles a run has minted, shared between the
+/// runtime (the `IsHWnd`/`HWnd` builtins) and the platform layer that
+/// produces them.
+///
+/// AutoIt's `Hwnd` is a flavour of its `Ptr` base type: `GUICreate`
+/// answers a `Ptr` that also satisfies `IsHWnd`, while a `DllCall`
+/// `hwnd` return is a plain `Ptr` and does not (all measured on the
+/// official x64 interpreter). The flavour cannot ride inside the value —
+/// arithmetic and `Ptr()` keep the numeric value while the flavour has to
+/// survive — so the runtime keeps the set of live handles and the predicates
+/// consult it.
+pub type HwndSet = Rc<RefCell<std::collections::HashSet<i64>>>;
+
 /// An opaque object created by a platform layer (`ObjCreate`, …).
 ///
 /// The runtime only knows its name and an opaque handle; every member access
