@@ -103,8 +103,8 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics,
-    GetParent, GetWindowLongW, GetWindowRect, IsWindowVisible, SetLayeredWindowAttributes,
-    SetWindowLongW,
+    GetClassNameW, GetParent, GetWindowLongW, GetWindowRect, IsWindowVisible,
+    SetLayeredWindowAttributes, SetWindowLongW,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsIconic, IsWindow, IsZoomed,
     LoadCursorW, LoadImageW, MoveWindow, PeekMessageW, RegisterClassExW, SendMessageW, SetCursor,
     SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
@@ -1057,8 +1057,13 @@ impl Win32Backend {
             let parent_now = unsafe { GetParent(hwnd) };
             let mut rect: RECT = unsafe { std::mem::zeroed() };
             unsafe { GetWindowRect(hwnd, &mut rect) };
+            let mut class: [u16; 64] = [0; 64];
+            unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), 64) };
+            let class = String::from_utf16_lossy(
+                &class[..class.iter().position(|c| *c == 0).unwrap_or(64)],
+            );
             eprintln!(
-                "[gui-trace] control id={} kind={:?} text={:?} created at ({}, {}) {}x{} window={} hwnd={hwnd:?} ws_visible={} is_visible={} parent={parent_now:?} rect=({},{},{},{})",
+                "[gui-trace] control id={} kind={:?} class={class:?} text={:?} created at ({}, {}) {}x{} window={} hwnd={hwnd:?} ws_visible={} is_visible={} parent={parent_now:?} rect=({},{},{},{})",
                 control.id, control.kind, control.text, control.x, control.y,
                 control.width, control.height, control.window,
                 style_now & 0x1000_0000 != 0, visible, rect.left, rect.top, rect.right, rect.bottom
