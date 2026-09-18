@@ -287,6 +287,7 @@ const ICC_PROGRESS_CLASS: u32 = 0x0000_0020;
 const ICC_DATE_CLASSES: u32 = 0x0000_0100;
 
 // Painting, colouring and cursor messages (`winuser.h`).
+const WM_MOVE: u32 = 0x0003;
 const WM_PAINT: u32 = 0x000F;
 const WM_ERASEBKGND: u32 = 0x0014;
 const WM_SETCURSOR: u32 = 0x0020;
@@ -366,6 +367,26 @@ struct Shared {
     colors: HashMap<usize, (i64, Option<i64>, Option<i64>)>,
     /// Window `HWND` → the background colour `GUISetBkColor` set.
     window_bk: HashMap<usize, i64>,
+    /// Owner window `HWND` → the `WS_EX_MDICHILD` subforms created under it.
+    ///
+    /// A subform has to move with its owner *while the user drags it*, and a
+    /// title-bar drag runs Windows' own modal move loop — the script's pump is
+    /// not running then, so the model only learns of the move when the drag
+    /// ends. The window procedure carries them from `WM_MOVE` instead.
+    subforms: HashMap<usize, Vec<HWND>>,
+    /// Owner window `HWND` → the owner position its subforms were last carried
+    /// from, so every `WM_MOVE` only has to apply a delta.
+    carried: HashMap<usize, (i32, i32)>,
+    /// Every `WS_EX_MDICHILD` subform `HWND`. A subform is not dragged on its
+    /// own — its owner carries it — so a rectangle it did not ask for is not a
+    /// user move and must not be reported as one (that would shift it twice).
+    subform_hwnds: BTreeSet<usize>,
+    /// Subforms a `WM_MOVE` has decided to move, as `(hwnd, x, y)`.
+    ///
+    /// The window procedure only records the plan: `SetWindowPos` sends
+    /// messages of its own, and applying them while the table is borrowed would
+    /// make every nested call fail its borrow.
+    subform_moves: Vec<(HWND, i32, i32)>,
     /// Graphic control `HWND` → the commands to replay when it paints.
     drawings: HashMap<usize, Drawing>,
     /// Control `HWND` → the cursor identifier a script set.
@@ -519,6 +540,46 @@ unsafe extern "system" fn wnd_proc(
                     return Some(brush_for(state, background) as LRESULT);
                 }
             }
+            // A window that was moved carries its subforms along. This is the only
+            // way a subform keeps up *during* a title-bar drag: that drag runs
+            // Windows' own modal move loop, so the script's message pump (and with
+            // it every model update) is not running until the user lets go.
+            WM_MOVE => {
+                if state.subforms.contains_key(&hwnd_key(hwnd)) {
+                    let mut rect: RECT = std::mem::zeroed();
+                    if GetWindowRect(hwnd, &mut rect) != 0 {
+                        let now = (rect.left, rect.top);
+                        let (dx, dy) = match state.carried.insert(hwnd_key(hwnd), now) {
+                            Some((px, py)) => (now.0 - px, now.1 - py),
+                            None => (0, 0),
+                        };
+                        if dx != 0 || dy != 0 {
+                            // The whole subtree takes the same delta, so it is
+                            // collected here and applied after the table is
+                            // released — `SetWindowPos` sends messages of its
+                            // own, and a nested borrow would be refused.
+                            let mut plan: Vec<(HWND, i32, i32)> = Vec::new();
+                            let mut pending = vec![(hwnd, dx, dy)];
+                            while let Some((parent, dx, dy)) = pending.pop() {
+                                let Some(children) = state.subforms.get(&hwnd_key(parent)) else {
+                                    continue;
+                                };
+                                for child in children {
+                                    let mut child_rect: RECT = std::mem::zeroed();
+                                    if GetWindowRect(*child, &mut child_rect) == 0 {
+                                        continue;
+                                    }
+                                    let (x, y) = (child_rect.left + dx, child_rect.top + dy);
+                                    state.carried.insert(hwnd_key(*child), (x, y));
+                                    plan.push((*child, x, y));
+                                    pending.push((*child, dx, dy));
+                                }
+                            }
+                            state.subform_moves.extend(plan);
+                        }
+                    }
+                }
+            }
             // A window colour is painted by the window itself.
             WM_ERASEBKGND => {
                 let background = *state.window_bk.get(&hwnd_key(hwnd))?;
@@ -546,6 +607,21 @@ unsafe extern "system" fn wnd_proc(
         None
     })
     .flatten();
+    // The subforms a `WM_MOVE` asked for, moved now that the table is free.
+    let pending = with_shared(|state| std::mem::take(&mut state.subform_moves)).unwrap_or_default();
+    for (target, x, y) in pending {
+        unsafe {
+            SetWindowPos(
+                target,
+                std::ptr::null_mut(),
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
     answered.unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam))
 }
 
@@ -814,10 +890,10 @@ impl Win32Backend {
                 // `GUICreate`'s last argument owns the new window to another
                 // one; the owner has to exist first, which a script's order
                 // guarantees (the model carries the handle).
-                let owner = window
+                let owner_hwnd = window
                     .owner
-                    .and_then(|handle| self.windows.get(&handle).copied())
-                    .unwrap_or(std::ptr::null_mut());
+                    .and_then(|handle| self.windows.get(&handle).copied());
+                let owner = owner_hwnd.unwrap_or(std::ptr::null_mut());
                 let hwnd = unsafe {
                     CreateWindowExW(
                         exstyle,
@@ -845,6 +921,16 @@ impl Win32Backend {
                 }
                 self.windows.insert(window.handle, hwnd);
                 let _ = with_shared(|state| state.window_ids.insert(hwnd_key(hwnd), window.handle));
+                // A subform has to be carried by whoever moves its owner, and
+                // that includes Windows' own title-bar drag loop.
+                if window.exstyle & WS_EX_MDICHILD as i64 != 0 {
+                    if let Some(owner_hwnd) = owner_hwnd {
+                        let _ = with_shared(|state| {
+                            state.subforms.entry(hwnd_key(owner_hwnd)).or_default().push(hwnd);
+                            state.subform_hwnds.insert(hwnd_key(hwnd));
+                        });
+                    }
+                }
                 if std::env::var_os("AU3_GUI_TRACE").is_some() {
                     eprintln!(
                         "[gui-trace] window handle={} title={:?} created hwnd={hwnd:?} pos=({}, {}) size={}x{} style={style:#x} exstyle={exstyle:#x}",
@@ -861,6 +947,13 @@ impl Win32Backend {
             window.handle,
             (window.x, window.y, client_width, client_height),
         );
+        // Record where this call puts the window *before* moving it: the
+        // `WM_MOVE` that `MoveWindow` sends would otherwise look like the user
+        // moving the window, and the native subform carry would apply a shift the
+        // model is applying as well.
+        let _ = with_shared(|state| {
+            state.carried.insert(hwnd_key(hwnd), (window.x, window.y));
+        });
         unsafe {
             // Title, geometry and visibility are idempotent and cheap.
             let title = to_wide(&window.title);
@@ -2184,6 +2277,25 @@ impl Win32Backend {
             if unsafe { IsIconic(hwnd) } != 0 || unsafe { IsZoomed(hwnd) } != 0 {
                 continue;
             }
+            // A subform rides with its owner, which the owner's own move has
+            // already carried — reading its rectangle as a drag of its own
+            // would apply the shift a second time.
+            if with_shared(|state| state.subform_hwnds.contains(&hwnd_key(hwnd)))
+                .unwrap_or(false)
+            {
+                self.applied.insert(handle, {
+                    let mut rect: RECT = unsafe { std::mem::zeroed() };
+                    unsafe { GetWindowRect(hwnd, &mut rect) };
+                    let frame = self.frames.get(&handle).copied().unwrap_or((0, 0));
+                    (
+                        rect.left,
+                        rect.top,
+                        (rect.right - rect.left - frame.0).max(1),
+                        (rect.bottom - rect.top - frame.1).max(1),
+                    )
+                });
+                continue;
+            }
             let mut rect: RECT = unsafe { std::mem::zeroed() };
             if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
                 continue;
@@ -2231,8 +2343,27 @@ impl GuiBackend for Win32Backend {
             );
         }
         if let Some(hwnd) = self.windows.remove(&handle) {
+            let _ = with_shared(|state| {
+                state.window_ids.remove(&hwnd_key(hwnd));
+                // A destroyed window is nobody's subform any more, and the
+                // subforms it owned were destroyed with it.
+                let gone: Vec<HWND> = state
+                    .subforms
+                    .remove(&hwnd_key(hwnd))
+                    .unwrap_or_default();
+                for subform in gone {
+                    state.subform_hwnds.remove(&hwnd_key(subform));
+                    state.carried.remove(&hwnd_key(subform));
+                    state.subforms.remove(&hwnd_key(subform));
+                }
+                state.subform_hwnds.remove(&hwnd_key(hwnd));
+                state.carried.remove(&hwnd_key(hwnd));
+                state.subform_moves.retain(|(target, _, _)| *target != hwnd);
+                for subforms in state.subforms.values_mut() {
+                    subforms.retain(|subform| *subform != hwnd);
+                }
+            });
             unsafe { DestroyWindow(hwnd) };
-            let _ = with_shared(|state| state.window_ids.remove(&hwnd_key(hwnd)));
         }
         self.applied.remove(&handle);
         self.frames.remove(&handle);
