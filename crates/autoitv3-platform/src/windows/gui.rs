@@ -890,7 +890,13 @@ impl Win32Backend {
                 Some(degree) => unsafe {
                     let exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
                     SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_LAYERED);
-                    SetLayeredWindowAttributes(hwnd, 0, degree as u8, LWA_ALPHA);
+                    let ok = SetLayeredWindowAttributes(hwnd, 0, degree as u8, LWA_ALPHA);
+                    if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                        eprintln!(
+                            "[gui-trace] window handle={} transparency={} layered ok={ok} exstyle_now={:#x}",
+                            window.handle, degree, GetWindowLongW(hwnd, GWL_EXSTYLE)
+                        );
+                    }
                     self.layered.insert(window.handle, true);
                 },
                 None if self.layered.contains_key(&window.handle) => unsafe {
