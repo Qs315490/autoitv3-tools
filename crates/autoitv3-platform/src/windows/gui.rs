@@ -999,13 +999,6 @@ impl Win32Backend {
             window.handle,
             (window.x, window.y, client_width, client_height),
         );
-        // Record where this call puts the window *before* moving it: the
-        // `WM_MOVE` that `MoveWindow` sends would otherwise look like the user
-        // moving the window, and the subform carry would then apply a shift the
-        // model is applying as well — which is a visible jump on every update.
-        let _ = with_shared(|state| {
-            state.carried.insert(hwnd_key(hwnd), (window.x, window.y));
-        });
         unsafe {
             // Nothing below is worth a call when the window is already the way
             // the model describes it — and the geometry *is* re-sent on every
@@ -1020,6 +1013,19 @@ impl Win32Backend {
                 && current.right - current.left == width
                 && current.bottom - current.top == height;
             if !unchanged {
+                // Record where this call puts the window *before* moving it: the
+                // `WM_MOVE` that `SetWindowPos` sends would otherwise look like
+                // the user moving the window, and the subform carry would then
+                // apply a shift the model is applying as well — a visible jump.
+                //
+                // Only when this really moves it. A window the user is dragging
+                // has a rectangle the model has not caught up with yet, and
+                // resetting the baseline to that stale position would make the
+                // next `WM_MOVE` carry every subform by the whole difference —
+                // the flash at the end of a drag.
+                let _ = with_shared(|state| {
+                    state.carried.insert(hwnd_key(hwnd), (window.x, window.y));
+                });
                 // A subform is an owned popup in screen coordinates, which is
                 // what the model already resolved its place to.
                 // `SWP_NOZORDER | SWP_NOACTIVATE`: this is the model re-applying
