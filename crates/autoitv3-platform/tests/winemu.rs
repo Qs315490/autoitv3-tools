@@ -3068,6 +3068,36 @@ Return $ps[0] & "," & $ps[1] & ":" & $pp[0] & "," & $pp[1]
 }
 
 #[test]
+fn a_default_extended_style_does_not_make_a_window_a_subform() {
+    // A window whose extended style is left at \`Default\` reaches the model as
+    // -1, and -1 has every bit set. Testing \`WS_EX_MDICHILD\` alone made every
+    // window a subform — a child window with no parent fails to create, so the
+    // whole interface disappeared.
+    //
+    // Measured on the official x64 interpreter: a window created with an owner
+    // but the *default* extended style stays an ordinary owned window at its own
+    // screen coordinates (asked for (4,32) over a main at (100,100) it landed at
+    // exactly (4,32)) and does not follow the owner. Only an explicit
+    // \`$WS_EX_MDICHILD\` (0x40) is placed against the owner's client area — the
+    // same call with 192 landed at (107,161).
+    let body = r#"
+Local $main = GUICreate("m", 400, 300, 100, 100)
+Local $default = GUICreate("", 200, 100, 4, 32, 2147483648, -1, $main)
+Local $sub = GUICreate("", 200, 100, 4, 32, 2147483648, 192, $main)
+Local $a = WinGetPos($default)
+Local $b = WinGetPos($sub)
+Return $a[0] & "," & $a[1] & ":" & $b[0] & "," & $b[1]
+"#;
+    // The default one keeps screen coordinates; the MDICHILD one is placed
+    // against its owner (the headless backend has no frame, so owner+(4,32)).
+    assert_eq!(
+        text(win10(), body),
+        "4,32:104,132",
+        "only an explicit $WS_EX_MDICHILD makes a subform"
+    );
+}
+
+#[test]
 fn a_control_inherits_the_font_its_window_was_given() {
     // Measured on the official x64 interpreter: a label created after
     // \`GUISetFont(9, 400, 0, "microsoft yahei")\` reports a 9pt/400 "microsoft

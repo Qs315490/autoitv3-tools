@@ -826,7 +826,11 @@ impl Win32Backend {
         // owned popup only follows when something moves it afterwards, which is
         // the flicker during a drag. `WS_EX_LAYERED` still applies to a child
         // (measured: `SetLayeredWindowAttributes` on one reports alpha 110).
-        let subform = window.exstyle & WS_EX_MDICHILD as i64 != 0;
+        // Only a positive extended style names styles: a "Default" reaches the
+        // model as -1, whose every bit is set — testing the flag alone made
+        // *every* window a child, and a child window with no parent fails to
+        // create, which is a blank screen.
+        let subform = window.exstyle > 0 && window.exstyle & WS_EX_MDICHILD as i64 != 0;
         let exstyle = window.exstyle.max(0) as u32 & !WS_EX_MDICHILD;
         // A child window cannot also be a popup, and the script's style for a
         // subform is `WS_POPUP` (that is what `GUICreate` puts in a form's
@@ -2693,7 +2697,7 @@ impl GuiBackend for Win32Backend {
         // The same effective style `sync_window` creates the window with: a
         // subform becomes a child, and a child has no caption or border frame.
         let style = window_style(window);
-        let style = if window.exstyle & WS_EX_MDICHILD as i64 != 0 {
+        let style = if window.exstyle > 0 && window.exstyle & WS_EX_MDICHILD as i64 != 0 {
             (style & !WS_POPUP) | WS_CHILD
         } else {
             style

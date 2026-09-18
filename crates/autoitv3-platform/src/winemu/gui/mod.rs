@@ -2857,7 +2857,11 @@ impl GuiState {
             .iter()
             .flatten()
             .filter(|window| {
-                window.owner == Some(handle) && window.exstyle & WS_EX_MDICHILD != 0
+                // Only a positive extended style names styles: a "Default"
+                // reaches the model as -1, whose every bit is set.
+                window.owner == Some(handle)
+                    && window.exstyle > 0
+                    && window.exstyle & WS_EX_MDICHILD != 0
             })
             .map(|window| window.handle)
             .collect();
