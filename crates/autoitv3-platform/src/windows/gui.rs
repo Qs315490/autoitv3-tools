@@ -357,7 +357,10 @@ struct Shared {
     /// Windows the user minimised/maximised/restored.
     states: HashMap<i64, WindowState>,
     /// Control `HWND` → the text and background colours a script set.
-    colors: HashMap<usize, (Option<i64>, Option<i64>)>,
+    /// Control HWND -> (model control id, text colour, background colour).
+    /// The id rides along so a trace can name the control a WM_CTLCOLOR* arrives
+    /// for - the window procedure cannot reach the model's tables.
+    colors: HashMap<usize, (i64, Option<i64>, Option<i64>)>,
     /// Window `HWND` → the background colour `GUISetBkColor` set.
     window_bk: HashMap<usize, i64>,
     /// Graphic control `HWND` → the commands to replay when it paints.
@@ -482,7 +485,8 @@ unsafe extern "system" fn wnd_proc(
                         state.colors.get(&(lparam as usize))
                     );
                 }
-                let (foreground, background) = state.colors.get(&(lparam as usize)).copied()?;
+                let (_id, foreground, background) =
+                    state.colors.get(&(lparam as usize)).copied()?;
                 let hdc = wparam as HDC;
                 if let Some(foreground) = foreground {
                     SetTextColor(hdc, colorref(foreground));
@@ -1549,7 +1553,9 @@ impl Win32Backend {
             );
         }
         let _ = with_shared(|shared| {
-            shared.colors.insert(hwnd_key(hwnd), (control.color, background));
+            shared
+                .colors
+                .insert(hwnd_key(hwnd), (control.id, control.color, background));
         });
         unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
         let owner = match control.kind {
