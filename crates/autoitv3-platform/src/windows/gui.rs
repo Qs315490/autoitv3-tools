@@ -3388,7 +3388,24 @@ unsafe extern "system" fn child_proc(
                 if let Some(brush) = brush {
                     FillRect(hdc, &rect, brush);
                 }
-                paint_commands(hdc, &drawing.commands, drawing.color);
+                // A graphic's own rectangle is stroked in the colour
+                // `GUICtrlSetColor` named, even when the script drew no shape
+                // into it. Measured on the official x64 interpreter: a 30x20
+                // graphic with a colour reports 96 pixels of it — its perimeter
+                // — and one that also has a background fills the other 504.
+                // This is the idiom a script uses for a one-pixel frame line,
+                // and the sample's menu border is a set of them, so without it
+                // every frame graphic comes out invisible.
+                if let Some(color) = drawing.color {
+                    draw_shape(hdc, color, 1, None, |hdc| {
+                        Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
+                    });
+                }
+                // The pen the shape commands use is *not* that colour: measured,
+                // a graphic given a colour and a plain `$GUI_GR_RECT` gets the
+                // ring in the colour and the rectangle in the pen, which starts
+                // black. Only `$GUI_GR_COLOR` changes it.
+                paint_commands(hdc, &drawing.commands, None);
                 EndPaint(hwnd, &paint);
                 return 0;
             }
