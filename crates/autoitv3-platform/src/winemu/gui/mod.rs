@@ -140,6 +140,20 @@ const LVS_EX_CHECKBOXES: i64 = 0x0000_0004;
 /// relative to the owner's client area (measured on the official interpreter).
 const WS_EX_MDICHILD: i64 = 0x40;
 
+/// How far inside its client origin an `$WS_EX_MDICHILD` subform lands.
+///
+/// The official interpreter puts a subform at the owner's client origin plus the
+/// requested offset and then subtracts this much of the owner's frame; measured
+/// on the official x64 interpreter across six owner styles, the correction is
+/// `min(client inset) - 3`: frameless 0 -> -3, `WS_BORDER` 1 -> -2,
+/// `WS_EX_CLIENTEDGE` 2 -> -1, `WS_CAPTION` 3 -> 0, `+WS_THICKFRAME` 4 -> +1,
+/// `+WS_EX_CLIENTEDGE` 5 -> +2. Scripts compensate for it themselves — the
+/// sample adds 3 to `Left`/`Top` right before `GUICreate` — so leaving it out
+/// put every subform three pixels off (a subform of a frameless owner at (4,32)
+/// landed on the official interpreter at (101,129) of an owner at (100,100),
+/// where this model had it at (104,132)).
+const MDICHILD_INSET: i32 = 3;
+
 /// How much of a window's client area a menu bar takes.
 ///
 /// Measured on the official x64 interpreter: a 400x300 window reports a 400x300
@@ -830,8 +844,13 @@ impl GuiState {
                     if arg_int(args, 6) > 0 && arg_int(args, 6) & WS_EX_MDICHILD != 0 {
                         if let Some(owner_window) = self.model.window(owner_handle) {
                             let (origin_x, origin_y) = self.backend.client_origin(owner_window);
-                            x = owner_window.x + origin_x + x;
-                            y = owner_window.y + origin_y + y;
+                            // The official interpreter tucks the subform in by
+                            // the owner's frame width less three pixels, on both
+                            // axes (see `MDICHILD_INSET`). Scripts add that three
+                            // back themselves.
+                            let pull = origin_x - MDICHILD_INSET;
+                            x = owner_window.x + origin_x + x + pull;
+                            y = owner_window.y + origin_y + y + pull;
                         }
                     }
                 }

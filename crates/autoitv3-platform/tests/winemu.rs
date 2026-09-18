@@ -2097,11 +2097,15 @@ Return $main_pos[0] & "," & $main_pos[1] & ":" & $sub_pos[0] & "," & $sub_pos[1]
     let fields: Vec<&str> = value.split(':').collect();
     assert_eq!(fields[0], "300,200", "the drag reached the model: {value}");
     assert_eq!(
-        fields[1], "304,232",
+        fields[1], "301,229",
         "the subform follows its owner: {value}"
     );
+    // The nested subform lands on the same spot as its parent: a subform has no
+    // frame of its own, so `parent + (3,3) - 3` is `parent`. Measured on the
+    // official x64 interpreter: main (100,100), sub requested (4,32) -> (101,129),
+    // a subform of that sub requested (3,3) -> (101,129) as well.
     assert_eq!(
-        fields[2], "307,235",
+        fields[2], "301,229",
         "a nested subform follows too: {value}"
     );
     assert_eq!(
@@ -3062,9 +3066,12 @@ Local $ps = WinGetPos($sub)
 Local $pp = WinGetPos($plain)
 Return $ps[0] & "," & $ps[1] & ":" & $pp[0] & "," & $pp[1]
 "#;
-    // Main is at (100,100) (explicit, no centring); the MDICHILD subform lands
-    // at owner+(4,32); the plain owned window stays at screen (4,32).
-    assert_eq!(text(win10(), body), "104,132:4,32");
+    // Main is at (100,100) (explicit, no centring) and the headless backend has
+    // no frame, i.e. the official frameless case: the MDICHILD subform lands at
+    // owner+(4,32) minus the three pixels the official interpreter tucks it in
+    // by — measured (101,129) for exactly this shape. The plain owned window
+    // stays at screen (4,32).
+    assert_eq!(text(win10(), body), "101,129:4,32");
 }
 
 #[test]
@@ -3123,10 +3130,14 @@ Local $b = WinGetPos($sub)
 Return $a[0] & "," & $a[1] & ":" & $b[0] & "," & $b[1]
 "#;
     // The default one keeps screen coordinates; the MDICHILD one is placed
-    // against its owner (the headless backend has no frame, so owner+(4,32)).
+    // against its owner's client area less the three pixels the official
+    // interpreter tucks it in by. The headless backend has no frame at all,
+    // which is the official frameless case: a subform of a frameless owner at
+    // (100,100) asked for (4,32) landed on the official interpreter at
+    // (101,129).
     assert_eq!(
         text(win10(), body),
-        "4,32:104,132",
+        "4,32:101,129",
         "only an explicit $WS_EX_MDICHILD makes a subform"
     );
 }
