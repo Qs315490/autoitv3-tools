@@ -124,14 +124,77 @@ pub enum DrawCmd {
     Clear,
 }
 
+/// The DPI a logical point is measured against when nothing else is known.
+///
+/// AutoIt size arguments are points, and a point is a *logical* unit: the height
+/// a renderer asks for is `point * dpi / 72`. Measured on the official x64
+/// interpreter at 96 DPI (`GetDeviceCaps(LOGPIXELSY)` = 96): 6pt -> 8, 8pt -> 10,
+/// 9pt -> 12, 12pt -> 16, 20pt -> 26, 24pt -> 32 — all truncated, none rounded
+/// (8pt would round to 11, 20pt to 27).
+pub const DEFAULT_DPI: i32 = 96;
+
 /// A control font, as `GUISetFont`/`GUICtrlSetFont` record it.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Font {
     pub name: String,
     pub size: i32,
     pub weight: i32,
     pub attribute: i32,
+    /// The font quality flag, or -1 when the script named none.
+    ///
+    /// Measured on the official x64 interpreter: `GUISetFont` leaves the quality
+    /// at `PROOF_QUALITY` (2) when the argument is omitted, and passes an
+    /// explicit one through unchanged. A renderer that hard-codes ClearType
+    /// draws antialiased text where the official one draws the plain proof face,
+    /// which is visible at small sizes.
+    pub quality: i32,
 }
+
+impl Default for Font {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            size: 0,
+            weight: 0,
+            attribute: 0,
+            // `Default` means "no quality was named", which is not the same as
+            // naming `DEFAULT_QUALITY` (0).
+            quality: -1,
+        }
+    }
+}
+
+impl Font {
+    /// The character height a renderer should ask for, in pixels.
+    ///
+    /// The point size scaled to the display DPI and truncated, matching the
+    /// official interpreter. A renderer working in points multiplies again; one
+    /// that wants pixels (Win32 `CreateFontW`) needs this number, not the point
+    /// size.
+    pub fn pixel_height(&self) -> i32 {
+        self.pixel_height_at(DEFAULT_DPI)
+    }
+
+    /// [`Font::pixel_height`] against a display of `dpi`.
+    pub fn pixel_height_at(&self, dpi: i32) -> i32 {
+        let size = self.size.max(1);
+        (size * dpi / 72).max(1)
+    }
+
+    /// The `CreateFontW` quality byte: the flag the script named, else the
+    /// official default `PROOF_QUALITY`.
+    pub fn quality(&self) -> u32 {
+        if self.quality >= 0 {
+            self.quality as u32
+        } else {
+            PROOF_QUALITY
+        }
+    }
+}
+
+/// `PROOF_QUALITY`: what the official interpreter uses when a script names no
+/// font quality.
+pub const PROOF_QUALITY: u32 = 2;
 
 /// One control in a window.
 #[derive(Debug, Clone)]
@@ -1000,5 +1063,65 @@ impl Window {
             WindowState::Normal => {}
         }
         bits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Measured on the official x64 interpreter at 96 DPI: the character height
+    /// it asks Windows for is `trunc(point * dpi / 72)`, never rounded.
+    #[test]
+    fn a_point_size_becomes_the_official_pixel_height() {
+        let height = |size: i32| Font {
+            size,
+            ..Font::default()
+        }
+        .pixel_height();
+        // 8pt would round to 11 and 20pt to 27: both are measured as truncated.
+        for (points, pixels) in [
+            (6, 8),
+            (7, 9),
+            (8, 10),
+            (9, 12),
+            (11, 14),
+            (12, 16),
+            (14, 18),
+            (20, 26),
+            (23, 30),
+            (24, 32),
+        ] {
+            assert_eq!(height(points), pixels, "{points}pt");
+        }
+        // A hi-DPI display scales it: 9pt at 120 DPI is 15 pixels.
+        let font = Font {
+            size: 9,
+            ..Font::default()
+        };
+        assert_eq!(font.pixel_height_at(120), 15);
+    }
+
+    /// Measured: an omitted quality leaves `PROOF_QUALITY` (2), while an
+    /// explicit `0` is `DEFAULT_QUALITY` and must survive.
+    #[test]
+    fn an_unnamed_font_quality_is_the_official_proof_quality() {
+        assert_eq!(Font::default().quality(), PROOF_QUALITY);
+        assert_eq!(
+            Font {
+                quality: -1,
+                ..Font::default()
+            }
+            .quality(),
+            2
+        );
+        assert_eq!(
+            Font {
+                quality: 0,
+                ..Font::default()
+            }
+            .quality(),
+            0
+        );
     }
 }

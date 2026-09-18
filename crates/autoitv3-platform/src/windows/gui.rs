@@ -70,7 +70,7 @@ use std::ffi::c_void;
 
 use autoitv3_gui_model::{
     Control, ControlKind, DrawCmd, Font, GuiBackend, GuiEvent, GuiImage, GuiUpdate, Progress,
-    Splash, Window, WindowState, GUI_WS_EX_PARENTDRAG, TIP_CENTER,
+    Splash, Window, WindowState, DEFAULT_DPI, GUI_WS_EX_PARENTDRAG, TIP_CENTER,
 };
 
 use super::dialogs;
@@ -81,7 +81,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
-    CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, GetDC, GetStockObject,
+    CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, GetDC, GetDeviceCaps,
+    GetStockObject,
     ClientToScreen, GetUpdateRect, InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle,
     RedrawWindow, ReleaseDC, ScreenToClient,
     SelectObject, SetBkColor, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
@@ -336,11 +337,13 @@ const SM_CYSCREEN: i32 = 1;
 const SM_CXICON: i32 = 11;
 const SM_CYICON: i32 = 12;
 
+/// `GetDeviceCaps`' vertical resolution index: dots (pixels) per logical inch.
+const LOGPIXELSY: i32 = 90;
+
 // `CreateFontW` arguments that are never anything else here.
 const DEFAULT_CHARSET: u32 = 1;
 const OUT_DEFAULT_PRECIS: u32 = 0;
 const CLIP_DEFAULT_PRECIS: u32 = 0;
-const CLEARTYPE_QUALITY: u32 = 5;
 const DEFAULT_PITCH: u32 = 0;
 const DEFAULT_GUI_FONT: i32 = 17;
 
@@ -3041,6 +3044,27 @@ fn control_exstyle(control: &Control) -> u32 {
     }
 }
 
+/// The display vertical DPI, what a logical point is scaled by.
+///
+/// Read from the screen DC rather than assumed: a machine running at 125%
+/// (120 DPI) really does render a 9pt font as `-15` pixels, and passing the
+/// point size through would be wrong there in a different way than at 96 DPI.
+fn screen_dpi() -> i32 {
+    unsafe {
+        let dc = GetDC(std::ptr::null_mut());
+        if dc.is_null() {
+            return DEFAULT_DPI;
+        }
+        let dpi = GetDeviceCaps(dc, LOGPIXELSY);
+        ReleaseDC(std::ptr::null_mut(), dc);
+        if dpi > 0 {
+            dpi
+        } else {
+            DEFAULT_DPI
+        }
+    }
+}
+
 /// Give a control the font the model asks for, else the stock GUI font.
 ///
 /// The two are not interchangeable: a font from `CreateFontW` is this backend's
@@ -3064,9 +3088,15 @@ fn apply_font(state: &mut ControlState, control: &Control) {
             let strike = u32::from(font.attribute & 0x08 != 0);
             let handle = unsafe {
                 CreateFontW(
-                    // Negative: a character height rather than a cell height,
-                    // which is the point size AutoIt means.
-                    -font.size.max(1),
+                    // Negative: a character height rather than a cell height.
+                    // A point is a *logical* unit, so the height is the point
+                    // size scaled by the display's DPI and divided by 72 —
+                    // measured on the official x64 interpreter (96 DPI):
+                    // 6pt -> -8, 8pt -> -10, **9pt -> -12**, 12pt -> -16,
+                    // 20pt -> -26, i.e. `-trunc(pt * dpi / 72)`. Passing the
+                    // point size straight through is what made every caption and
+                    // label render about a quarter too small.
+                    -font.pixel_height_at(screen_dpi()),
                     0,
                     0,
                     0,
@@ -3077,7 +3107,7 @@ fn apply_font(state: &mut ControlState, control: &Control) {
                     DEFAULT_CHARSET,
                     OUT_DEFAULT_PRECIS,
                     CLIP_DEFAULT_PRECIS,
-                    CLEARTYPE_QUALITY,
+                    font.quality(),
                     DEFAULT_PITCH,
                     name.as_ptr(),
                 )

@@ -905,9 +905,14 @@ impl GuiState {
                     ctx.set_error(1, 0);
                     return Some(Value::Int(0));
                 };
-                self.apply_show_flag(handle, state);
-                self.notify_window(handle);
-                self.backend.present();
+                // A flag that changes nothing is a no-op: the sample asks for
+                // the state it already has on every hover check, and
+                // `present()` repaints every window with `RDW_ERASE`, which is
+                // visible as a flash. Only a real state change repaints.
+                if self.apply_show_flag(handle, state) {
+                    self.notify_window(handle);
+                    self.backend.present();
+                }
                 ctx.set_error(0, 0);
                 Value::Int(1)
             }
@@ -1026,11 +1031,15 @@ impl GuiState {
                 Value::Int(1)
             }
             "guisetfont" => {
+                // `GUISetFont(size, weight, attribute, name, hwnd, quality)`.
+                // An omitted quality stays at the official default, so it is
+                // recorded as -1 rather than 0 (which is `DEFAULT_QUALITY`).
                 let font = Font {
                     name: arg_str(args, 3),
                     size: arg_int(args, 0) as i32,
                     weight: arg_int(args, 1) as i32,
                     attribute: arg_int(args, 2) as i32,
+                    quality: arg_int_opt(args, 5).map(|q| q as i32).unwrap_or(-1),
                 };
                 if let Some(handle) = self.window_arg(args, 4) {
                     if let Some(window) = self.model.window_mut(handle) {
@@ -1317,6 +1326,7 @@ impl GuiState {
                     size: arg_int(args, 1) as i32,
                     weight: arg_int(args, 2) as i32,
                     attribute: arg_int(args, 3) as i32,
+                    quality: arg_int_opt(args, 5).map(|q| q as i32).unwrap_or(-1),
                 };
                 if let Some(control) = self.model.control_mut(id) {
                     control.font = Some(font);
@@ -3482,6 +3492,17 @@ fn arg_str(args: &[Value], i: usize) -> String {
 
 fn arg_int(args: &[Value], i: usize) -> i64 {
     args.get(i).map(|v| v.to_int()).unwrap_or(0)
+}
+
+/// An optional numeric argument: `None` when the script left it out or wrote
+/// `Default`. Some parameters distinguish "not given" from an explicit `0` —
+/// `GUISetFont`'s quality is one, where 0 is `DEFAULT_QUALITY` and leaving it
+/// out gives `PROOF_QUALITY`.
+fn arg_int_opt(args: &[Value], i: usize) -> Option<i64> {
+    match args.get(i) {
+        None | Some(Value::Default) | Some(Value::Null) => None,
+        Some(value) => Some(value.to_int()),
+    }
 }
 
 /// A `GUICreate` style argument, keeping "the script named none" apart from an
