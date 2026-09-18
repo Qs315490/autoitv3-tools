@@ -861,8 +861,8 @@ impl GuiState {
                     height,
                     x,
                     y,
-                    style: arg_int(args, 5),
-                    exstyle: arg_int(args, 6),
+                    style: arg_style(args, 5),
+                    exstyle: arg_style(args, 6),
                     visible: false,
                     enabled: true,
                     active: true,
@@ -1090,17 +1090,16 @@ impl GuiState {
                 match handle.and_then(|h| self.model.window(h)) {
                     Some(window) => {
                         ctx.set_error(0, 0);
-                        // A window that named no style is created with
-                        // `$GUI_SS_DEFAULT_GUI` — measured on the official x64
-                        // interpreter, which reports `0x84CA0000` for it.
-                        let style = if window.style > 0 {
-                            window.style
-                        } else {
-                            GUI_SS_DEFAULT_GUI
-                        };
+                        // The style the window was really created with, which is
+                        // more than the script asked for: a nameless window gets
+                        // `$GUI_SS_DEFAULT_GUI`, a non-popup gains `WS_CAPTION`,
+                        // everything gains `WS_CLIPSIBLINGS`, and a captioned one
+                        // gains the `WS_EX_WINDOWEDGE` bevel. All measured on the
+                        // official x64 interpreter; `Window::effective_style`
+                        // carries the table.
                         Value::array(vec![
-                            Value::Int(style),
-                            Value::Int(window.exstyle.max(0)),
+                            Value::Int(window.effective_style()),
+                            Value::Int(window.effective_exstyle()),
                         ])
                     }
                     None => {
@@ -3489,6 +3488,20 @@ fn arg_str(args: &[Value], i: usize) -> String {
 
 fn arg_int(args: &[Value], i: usize) -> i64 {
     args.get(i).map(|v| v.to_int()).unwrap_or(0)
+}
+
+/// A `GUICreate` style argument, keeping "the script named none" apart from an
+/// explicit `0`.
+///
+/// Measured on the official x64 interpreter: an omitted style, `Default` and
+/// `-1` all become `$GUI_SS_DEFAULT_GUI | WS_CLIPSIBLINGS` (`0x84CA0000`), while
+/// an explicit `0` becomes `0x04C00000`. Collapsing them to 0 lost the caption
+/// on every window that named none — a whole class of off-by-a-frame drift.
+fn arg_style(args: &[Value], i: usize) -> i64 {
+    match args.get(i) {
+        None | Some(Value::Default) | Some(Value::Null) => -1,
+        Some(value) => value.to_int(),
+    }
 }
 
 /// The `[winemu]` line for a `MsgBox` the emulation answered.

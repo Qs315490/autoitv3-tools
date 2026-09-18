@@ -204,6 +204,30 @@ pub const GUI_DISABLE: i64 = 0x80;
 /// `$GUI_CHECKED`.
 pub const GUI_CHECKED: i64 = 0x01;
 
+/// The style a window that named no style really gets.
+///
+/// It is *not* `WS_OVERLAPPEDWINDOW`: measured on the official x64 interpreter,
+/// such a window reports `0x84CA0000` — this value plus `WS_CLIPSIBLINGS` — for
+/// a 406x332 outer rectangle, where `WS_OVERLAPPEDWINDOW`'s `WS_THICKFRAME`
+/// gives 408x334.
+pub const GUI_SS_DEFAULT_GUI: i64 = 0x80CA_0000;
+
+/// `WS_POPUP`: a window with its own frame and no caption.
+pub const WS_POPUP: i64 = 0x8000_0000;
+/// `WS_CAPTION` = `WS_BORDER | WS_DLGFRAME`.
+pub const WS_CAPTION: i64 = 0x00C0_0000;
+/// `WS_CLIPSIBLINGS`: the official interpreter sets this on every window.
+pub const WS_CLIPSIBLINGS: i64 = 0x0400_0000;
+/// `WS_VISIBLE`.
+pub const WS_VISIBLE: i64 = 0x1000_0000;
+/// `WS_EX_WINDOWEDGE`: the extra bevel a captioned window gets.
+pub const WS_EX_WINDOWEDGE: i64 = 0x0000_0100;
+/// `WS_EX_MDICHILD`: AutoIt's "this form sits on, and moves with, its owner".
+///
+/// AutoIt consumes the bit — it never reaches Windows — so a script that asks
+/// for `0xC0` really gets `0x80`.
+pub const WS_EX_MDICHILD: i64 = 0x0000_0040;
+
 /// `$GUI_BKCOLOR_TRANSPARENT`: the control keeps the window's own colour.
 pub const GUI_BKCOLOR_TRANSPARENT: i64 = -2;
 /// `$GUI_BKCOLOR_LV_ALTERNATE`: a ListView paints its rows in two colours.
@@ -228,6 +252,68 @@ pub const TIP_CENTER: i64 = 2;
 /// where the page's own hiding goes; [`Control::is_visible`] treats it like
 /// `$GUI_HIDE`.
 pub const GUI_PAGE_HIDDEN: i64 = 1 << 30;
+
+impl Window {
+    /// The style word the official interpreter really creates this window with.
+    ///
+    /// A script's style argument is a *request*, and the interpreter fills in
+    /// what it implies; measured on the official x64 interpreter:
+    ///
+    /// | asked for | created with |
+    /// |---|---|
+    /// | nothing / `-1` | `0x84CA0000` = `GUI_SS_DEFAULT_GUI \| WS_CLIPSIBLINGS` |
+    /// | `0` | `0x04C00000` (adds `WS_CAPTION`) |
+    /// | `WS_POPUP` | `0x84000000` (a popup keeps no caption) |
+    /// | `WS_OVERLAPPEDWINDOW` | `0x04CF0000` (the caption is already in it) |
+    ///
+    /// So: a style of `0` or more keeps every bit it names, a window without
+    /// `WS_POPUP` gains `WS_CAPTION`, and `WS_CLIPSIBLINGS` is always there.
+    /// `WS_VISIBLE` follows the window's own visibility — measured, the same
+    /// window reports `0x84000000` before `GUISetState` and `0x94000000` after.
+    ///
+    /// The sentinel for "the script named no style" is exactly **`-1`** (the
+    /// argument was missing, `Default`, or literally `-1`) — measured, `-1` and
+    /// `0xFFFFFFFF` both give `0x84CA0000`, while `-2` really is used as a
+    /// style word. An explicit `0` is not the same as none at all: it has
+    /// `WS_CAPTION` filled in for it, `0x04C00000`. `0x80000000` is `WS_POPUP`
+    /// (AutoIt integers are signed 32-bit, so it arrives as `-2147483648` and
+    /// stays a popup with no caption).
+    pub fn effective_style(&self) -> i64 {
+        let style = if self.style == -1 {
+            GUI_SS_DEFAULT_GUI
+        } else {
+            self.style
+        };
+        let style = if style & WS_POPUP == 0 {
+            style | WS_CAPTION
+        } else {
+            style
+        };
+        let style = style | WS_CLIPSIBLINGS;
+        if self.visible {
+            style | WS_VISIBLE
+        } else {
+            style
+        }
+    }
+
+    /// The extended style word this window is really created with.
+    ///
+    /// `WS_EX_MDICHILD` never reaches Windows — AutoIt consumes it — but a
+    /// captioned window gains `WS_EX_WINDOWEDGE`: measured on the official x64
+    /// interpreter, a `WS_CAPTION` window reports `0x100` where a `WS_POPUP`
+    /// one reports 0. A `Default` (which reaches the model as `-1`) means "no
+    /// explicit bits at all", not "every bit".
+    pub fn effective_exstyle(&self) -> i64 {
+        let named = if self.exstyle > 0 { self.exstyle } else { 0 };
+        let named = named & !WS_EX_MDICHILD;
+        if self.effective_style() & WS_CAPTION != 0 {
+            named | WS_EX_WINDOWEDGE
+        } else {
+            named
+        }
+    }
+}
 
 impl Control {
     /// A control with default geometry and state.

@@ -124,11 +124,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{ICON_BIG, WM_SETICON};
 // messages and notification codes are all 32-bit bit patterns.
 // ---------------------------------------------------------------------------
 
-// Window styles (`winuser.h`).
-/// `$GUI_SS_DEFAULT_GUI`: what the official interpreter creates a window with
-/// when the script names no style (measured: `0x84CA0000` once
-/// `WS_CLIPSIBLINGS` is OR-ed in).
-const GUI_SS_DEFAULT_GUI: u32 = 0x80CA_0000;
+// Window styles (`winuser.h`). The style *word* a window is really created
+// with comes from `Window::effective_style`/`effective_exstyle` in the shared
+// model, so this file and the emulation layer can never disagree about it.
 const WS_VISIBLE: u32 = 0x1000_0000;
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_POPUP: u32 = 0x8000_0000;
@@ -915,7 +913,7 @@ impl Win32Backend {
         // *every* window a child, and a child window with no parent fails to
         // create, which is a blank screen.
         let subform = is_subform(window);
-        let exstyle = window.exstyle.max(0) as u32 & !WS_EX_MDICHILD;
+        let exstyle = window.effective_exstyle() as u32;
         let style = effective_style(window, subform);
         let frame = frame_size(style, exstyle);
         let (client_width, client_height) = (window.width.max(1), window.height.max(1));
@@ -2790,7 +2788,7 @@ impl GuiBackend for Win32Backend {
         // Both go through `is_subform` so the two can never disagree about which
         // windows are children.
         let style = effective_style(window, is_subform(window));
-        let exstyle = window.exstyle.max(0) as u32 & !WS_EX_MDICHILD;
+        let exstyle = window.effective_exstyle() as u32;
         frame_size(style, exstyle)
     }
 
@@ -2886,17 +2884,10 @@ fn is_subform(window: &Window) -> bool {
 /// Windows then does *not* move it with its owner, so the window procedure
 /// carries it from `WM_MOVE` — which is also what the official one does.
 fn effective_style(window: &Window, _subform: bool) -> u32 {
-    window_style(window) | if window.visible { WS_VISIBLE } else { 0 }
-}
-
-fn window_style(window: &Window) -> u32 {
-    if window.style > 0 {
-        window.style as u32
-    } else {
-        // `$GUI_SS_DEFAULT_GUI | WS_CLIPSIBLINGS`; the visible bit is the
-        // caller's.
-        GUI_SS_DEFAULT_GUI | WS_CLIPSIBLINGS
-    }
+    // One shared rule, so this and the emulation layer can never disagree:
+    // measured on the official x64 interpreter it fills in `WS_CAPTION` for a
+    // non-popup, `WS_CLIPSIBLINGS` always and `WS_EX_WINDOWEDGE` for a caption.
+    window.effective_style() as u32
 }
 
 /// The Win32 window class behind a control kind.

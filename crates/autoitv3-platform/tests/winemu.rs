@@ -3104,8 +3104,41 @@ Local $p = WinGetPos($w)
 Return Hex($a[0], 8) & ":" & Hex($a[1], 8) & ":" & $p[2] & "x" & $p[3]
 "#;
     // The headless backend reports no frame, so the outer size equals the client
-    // size here; the style word is the part that has to match.
-    assert_eq!(text(win10(), body), "84CA0000:00000000:400x300");
+    // size here; the style word is the part that has to match. The extended word
+    // is `0x100` (`WS_EX_WINDOWEDGE`) rather than 0: the default style carries
+    // `WS_CAPTION`, and the official interpreter gives a captioned window that
+    // bevel — measured on a nameless, not-yet-shown window as
+    // `0x84CA0000/0x00000100`.
+    assert_eq!(text(win10(), body), "84CA0000:00000100:400x300");
+}
+
+#[test]
+fn a_named_style_is_completed_the_way_the_official_interpreter_completes_it() {
+    // The style argument is a request: measured on the official x64 interpreter,
+    // a window that names no `WS_POPUP` also gets `WS_CAPTION`, every window gets
+    // `WS_CLIPSIBLINGS`, and `WS_VISIBLE` follows the window's own state. A
+    // popup keeps no caption, and a style that already has one is not changed:
+    //   nothing/-1 -> 0x84CA0000, 0 -> 0x04C00000, popup -> 0x84000000,
+    //   overlapped -> 0x04CF0000 (all before `GUISetState`).
+    let body = r#"
+Local $a = GUICreate("a", 200, 150, 0, 0)
+Local $b = GUICreate("b", 200, 150, 0, 0, 0)
+Local $c = GUICreate("c", 200, 150, 0, 0, 0x80000000)
+Local $d = GUICreate("d", 200, 150, 0, 0, 0x00CF0000)
+Local $out = ""
+For $w In [$a, $b, $c, $d]
+    Local $s = GUIGetStyle($w)
+    $out &= Hex($s[0], 8) & " "
+Next
+GUISetState(@SW_SHOW, $a)
+Local $s = GUIGetStyle($a)
+Return $out & "|" & Hex($s[0], 8)
+"#;
+    assert_eq!(
+        text(win10(), body),
+        "84CA0000 04C00000 84000000 04CF0000 |94CA0000",
+        "named styles are completed like the official interpreter"
+    );
 }
 
 #[test]

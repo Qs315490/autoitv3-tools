@@ -79,8 +79,15 @@ pub(crate) fn call(
                 )));
             }
             let a = args.first().map(|v| v.to_int()).unwrap_or(0);
-            let digits = args.get(1).map(|v| v.to_int()).unwrap_or(8).clamp(1, 16) as usize;
-            Value::Str(format!("{:0width$X}", a, width = digits))
+            // The value is the low `digits` nibbles of the 64-bit two's complement
+            // word, zero-padded to that many digits — measured on the official x64
+            // interpreter: `Hex(-1, 8)` is `FFFFFFFF` (not the full 16 nibbles),
+            // `Hex(-1, 4)` is `FFFF`, `Hex(511, 2)` is `FF`, `Hex(511, 3)` is
+            // `1FF`, and `Hex(-1, 0)` is the empty string. A missing length is 8,
+            // and anything above 16 is the whole word.
+            let digits = args.get(1).map(|v| v.to_int()).unwrap_or(8).clamp(0, 16) as usize;
+            let full = format!("{:016X}", a as u64);
+            Value::Str(full[16 - digits..].to_string())
         }
         "dec" => {
             // `Dec("1A")` is 26: AutoIt reads the argument as *hexadecimal*, with
