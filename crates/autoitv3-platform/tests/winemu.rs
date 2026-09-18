@@ -1206,6 +1206,34 @@ Return $count & ":" & $none & ":" & $selected & ":" & $bob & ":" & $text & ":" &
 }
 
 #[test]
+fn a_default_extended_style_does_not_claim_every_flag() {
+    // A script that leaves the extended style at `Default` hands the model -1,
+    // whose every bit is set. Testing a flag without checking the sign made
+    // every such ListView look like it carried `$LVS_EX_CHECKBOXES`, so the
+    // advanced read answered a check state instead of the row text.
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $list = GUICtrlCreateListView("name|age", 0, 0, 200, 100, -1, -1)
+Local $bob = GUICtrlCreateListViewItem("bob|30", $list)
+Local $negative = GUICtrlRead($bob, 1)
+Local $named = GUICtrlCreateListView("name|age", 0, 120, 200, 100, -1, 4)
+Local $sue = GUICtrlCreateListViewItem("sue|25", $named)
+Local $checked = GUICtrlRead($sue, 1)
+Return $negative & ":" & $checked
+"#;
+    let value = text(win10(), body);
+    let fields: Vec<&str> = value.split(':').collect();
+    assert_eq!(
+        fields[0], "bob|30|",
+        "a -1 extended style is not $LVS_EX_CHECKBOXES: {value}"
+    );
+    assert_eq!(
+        fields[1], "4",
+        "an explicit $LVS_EX_CHECKBOXES still reads its check state: {value}"
+    );
+}
+
+#[test]
 fn deleting_an_item_removes_its_row() {
     let body = r#"
 GUICreate("T", 300, 200)
