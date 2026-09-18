@@ -3102,9 +3102,12 @@ fn control_style(control: &Control) -> u32 {
 /// A control's extended style: the per-kind default unless the script named one.
 fn control_exstyle(control: &Control) -> u32 {
     if control.exstyle > 0 {
-        // `$GUI_WS_EX_PARENTDRAG` shares its value with a real extended style but
-        // is not one: it asks for the subclass, not for `WS_EX_...`.
-        return (control.exstyle as u32) & !(GUI_WS_EX_PARENTDRAG as u32);
+        // `$GUI_WS_EX_PARENTDRAG` is not a real `WS_EX_...` flag, but the
+        // official interpreter writes it into the style word anyway — measured
+        // on the x64 interpreter, a label created with it reads back 0x00100000.
+        // Keep the bit: the drag still goes through the subclass, and a script
+        // (or a tool) reading the control sees what the official one shows.
+        return control.exstyle as u32;
     }
     match control.kind {
         ControlKind::Button => WS_EX_WINDOWEDGE,
