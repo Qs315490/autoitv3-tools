@@ -3355,32 +3355,25 @@ Return $before & "|" & WinGetState("T") & "|" & WinActive("T")
     assert_eq!(text(emu, src), "15|7|0");
 }
 
-/// Hands over raw window messages for `GUIRegisterMsg`.
-///
-/// A live window only produces one once the script has set itself up, so the
-/// message is released on the pump *after* the call that would have registered
-/// the handler — `GUIRegisterMsg` runs after the prelude that takes them.
+/// Hands over raw window messages for `GUIRegisterMsg`, and only the ones a
+/// handler is registered for — the same contract the Windows procedure has.
 #[derive(Default)]
 struct NoticeBackend {
     notices: Vec<(i64, u32, i64, i64)>,
-    window_created: bool,
-    pumps_since_creation: u32,
+    watched: Vec<u32>,
 }
 
 impl GuiBackend for NoticeBackend {
-    fn on_window(&mut self, _window: &Window) {
-        self.window_created = true;
+    fn set_notice_messages(&mut self, messages: &[u32]) {
+        self.watched = messages.to_vec();
     }
     fn take_notices(&mut self) -> Vec<(i64, u32, i64, i64)> {
-        if !self.window_created {
-            return Vec::new();
-        }
-        self.pumps_since_creation += 1;
-        if self.pumps_since_creation >= 2 {
-            std::mem::take(&mut self.notices)
-        } else {
-            Vec::new()
-        }
+        let watched = self.watched.clone();
+        let (ready, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.notices)
+            .into_iter()
+            .partition(|(_, msg, _, _)| watched.contains(msg));
+        self.notices = rest;
+        ready
     }
 }
 

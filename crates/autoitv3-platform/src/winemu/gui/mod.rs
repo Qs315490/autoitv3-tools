@@ -1084,6 +1084,15 @@ impl GuiState {
                     self.model.notice_handlers.retain(|(m, _)| *m != msg);
                     self.model.notice_handlers.push((msg, handler));
                 }
+                // A real procedure is called for every message; tell the backend
+                // which ones are wanted so it only reports those.
+                let wanted: Vec<u32> = self
+                    .model
+                    .notice_handlers
+                    .iter()
+                    .map(|(msg, _)| *msg)
+                    .collect();
+                self.backend.set_notice_messages(&wanted);
                 ctx.set_error(0, 0);
                 Value::Int(1)
             }

@@ -191,6 +191,16 @@ pub trait GuiBackend {
         Vec::new()
     }
 
+    /// The window messages a script currently has a `GUIRegisterMsg` handler
+    /// for.
+    ///
+    /// A real window procedure is called for *every* message and forwards the
+    /// registered ones; the model has no equivalent, so it names the ones it
+    /// wants. Without this a backend would have to queue every message,
+    /// including the high-frequency ones (`WM_PAINT`, `WM_MOUSEMOVE`) that
+    /// nothing is listening for.
+    fn set_notice_messages(&mut self, _messages: &[u32]) {}
+
     /// How much larger a window's frame is than its client area.
     ///
     /// A renderer that owns real windows knows this by asking the OS; the

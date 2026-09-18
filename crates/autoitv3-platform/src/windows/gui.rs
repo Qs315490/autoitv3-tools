@@ -378,6 +378,9 @@ struct Shared {
     /// A registered handler is called *instead of* the message reaching
     /// `GUIGetMsg`, so these are kept apart from `events`.
     notices: Vec<(i64, u32, i64, i64)>,
+    /// The messages a handler is registered for, so the procedure only queues
+    /// what something is listening for.
+    watched: BTreeSet<u32>,
     /// AutoIt control ids whose real state the user changed.
     dirty: BTreeSet<i64>,
     /// Windows the user minimised/maximised/restored.
@@ -486,11 +489,14 @@ unsafe extern "system" fn wnd_proc(
             }
         }
         // A message a script registered a handler for is delivered to that
-        // handler rather than answered here, so it is only queued. Measured on
-        // the official x64 interpreter: an activation change reaches a
-        // `GUIRegisterMsg(6, ...)` handler with `wParam = 1` on a gain and `0`
-        // on a loss, and `lParam` is the `HWND` being activated or deactivated.
-        if matches!(message, WM_ACTIVATE | WM_NCACTIVATE) {
+        // handler rather than answered here, so it is only queued. The model
+        // names the messages it wants: a real procedure is called for every
+        // one, but queueing paints and mouse moves nothing listens for would
+        // cost more than the whole pump. Measured on the official x64
+        // interpreter: an activation change reaches a `GUIRegisterMsg(6, ...)`
+        // handler with `wParam = 1` on a gain and `0` on a loss, and `lParam` is
+        // the `HWND` being activated or deactivated.
+        if state.watched.contains(&message) {
             if let Some(handle) = window {
                 state
                     .notices
@@ -2671,6 +2677,18 @@ impl GuiBackend for Win32Backend {
     fn take_notices(&mut self) -> Vec<(i64, u32, i64, i64)> {
         Self::pump();
         with_shared(|state| std::mem::take(&mut state.notices)).unwrap_or_default()
+    }
+
+    fn set_notice_messages(&mut self, messages: &[u32]) {
+        let watched: BTreeSet<u32> = messages.iter().copied().collect();
+        let _ = with_shared(|state| {
+            state.watched = watched;
+            // A message that arrived before its handler was registered is not
+            // delivered by Windows either, so anything no longer wanted is
+            // dropped rather than kept for a handler that may never come.
+            let watched = state.watched.clone();
+            state.notices.retain(|(_, msg, _, _)| watched.contains(msg));
+        });
     }
 
     fn take_updates(&mut self) -> Vec<GuiUpdate> {
