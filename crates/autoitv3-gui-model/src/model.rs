@@ -461,6 +461,13 @@ pub struct GuiModel {
     pub tooltip: String,
     pub tooltip_visible: bool,
     pub mouse: (i32, i32),
+    /// The client-area pointer position of each window, and the control under
+    /// it, as a live backend last reported them.
+    ///
+    /// `GUIGetCursorInfo` answers from here: a script's hover effects and hit
+    /// testing need the control under the pointer, which only the backend can
+    /// see.
+    pub cursor: std::collections::HashMap<i64, (i32, i32, Option<i64>)>,
     pub hotkeys: Vec<(u16, String)>,
     pub block_input: bool,
     pub notice_handlers: Vec<(u32, String)>,

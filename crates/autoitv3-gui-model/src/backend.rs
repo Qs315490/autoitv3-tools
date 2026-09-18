@@ -60,6 +60,17 @@ pub enum GuiUpdate {
     /// clicked its taskbar button. The script sees `$GUI_EVENT_MINIMIZE`,
     /// `$GUI_EVENT_RESTORE` or `$GUI_EVENT_MAXIMIZE`.
     SetWindowState { handle: i64, state: WindowState },
+    /// The pointer moved. `x`/`y` are client coordinates of `handle` and
+    /// `control` is the control under the pointer, if any.
+    ///
+    /// Only a backend can see either, and `GUIGetCursorInfo` — which is how a
+    /// script does its own hover effects and hit testing — has to answer both.
+    Cursor {
+        handle: i64,
+        x: i32,
+        y: i32,
+        control: Option<i64>,
+    },
 }
 
 /// A renderer/event source for the GUI model.

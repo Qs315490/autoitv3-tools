@@ -83,7 +83,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, GetDC, GetStockObject,
     GetUpdateRect, InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, RedrawWindow,
-    ReleaseDC,
+    ReleaseDC, ScreenToClient,
     SelectObject, SetBkColor, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
     UpdateWindow, HDC, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
     SRCCOPY,
@@ -105,12 +105,13 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics,
-    GetClassNameW, GetParent, GetWindowLongW, GetWindowRect, IsWindowVisible,
+    ChildWindowFromPointEx, GetClassNameW, GetParent, GetWindowLongW, GetWindowRect,
+    IsWindowVisible,
     SetLayeredWindowAttributes, SetWindowLongW,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsIconic, IsWindow, IsZoomed,
     LoadCursorW, LoadImageW, MoveWindow, PeekMessageW, RegisterClassExW, SendMessageW, SetCursor,
     SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
-    WNDCLASSEXW,
+    WNDCLASSEXW, CWP_SKIPINVISIBLE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{ICON_BIG, WM_SETICON};
 
@@ -166,6 +167,11 @@ const SC_RESTORE: usize = 0xF120;
 // Control notification codes, in the high word of `WM_COMMAND`'s `wParam`.
 const BN_CLICKED: u32 = 0;
 const BN_DOUBLECLICKED: u32 = 5;
+/// `STN_CLICKED`/`STN_DBLCLK`: a `STATIC` carrying `SS_NOTIFY` reports a press
+/// the same way a button reports `BN_CLICKED`. AutoIt's `GUICtrlCreateLabel`
+/// always sets `SS_NOTIFY`, so a label is a click target.
+const STN_CLICKED: u32 = 0;
+const STN_DBLCLK: u32 = 1;
 const EN_CHANGE: u32 = 0x0300;
 const LBN_SELCHANGE: u32 = 1;
 const LBN_DBLCLK: u32 = 2;
@@ -639,6 +645,15 @@ fn notification(kind: ControlKind, code: u32) -> Option<(bool, bool)> {
             BN_CLICKED | BN_DOUBLECLICKED => Some((true, true)),
             _ => None,
         },
+        // A label is created with `SS_NOTIFY`, so it reports its presses. The
+        // sample's whole interface is labels, so without this every click is
+        // silently dropped.
+        ControlKind::Label | ControlKind::Graphic | ControlKind::Pic | ControlKind::Icon => {
+            match code {
+                STN_CLICKED | STN_DBLCLK => Some((true, true)),
+                _ => None,
+            }
+        }
         ControlKind::List => match code {
             LBN_SELCHANGE | LBN_DBLCLK => Some((true, true)),
             _ => None,
@@ -2264,6 +2279,65 @@ impl Win32Backend {
     /// also fire for this backend's own `MoveWindow`, and a client size taken
     /// from them would disagree with the model's, resizing the window a little
     /// more on every frame.
+    /// Where the pointer is, per window, as `GUIGetCursorInfo` has to answer.
+    ///
+    /// Windows has no "the cursor moved over this window" message for a script
+    /// to read; the position is asked for. The control under the pointer comes
+    /// from the window itself, which is what a script's own hit testing uses.
+    fn cursor_updates(&mut self) -> Vec<GuiUpdate> {
+        let mut point: POINT = unsafe { std::mem::zeroed() };
+        if unsafe { GetCursorPos(&mut point) } == 0 {
+            return Vec::new();
+        }
+        let mut updates = Vec::new();
+        for (&handle, &hwnd) in &self.windows {
+            if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+                continue;
+            }
+            if unsafe { IsWindowVisible(hwnd) } == 0 {
+                continue;
+            }
+            let mut client = point;
+            if unsafe { ScreenToClient(hwnd, &mut client) } == 0 {
+                continue;
+            }
+            let mut rect: RECT = unsafe { std::mem::zeroed() };
+            if unsafe { GetClientRect(hwnd, &mut rect) } == 0 {
+                continue;
+            }
+            // Only the window the pointer is actually over reports a position.
+            if client.x < 0
+                || client.y < 0
+                || client.x >= rect.right
+                || client.y >= rect.bottom
+            {
+                continue;
+            }
+            // The control under the pointer: `ChildWindowFromPointEx` with
+            // `CWP_SKIPINVISIBLE` walks the child list the way a click does.
+            let child = unsafe { ChildWindowFromPointEx(hwnd, client, CWP_SKIPINVISIBLE) };
+            let control = if child.is_null() || child == hwnd {
+                None
+            } else {
+                with_shared(|state| {
+                    state
+                        .colors
+                        .iter()
+                        .find(|(key, _)| **key == hwnd_key(child))
+                        .map(|(_, (id, _, _))| *id)
+                })
+                .flatten()
+            };
+            updates.push(GuiUpdate::Cursor {
+                handle,
+                x: client.x,
+                y: client.y,
+                control,
+            });
+        }
+        updates
+    }
+
     fn geometry_updates(&mut self) -> Vec<GuiUpdate> {
         let mut updates = Vec::new();
         for (&handle, &hwnd) in &self.windows {
@@ -2483,6 +2557,7 @@ impl GuiBackend for Win32Backend {
             updates.push(GuiUpdate::SetWindowState { handle, state });
         }
         updates.extend(self.geometry_updates());
+        updates.extend(self.cursor_updates());
         // A tree or a tab reports a selection change through `WM_NOTIFY`, which
         // the window procedure does not read; both are asked instead.
         updates.extend(self.selection_updates());

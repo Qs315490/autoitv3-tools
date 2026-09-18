@@ -2111,6 +2111,43 @@ Return $main_pos[0] & "," & $main_pos[1] & ":" & $sub_pos[0] & "," & $sub_pos[1]
 }
 
 #[test]
+fn guigetcursorinfo_answers_the_control_under_the_pointer() {
+    // The sample does its own hover effects and hit testing with
+    // \`GUIGetCursorInfo\`: element \`[4]\` is the control under the pointer and
+    // the first two are the client-area position (measured on the official x64
+    // interpreter). Only a backend can see either, so it reports them and the
+    // model answers from what it was told.
+    struct CursorBackend {
+        control: i64,
+    }
+    impl GuiBackend for CursorBackend {
+        fn take_updates(&mut self) -> Vec<GuiUpdate> {
+            vec![GuiUpdate::Cursor {
+                handle: 0x1_0000,
+                x: 30,
+                y: 25,
+                control: Some(self.control),
+            }]
+        }
+    }
+    let emu = win10().with_gui_backend(Box::new(CursorBackend { control: 1 }));
+    let body = r#"
+GUICreate("T", 300, 200)
+Local $lbl = GUICtrlCreateLabel("LBL", 10, 10, 100, 30)
+GUISetState()
+Local $a = GUIGetCursorInfo()
+Return $a[0] & "," & $a[1] & "," & ($a[4] = $lbl ? 1 : 0)
+"#;
+    // The first control a script creates is id 1, and 0x10000 is the first
+    // window handle the model allocates.
+    assert_eq!(
+        text(emu, body),
+        "30,25,1",
+        "the pointer position and the control under it reach the script"
+    );
+}
+
+#[test]
 fn a_user_state_change_reaches_the_script() {
     use autoitv3_platform::winemu::WindowState;
 

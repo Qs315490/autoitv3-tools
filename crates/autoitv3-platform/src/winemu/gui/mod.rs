@@ -521,6 +521,18 @@ impl GuiState {
                     }
                     id
                 }
+                GuiUpdate::Cursor {
+                    handle,
+                    x,
+                    y,
+                    control,
+                } => {
+                    // Where the pointer is over a window, and which control it
+                    // is over — `GUIGetCursorInfo` answers both, and a script
+                    // does its hover effects with them.
+                    self.model.cursor.insert(handle, (x, y, control));
+                    continue;
+                }
                 GuiUpdate::SetWindowState { handle, state } => {
                     // The same path a `@SW_*` flag takes, so a user's maximise
                     // also remembers where to restore to.
@@ -938,14 +950,28 @@ impl GuiState {
                 Value::Int(self.poll_message(ctx))
             }
             "guigetcursorinfo" => {
-                let (x, y) = self.model.mouse;
+                // Measured on the official x64 interpreter: the array is
+                // `[x, y, ?, ?, control]` in **client coordinates of the named
+                // window** (no window = the current one), with the control id in
+                // the last slot and 0 when the pointer is over no control. The
+                // two middle slots stay 0 for a window with no scroll bars.
+                let handle = self
+                    .window_arg(args, 0)
+                    .or_else(|| self.model.active_window())
+                    .unwrap_or(0);
+                let (x, y, control) = self
+                    .model
+                    .cursor
+                    .get(&handle)
+                    .copied()
+                    .unwrap_or((self.model.mouse.0, self.model.mouse.1, None));
                 ctx.set_error(0, 0);
                 Value::array(vec![
                     Value::Int(i64::from(x)),
                     Value::Int(i64::from(y)),
                     Value::Int(0),
                     Value::Int(0),
-                    Value::Int(0),
+                    Value::Int(control.unwrap_or(0)),
                 ])
             }
             "guiregistermsg" => {
