@@ -2197,7 +2197,13 @@ impl GuiState {
             on_event: None,
             bk_color: None,
             color: None,
-            font: None,
+            // A control inherits the font its window was given with
+            // `GUISetFont` — measured on the official x64 interpreter: a label
+            // made after `GUISetFont(9, 400, 0, "microsoft yahei")` reports a
+            // 9pt/400 "microsoft yahei" font, and one made after a later
+            // `GUISetFont(20, 700, 0, "Arial")` reports 20pt/700 "Arial".
+            // Without this every control fell back to the system font.
+            font: self.model.window(window).and_then(|w| w.font.clone()),
             cursor: None,
             image: None,
             limit: None,
@@ -2320,7 +2326,9 @@ impl GuiState {
             on_event: None,
             bk_color: None,
             color: None,
-            font: None,
+            // A row or a node takes the font of the control it hangs under, the
+            // same inheritance a plain control gets from its window.
+            font: self.model.window(window).and_then(|w| w.font.clone()),
             cursor: None,
             image: None,
             limit: None,
