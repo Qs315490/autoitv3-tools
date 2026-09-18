@@ -2161,6 +2161,23 @@ impl GuiBackend for Win32Backend {
     /// before the script's next line can rely on what is on screen.
     fn present(&mut self) {
         Self::pump();
+        if std::env::var_os("AU3_GUI_TRACE").is_some() {
+            let windows: Vec<(i64, HWND, i32)> = self
+                .windows
+                .iter()
+                .map(|(handle, hwnd)| (*handle, *hwnd, unsafe { IsWindowVisible(*hwnd) }))
+                .collect();
+            let invisible: Vec<(i64, i64, HWND, i32)> = self
+                .controls
+                .iter()
+                .filter(|(_, control)| !control.hwnd.is_null())
+                .map(|(id, control)| {
+                    (*id, control.window, control.hwnd, unsafe { IsWindowVisible(control.hwnd) })
+                })
+                .filter(|(_, _, _, visible)| *visible == 0)
+                .collect();
+            eprintln!("[gui-trace] present windows={windows:?} invisible_controls={invisible:?}");
+        }
         for hwnd in self.windows.values() {
             if unsafe { IsWindow(*hwnd) } != 0 {
                 unsafe {
