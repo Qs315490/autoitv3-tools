@@ -82,9 +82,10 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, GetDC, GetStockObject,
-    InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, ReleaseDC, SelectObject,
-    SetBkColor, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW, UpdateWindow, HDC,
-    PAINTSTRUCT, SRCCOPY,
+    InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, RedrawWindow, ReleaseDC,
+    SelectObject, SetBkColor, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
+    UpdateWindow, HDC, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
+    SRCCOPY,
 };
 use windows_sys::Win32::Graphics::GdiPlus::{
     GdipCreateBitmapFromFile, GdipCreateHBITMAPFromBitmap, GdipDisposeImage, GdipGetImageHeight,
@@ -2241,11 +2242,19 @@ impl GuiBackend for Win32Backend {
                 .collect();
             eprintln!("[gui-trace] present windows={windows:?} invisible_controls={invisible:?}");
         }
+        // `RDW_ALLCHILDREN` repaints the controls with the window, and
+        // `RDW_UPDATENOW` forces it through even while another window (a
+        // translucent mask, typically) covers the area — `UpdateWindow` alone
+        // paints nothing when the system decides the window is fully covered.
         for hwnd in self.windows.values() {
             if unsafe { IsWindow(*hwnd) } != 0 {
                 unsafe {
-                    InvalidateRect(*hwnd, std::ptr::null(), 1);
-                    UpdateWindow(*hwnd);
+                    RedrawWindow(
+                        *hwnd,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+                    );
                 }
             }
         }
