@@ -830,7 +830,13 @@ impl Win32Backend {
         // model as -1, whose every bit is set — testing the flag alone made
         // *every* window a child, and a child window with no parent fails to
         // create, which is a blank screen.
-        let subform = window.exstyle > 0 && window.exstyle & WS_EX_MDICHILD as i64 != 0;
+        // A subform also needs an owner to be a child *of*: `WS_CHILD` with a
+        // null parent is a window Win32 refuses to create, and a script that
+        // names the style without naming an owner would lose the whole window
+        // (and every control on it) rather than get a plain one.
+        let subform = window.exstyle > 0
+            && window.exstyle & WS_EX_MDICHILD as i64 != 0
+            && window.owner.is_some();
         let exstyle = window.exstyle.max(0) as u32 & !WS_EX_MDICHILD;
         // A child window cannot also be a popup, and the script's style for a
         // subform is `WS_POPUP` (that is what `GUICreate` puts in a form's
