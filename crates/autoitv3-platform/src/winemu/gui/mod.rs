@@ -1535,6 +1535,9 @@ impl GuiState {
                     window.transparency = Some(degree);
                 }
                 self.notify_window(handle);
+                // The alpha has to reach the screen before the script's next
+                // line, the same way `WinSetState` flushes.
+                self.backend.present();
                 ctx.set_error(0, 0);
                 Value::Int(1)
             }

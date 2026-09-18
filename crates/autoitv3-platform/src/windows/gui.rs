@@ -908,6 +908,12 @@ impl Win32Backend {
                             window.handle, degree, GetWindowLongW(hwnd, GWL_EXSTYLE)
                         );
                     }
+                    // A window that was painted while it was opaque keeps those
+                    // pixels until something asks it to repaint — and a mask that
+                    // covers the whole application would stay an opaque white
+                    // sheet. Repaint it now that the alpha is in effect.
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
+                    UpdateWindow(hwnd);
                     self.layered.insert(window.handle, true);
                 },
                 None if self.layered.contains_key(&window.handle) => unsafe {
