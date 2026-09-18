@@ -409,6 +409,17 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if std::env::var_os("AU3_GUI_TRACE").is_some()
+        && matches!(
+            message,
+            WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN
+        )
+    {
+        let borrowed = with_shared(|_| ()).is_some();
+        eprintln!(
+            "[gui-trace] wnd_proc ctlcolor ARRIVED msg={message:#x} hwnd={hwnd:?} lparam={lparam:#x} shared_ok={borrowed}"
+        );
+    }
     let answered = with_shared(|state| -> Option<LRESULT> {
         let window = state.window_ids.get(&hwnd_key(hwnd)).copied();
         match message {
@@ -1957,16 +1968,22 @@ impl Win32Backend {
                 // Tab and the arrow keys move between controls, Return presses
                 // the default button and Escape closes the window. AutoIt's own
                 // message loop does the same, so a script sees the same events.
+                // The dialog windows are collected first: `IsDialogMessageW`
+                // dispatches messages of its own (that is how Tab and Return reach
+                // the controls), and dispatching one while the shared table is
+                // borrowed would make every nested `wnd_proc` call fail its
+                // borrow and silently fall back to the default handling.
+                let dialogs: Vec<HWND> = with_shared(|shared| {
+                    shared.window_ids.keys().map(|hwnd| *hwnd as HWND).collect()
+                })
+                .unwrap_or_default();
                 let mut handled = false;
-                let _ = with_shared(|shared| {
-                    for hwnd in shared.window_ids.keys() {
-                        let hwnd = *hwnd as HWND;
-                        if IsDialogMessageW(hwnd, &message) != 0 {
-                            handled = true;
-                            break;
-                        }
+                for hwnd in dialogs {
+                    if IsDialogMessageW(hwnd, &message) != 0 {
+                        handled = true;
+                        break;
                     }
-                });
+                }
                 if !handled {
                     TranslateMessage(&message);
                     DispatchMessageW(&message);
