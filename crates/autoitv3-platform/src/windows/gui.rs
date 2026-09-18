@@ -311,8 +311,8 @@ const HWND_NOTOPMOST: isize = -2;
 const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
-/// `SW_SHOWNOACTIVATE`: show a window without activating or restoring it.
-const SW_SHOWNOACTIVATE: i32 = 4;
+/// `SW_SHOW`: show a window, activating it — what `GUISetState(@SW_SHOW)` does.
+const SW_SHOWNORMAL: i32 = 1;
 const SWP_NOZORDER: u32 = 0x0004;
 const SWP_FRAMECHANGED: u32 = 0x0020;
 /// `GetWindowLongW`/`SetWindowLongW`: the window's style word.
@@ -1029,11 +1029,13 @@ impl Win32Backend {
                 match window.state {
                     WindowState::Minimized => SW_MINIMIZE,
                     WindowState::Maximized => SW_SHOWMAXIMIZED,
-                    // `SW_SHOWNORMAL` *restores* a window; a window being dragged
-                    // is already normal, and "restoring" it every frame is what
-                    // made the title bar jump. `SW_SHOWNOACTIVATE` only makes
-                    // sure it is visible.
-                    WindowState::Normal => SW_SHOWNOACTIVATE,
+                    // `SW_SHOWNORMAL`: measured on the official x64 interpreter,
+                    // `GUISetState(@SW_SHOW)` leaves the window both foreground and
+                    // active (`GetForegroundWindow`/`GetActiveWindow` both report
+                    // it), which the inactive variants would not do. What made the
+                    // title bar jump was sending this on *every* geometry update —
+                    // the guard below sends it once per state change.
+                    WindowState::Normal => SW_SHOWNORMAL,
                 }
             };
             if self.shown.get(&window.handle).copied() != Some(command) {
