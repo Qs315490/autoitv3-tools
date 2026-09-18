@@ -3276,3 +3276,179 @@ Return "ok"
     // the run to behave). The assertion is on the calls not erroring.
     assert_eq!(text(win10(), body), "ok");
 }
+
+/// A `GUIRegisterMsg` handler is called with the window, the message and its
+/// two parameters — and the message is consumed, so `GUIGetMsg` never sees it.
+#[test]
+fn guiregistermsg_calls_the_handler_with_the_messages_parameters() {
+    // Measured on the official x64 interpreter: the handler signature is
+    // `(hWnd, message, wParam, lParam)`, and a `WM_ACTIVATE` arrives with
+    // `wParam = 1` on a gain and `0` on a loss.
+    let src = r#"
+Global $log = ""
+Func OnMsg($hWnd, $msg, $wParam, $lParam)
+    $log = $log & $msg & ":" & $wParam & ":" & $lParam & "|"
+    Return 0
+EndFunc
+Opt("GUIOnEventMode", 1)
+GUICreate("t", 100, 100)
+GUIRegisterMsg(6, "OnMsg")
+Local $msg = GUIGetMsg()
+$log = $log & "poll=" & $msg
+"#;
+    let emu = win10().with_gui_backend(Box::new(NoticeBackend {
+        notices: vec![(0x1_0000, 6, 1, 0)],
+        ..Default::default()
+    }));
+    let rt = run_whole(emu, src);
+    // `hWnd`/`wParam`/`lParam` are `Ptr` and `msg` is `Int32`, measured on the
+    // official x64 interpreter, so `wParam` reads back as a 16-digit hex string.
+    assert_eq!(
+        global(&rt, "log"),
+        "6:0x0000000000000001:0x0000000000000000|poll=0"
+    );
+}
+
+/// A message with no registered handler is not swallowed: it goes on to
+/// `GUIGetMsg` exactly as before, so adding `GUIRegisterMsg` support cannot
+/// change what an unregistered script sees.
+#[test]
+fn a_notice_without_a_handler_is_not_consumed() {
+    let src = r#"
+Global $result = ""
+Opt("GUIOnEventMode", 1)
+Local $h = GUICreate("t", 100, 100)
+GUIRegisterMsg(6, "OnMsg")
+Local $msg = GUIGetMsg()
+$result = $msg
+"#;
+    // `WM_NCACTIVATE` (134) has no handler in this script.
+    let emu = win10().with_gui_backend(Box::new(NoticeBackend {
+        notices: vec![(0x1_0000, 134, 1, 0)],
+        ..Default::default()
+    }));
+    let rt = run_whole(emu, src);
+    assert_eq!(global(&rt, "result"), "0");
+}
+
+/// Clicking away clears `$WIN_ACTIVE`, which is what closes a menu or drops a
+/// highlight in a script that watches for focus loss.
+#[test]
+fn losing_the_system_focus_clears_the_active_bit() {
+    // Measured on the official x64 interpreter: a window reads 15 (exists +
+    // visible + enabled + active) while focused and 7 once the desktop has
+    // been clicked — exactly this bit.
+    let src = r#"
+GUICreate("T", 380, 170)
+GUISetState()
+Local $before = WinGetState("T")
+GUIGetMsg()
+Return $before & "|" & WinGetState("T") & "|" & WinActive("T")
+"#;
+    let emu = win10().with_gui_backend(Box::new(ActivationBackend {
+        pending: vec![GuiUpdate::Active {
+            handle: 0x1_0000,
+            active: false,
+        }],
+        ..Default::default()
+    }));
+    assert_eq!(text(emu, src), "15|7|0");
+}
+
+/// Hands over raw window messages for `GUIRegisterMsg`.
+///
+/// A live window only produces one once the script has set itself up, so the
+/// message is released on the pump *after* the call that would have registered
+/// the handler — `GUIRegisterMsg` runs after the prelude that takes them.
+#[derive(Default)]
+struct NoticeBackend {
+    notices: Vec<(i64, u32, i64, i64)>,
+    window_created: bool,
+    pumps_since_creation: u32,
+}
+
+impl GuiBackend for NoticeBackend {
+    fn on_window(&mut self, _window: &Window) {
+        self.window_created = true;
+    }
+    fn take_notices(&mut self) -> Vec<(i64, u32, i64, i64)> {
+        if !self.window_created {
+            return Vec::new();
+        }
+        self.pumps_since_creation += 1;
+        if self.pumps_since_creation >= 2 {
+            std::mem::take(&mut self.notices)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Reports a focus loss only once the window is on screen *and* the script has
+/// already been told the focused state, which is the order the user causes: the
+/// window appears focused, and only then does the click away happen.
+#[derive(Default)]
+struct ActivationBackend {
+    pending: Vec<GuiUpdate>,
+    visible: bool,
+    /// `take_updates` calls seen while the window was visible.
+    visible_polls: u32,
+}
+
+impl GuiBackend for ActivationBackend {
+    fn on_window(&mut self, window: &Window) {
+        self.visible |= window.visible;
+    }
+    fn take_updates(&mut self) -> Vec<GuiUpdate> {
+        if !self.visible {
+            return Vec::new();
+        }
+        self.visible_polls += 1;
+        if self.visible_polls >= 2 {
+            std::mem::take(&mut self.pending)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// `GUICtrlSendMsg` hands a message the model does not understand to the real
+/// control — which is the only thing that can act on `STM_SETIMAGE`, whose
+/// `lParam` is an `HBITMAP` the model has no way to paint.
+#[test]
+fn an_unknown_control_message_reaches_the_real_control() {
+    // Measured on the official x64 interpreter:
+    // `GUICtrlSendMsg($pic, 370, 0, $hBitmap)` returns 0 with `@error` 0 and
+    // the picture appears. A picture is a STATIC, so the message is
+    // `STM_SETIMAGE`.
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(MessageBackend {
+        seen: seen.clone(),
+        ..Default::default()
+    }));
+    let body = r#"
+GUICreate("T", 200, 200)
+Local $pic = GUICtrlCreatePic("", 0, 0, 32, 32)
+Local $r = GUICtrlSendMsg($pic, 370, 0, 12345)
+Local $err = @error
+Return $r & ":" & $err
+"#;
+    assert_eq!(text(emu, body), "0:0");
+    let seen = seen.borrow().clone();
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].1, 370, "the message did not reach the control: {seen:?}");
+    assert_eq!(seen[0].3, 12345, "the bitmap handle did not arrive: {seen:?}");
+}
+
+/// A backend with real controls, recording what is sent to them.
+#[derive(Default)]
+struct MessageBackend {
+    seen: Rc<RefCell<Vec<(i64, u32, usize, isize)>>>,
+}
+
+impl GuiBackend for MessageBackend {
+    fn send_message(&mut self, id: i64, message: u32, wparam: usize, lparam: isize) -> Option<i64> {
+        self.seen.borrow_mut().push((id, message, wparam, lparam));
+        Some(0)
+    }
+}

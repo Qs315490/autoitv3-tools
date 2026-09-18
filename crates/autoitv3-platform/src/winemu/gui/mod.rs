@@ -193,6 +193,16 @@ const NATIVE_ONLY_MESSAGES: &[u32] = &[
     0x1014, // LVM_SCROLL
     0x014F, // CB_SHOWDROPDOWN
     0x1115, // TVM_ENSUREVISIBLE
+    // The image messages carry an `HBITMAP`/`HICON` *as an integer*, so the
+    // one thing the model cannot do -- paint it -- is exactly what the real
+    // control can. Scripts routinely build the bitmap themselves (GDI+
+    // `GdipCreateHBITMAPFromBitmap`) and hand it over: measured on the
+    // official x64 interpreter, `GUICtrlSendMsg($pic, 370, 0, $hBitmap)`
+    // returns 0 with `@error` 0 and the picture appears.
+    0x0170, // STM_SETICON
+    0x0172, // STM_SETIMAGE
+    0x0173, // STM_GETIMAGE
+    0x00F7, // BM_SETIMAGE
 ];
 
 /// Every GUI function this layer answers.
@@ -574,6 +584,16 @@ impl GuiState {
                     }
                     continue;
                 }
+                GuiUpdate::Active { handle, active } => {
+                    // A click that moves the focus. `WinActivate`/`WinGetState`
+                    // read this bit, so a menu that closes on focus loss — the
+                    // whole reason it exists — now sees the user clicking away.
+                    if let Some(window) = self.model.window_mut(handle) {
+                        window.active = active;
+                    }
+                    self.notify_window(handle);
+                    continue;
+                }
                 GuiUpdate::Move { handle, x, y } => {
                     // A user's drag. AutoIt has no message for this (scripts
                     // poll WinGetPos), so the model is all that changes — but a
@@ -640,6 +660,7 @@ impl GuiState {
         &mut self,
         ctx: &mut dyn HostContext,
     ) -> (i64, Option<i64>, Option<i64>) {
+        self.dispatch_notices(ctx);
         for event in self.backend.poll() {
             self.events.push_back(event);
         }
@@ -672,7 +693,47 @@ impl GuiState {
         (0, None, None)
     }
 
+    /// Hand every raw window message the backend collected to the function a
+    /// script registered for it with `GUIRegisterMsg`.
+    ///
+    /// These are not `$GUI_EVENT_*` answers: a message with a handler runs that
+    /// function and is *consumed*, which is why they never reach `GUIGetMsg`.
+    /// Measured on the official x64 interpreter: the handler is called with
+    /// `(hWnd, message, wParam, lParam)` — the first, third and fourth are `Ptr`
+    /// and `message` is `Int32` — and `WM_ACTIVATE` arrives with `wParam = 1` on
+    /// a gain and `0` on a loss.
+    ///
+    /// A message with no handler is discarded, as Windows discards one it has
+    /// nothing to deliver to: the model has no queue that could hold it.
+    pub fn dispatch_notices(&mut self, ctx: &mut dyn HostContext) {
+        for (handle, message, wparam, lparam) in self.backend.take_notices() {
+            let Some(handler) = self
+                .model
+                .notice_handlers
+                .iter()
+                .find(|(msg, _)| *msg == message)
+                .map(|(_, handler)| handler.clone())
+            else {
+                continue;
+            };
+            // The same macros a `GUISetOnEvent` handler sees: a
+            // `GUIRegisterMsg` handler reads `@GUI_WinHandle` too.
+            self.event_macros = Some((0, handle));
+            self.pending.push((
+                handler,
+                vec![
+                    Value::Ptr(handle),
+                    Value::Int(i64::from(message)),
+                    Value::Ptr(wparam),
+                    Value::Ptr(lparam),
+                ],
+            ));
+            ctx.set_error(0, 0);
+        }
+    }
+
     fn poll_message(&mut self, ctx: &mut dyn HostContext) -> i64 {
+        self.dispatch_notices(ctx);
         for event in self.backend.poll() {
             self.events.push_back(event);
         }
@@ -783,6 +844,12 @@ impl GuiState {
         if !functions_set().contains(key.as_str()) {
             return None;
         }
+        // Hand over anything the OS queued since the last call *before* the
+        // updates are collected. A click that moves the focus is a *sent*
+        // `WM_ACTIVATE`, which only runs the window procedure while the thread
+        // pumps; the official interpreter pumps on every statement, so a script
+        // that never calls `GUIGetMsg` still sees its handlers run.
+        self.dispatch_notices(ctx);
         self.apply_updates();
         self.sync_desktop();
         if let Some(kind) = ControlKind::from_create(&key) {

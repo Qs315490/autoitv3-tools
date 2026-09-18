@@ -60,6 +60,15 @@ pub enum GuiUpdate {
     /// clicked its taskbar button. The script sees `$GUI_EVENT_MINIMIZE`,
     /// `$GUI_EVENT_RESTORE` or `$GUI_EVENT_MAXIMIZE`.
     SetWindowState { handle: i64, state: WindowState },
+    /// The window gained or lost the *system* focus — the user clicked it, or
+    /// clicked away to something that is not part of this application.
+    ///
+    /// This is what `WinGetState`'s `$WIN_ACTIVE` bit and `WinActive` read, so a
+    /// script that closes a menu or drops a highlight when its window loses
+    /// focus depends on it. Measured on the official x64 interpreter: clicking
+    /// the desktop takes the window from state 15 to 7, clearing exactly this
+    /// bit.
+    Active { handle: i64, active: bool },
     /// The pointer moved. `x`/`y` are client coordinates of `handle` and
     /// `control` is the control under the pointer, if any.
     ///
@@ -169,6 +178,17 @@ pub trait GuiBackend {
         _lparam: isize,
     ) -> Option<i64> {
         None
+    }
+
+    /// Window messages the window procedure saw, for the handler a script
+    /// registered with `GUIRegisterMsg`.
+    ///
+    /// Unlike [`GuiBackend::poll`], these are *not* answers for `GUIGetMsg`: a
+    /// message with a registered handler calls that function and never surfaces
+    /// as a `$GUI_EVENT_*`, which is why they travel on their own channel.
+    /// Each entry is `(window handle, message, wParam, lParam)`.
+    fn take_notices(&mut self) -> Vec<(i64, u32, i64, i64)> {
+        Vec::new()
     }
 
     /// How much larger a window's frame is than its client area.

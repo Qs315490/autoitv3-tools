@@ -151,6 +151,8 @@ const SW_SHOW: i32 = 5;
 const SW_MINIMIZE: i32 = 6;
 
 // Window messages (`winuser.h`).
+const WM_ACTIVATE: u32 = 0x0006;
+const WM_NCACTIVATE: u32 = 0x0086;
 const WM_COMMAND: u32 = 0x0111;
 const WM_NOTIFY: u32 = 0x004E;
 const WM_NCLBUTTONDOWN: u32 = 0x00A1;
@@ -370,10 +372,21 @@ struct Shared {
     control_ids: HashMap<i32, (i64, ControlKind)>,
     /// Events for `GUIGetMsg` to drain.
     events: VecDeque<GuiEvent>,
+    /// Window messages a `GUIRegisterMsg` handler has to see, as
+    /// `(window handle, message, wParam, lParam)`.
+    ///
+    /// A registered handler is called *instead of* the message reaching
+    /// `GUIGetMsg`, so these are kept apart from `events`.
+    notices: Vec<(i64, u32, i64, i64)>,
     /// AutoIt control ids whose real state the user changed.
     dirty: BTreeSet<i64>,
     /// Windows the user minimised/maximised/restored.
     states: HashMap<i64, WindowState>,
+    /// Windows whose *system* activation changed, as the `WM_ACTIVATE`
+    /// `wParam`. `1`/`2` mean this window is now active (clicked, or restored
+    /// by the taskbar); `0` means it lost the focus, which includes the user
+    /// clicking a window of some *other* process.
+    activations: HashMap<i64, bool>,
     /// Control `HWND` → the text and background colours a script set.
     /// Control HWND -> (model control id, text colour, background colour).
     /// The id rides along so a trace can name the control a WM_CTLCOLOR* arrives
@@ -461,6 +474,29 @@ unsafe extern "system" fn wnd_proc(
     }
     let answered = with_shared(|state| -> Option<LRESULT> {
         let window = state.window_ids.get(&hwnd_key(hwnd)).copied();
+        // Activation is tracked because it is not a `$GUI_EVENT_*`:
+        // `WinGetState`'s `$WIN_ACTIVE` bit and `WinActive` read it, and a click
+        // on the desktop clears it. Measured on the official x64 interpreter:
+        // a focused window reads 15 and 7 once the desktop has been clicked.
+        if message == WM_ACTIVATE {
+            if let Some(handle) = window {
+                // The low word is the activation code: `WA_INACTIVE` (0) for a
+                // loss, `WA_ACTIVE` (1) or `WA_CLICKACTIVE` (2) for a gain.
+                state.activations.insert(handle, wparam & 0xFFFF != 0);
+            }
+        }
+        // A message a script registered a handler for is delivered to that
+        // handler rather than answered here, so it is only queued. Measured on
+        // the official x64 interpreter: an activation change reaches a
+        // `GUIRegisterMsg(6, ...)` handler with `wParam = 1` on a gain and `0`
+        // on a loss, and `lParam` is the `HWND` being activated or deactivated.
+        if matches!(message, WM_ACTIVATE | WM_NCACTIVATE) {
+            if let Some(handle) = window {
+                state
+                    .notices
+                    .push((handle, message, wparam as i64, lparam as i64));
+            }
+        }
         match message {
             WM_CLOSE => {
                 if let Some(handle) = window {
@@ -2632,11 +2668,21 @@ impl GuiBackend for Win32Backend {
         with_shared(|state| state.events.drain(..).collect()).unwrap_or_default()
     }
 
+    fn take_notices(&mut self) -> Vec<(i64, u32, i64, i64)> {
+        Self::pump();
+        with_shared(|state| std::mem::take(&mut state.notices)).unwrap_or_default()
+    }
+
     fn take_updates(&mut self) -> Vec<GuiUpdate> {
-        let (dirty, states) = match with_shared(|state| {
+        // Activation arrives as a *sent* message, so it is not in the queue
+        // until the thread pumps. Pumping here means a plain `WinGetState`
+        // already reflects a click that has happened.
+        Self::pump();
+        let (dirty, states, activations) = match with_shared(|state| {
             (
                 std::mem::take(&mut state.dirty),
                 std::mem::take(&mut state.states),
+                std::mem::take(&mut state.activations),
             )
         }) {
             Some(parts) => parts,
@@ -2645,6 +2691,12 @@ impl GuiBackend for Win32Backend {
         let mut updates = Vec::new();
         for (handle, state) in states {
             updates.push(GuiUpdate::SetWindowState { handle, state });
+        }
+        // Activation is separate from `WindowState`: a minimised or maximised
+        // window is still *active*, and clicking the desktop only clears the
+        // `$WIN_ACTIVE` bit.
+        for (handle, active) in activations {
+            updates.push(GuiUpdate::Active { handle, active });
         }
         updates.extend(self.geometry_updates());
         updates.extend(self.cursor_updates());
