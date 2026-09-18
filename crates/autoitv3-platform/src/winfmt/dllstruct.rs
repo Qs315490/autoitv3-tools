@@ -87,6 +87,15 @@ pub struct DllStruct {
     /// `DllStructGetPtr` hands out something `RtlMoveMemory` and friends can
     /// write through. Assigned by the emulation layer at creation.
     address: u64,
+    /// Set when this struct is a view over memory the caller already owns —
+    /// a pointer some other API handed out (`GlobalLock`, `MapViewOfFile`, a
+    /// real `VirtualAlloc`). Reads and writes then go straight through that
+    /// address instead of the `data` buffer.
+    ///
+    /// AutoIt's own `DllStructCreate($def, $ptr)` is exactly this: the script
+    /// owns the memory and the struct is a typed window onto it, so it is the
+    /// only way to fill a buffer that a DLL made for itself.
+    external: Option<u64>,
 }
 
 impl DllStruct {
@@ -107,7 +116,40 @@ impl DllStruct {
             offset: 0,
             size,
             address: 0,
+            external: None,
         })
+    }
+
+    /// View `definition` over memory at `address`, which this struct neither
+    /// allocated nor owns.
+    ///
+    /// The caller is the script, which got `address` from whatever API owns
+    /// the memory; every read and write goes through it, so a buffer filled
+    /// this way is the one the next `DllCall` sees.
+    pub fn create_raw(
+        definition: &str,
+        arch: WindowsArch,
+        address: u64,
+    ) -> Result<Self, String> {
+        let fields = parse_fields(definition, arch)?;
+        let size = fields
+            .last()
+            .map(|f| f.offset + f.total_size())
+            .unwrap_or(0);
+        Ok(Self {
+            definition: definition.to_string(),
+            fields,
+            data: Rc::new(RefCell::new(Vec::new())),
+            offset: 0,
+            size,
+            address,
+            external: Some(address),
+        })
+    }
+
+    /// The address this struct views as foreign memory, if any.
+    pub fn external_base(&self) -> Option<u64> {
+        self.external
     }
 
     /// Map `definition` onto memory that already exists at `address`.
@@ -144,6 +186,9 @@ impl DllStruct {
     /// so the pointer stays valid for as long as the struct lives — the native
     /// Windows layer hands it to real `DllCall` targets.
     pub fn real_address(&self) -> u64 {
+        if let Some(base) = self.external {
+            return base + self.offset as u64;
+        }
         self.data.borrow().as_ptr() as u64
     }
 
@@ -155,7 +200,16 @@ impl DllStruct {
 
     /// The struct's bytes, a copy so the caller does not hold the borrow.
     pub fn bytes(&self) -> Vec<u8> {
+        if let Some(base) = self.external {
+            return unsafe {
+                std::slice::from_raw_parts((base as usize + self.offset) as *const u8, self.size)
+                    .to_vec()
+            };
+        }
         let data = self.data.borrow();
+        if self.offset + self.size > data.len() {
+            return Vec::new();
+        }
         data[self.offset..self.offset + self.size].to_vec()
     }
 
@@ -168,6 +222,13 @@ impl DllStruct {
     pub fn write_at(&self, at: usize, bytes: &[u8]) -> bool {
         if at + bytes.len() > self.size {
             return false;
+        }
+        if let Some(base) = self.external {
+            // Straight into the caller's buffer: the whole point of mapping
+            // over a pointer is that the DLL reads what was written here.
+            let dst = (base as usize + self.offset + at) as *mut u8;
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len()) };
+            return true;
         }
         let start = self.offset + at;
         let mut data = self.data.borrow_mut();
@@ -353,6 +414,13 @@ impl DllStruct {
     fn read(&self, at: usize, len: usize) -> Option<Vec<u8>> {
         if at + len > self.size {
             return None;
+        }
+        if let Some(base) = self.external {
+            // A view over the caller's own memory: the bytes live there, not
+            // in `data` (which is empty for such a struct).
+            return unsafe {
+                Some(std::slice::from_raw_parts((base as usize + self.offset + at) as *const u8, len).to_vec())
+            };
         }
         let start = self.offset + at;
         let data = self.data.borrow();
@@ -548,6 +616,16 @@ fn type_info(
         "int64" => (8, false, false, false, false, true),
         "uint64" => (8, false, false, false, false, false),
         "ptr" | "handle" | "hwnd" => {
+            (arch.pointer_size(), false, false, false, false, false)
+        }
+        // The pointer-sized integer spellings. They are the ones a Win32
+        // prototype uses wherever a `SIZE_T`/`ULONG_PTR` is meant, and a
+        // script copying such a prototype into `DllStructCreate` needs them:
+        // `DllStructCreate("ulong_ptr Data")` is 8 bytes on x64, and reading
+        // it as 0 made `GdiplusStartup` fail its own parameter check with
+        // `InvalidParameter`, which took the whole GDI+ image path down with
+        // it.
+        "int_ptr" | "long_ptr" | "uint_ptr" | "ulong_ptr" | "dword_ptr" | "size_t" => {
             (arch.pointer_size(), false, false, false, false, false)
         }
         "float" => (4, false, false, false, true, true),

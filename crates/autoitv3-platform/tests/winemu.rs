@@ -3445,3 +3445,50 @@ impl GuiBackend for MessageBackend {
         Some(0)
     }
 }
+
+/// A struct mapped over foreign memory reads and writes that memory, so two
+/// views of one address see each other.
+#[test]
+fn a_struct_over_a_foreign_pointer_writes_through_to_it() {
+    // This is the shape a script uses to fill a buffer a DLL made for itself:
+    // `GlobalLock`/`MapViewOfFile` gives the pointer and `DllStructCreate` is a
+    // typed window onto it. It is a unit test of `DllStruct` rather than an
+    // emulation run because only the Windows layer can be handed a real
+    // address — this layer's addresses are synthetic.
+    use autoitv3_platform::winfmt::DllStruct;
+    use autoitv3_platform::WindowsArch;
+
+    let mut memory = [0u8; 16];
+    let base = memory.as_mut_ptr() as u64;
+    let first = DllStruct::create_raw("byte[16]", WindowsArch::X64, base).expect("parses");
+    first
+        .write_all(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    assert_eq!(
+        first.bytes(),
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        "the write did not reach the memory the struct views"
+    );
+    assert_eq!(
+        memory,
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        "the caller's own buffer was not written"
+    );
+    // A second, independent view of the same address sees the same bytes —
+    // which is what proves the storage is the memory, not the struct.
+    let second = DllStruct::create_raw("byte[16]", WindowsArch::X64, base).expect("parses");
+    assert_eq!(second.bytes(), first.bytes());
+}
+
+/// The pointer-sized integer spellings are part of a struct definition, not
+/// just a `DllCall` argument.
+#[test]
+fn struct_definitions_accept_pointer_sized_integer_types() {
+    // `DllStructCreate("ulong_ptr Data")` is how GDI+'s own prototypes are
+    // written, and a 0-byte struct there made `GdiplusStartup` fail its
+    // parameter check with `InvalidParameter`.
+    let body = r#"
+Local $t = DllStructCreate("ulong_ptr Data")
+Return DllStructGetSize($t)
+"#;
+    assert_eq!(text(win10(), body), (usize::BITS / 8).to_string());
+}

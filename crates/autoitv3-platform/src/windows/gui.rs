@@ -152,7 +152,6 @@ const SW_MINIMIZE: i32 = 6;
 
 // Window messages (`winuser.h`).
 const WM_ACTIVATE: u32 = 0x0006;
-const WM_NCACTIVATE: u32 = 0x0086;
 const WM_COMMAND: u32 = 0x0111;
 const WM_NOTIFY: u32 = 0x004E;
 const WM_NCLBUTTONDOWN: u32 = 0x00A1;

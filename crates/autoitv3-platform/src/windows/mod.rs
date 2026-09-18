@@ -693,6 +693,13 @@ impl WindowsPlatform {
         // a pointer handed out by `DllStructGetPtr`, so both views alias.
         let pointer = args.get(1).map(|v| v.to_int()).unwrap_or(0);
         let created = match self.struct_any_mut(pointer) {
+            // `DllStructCreate($def, DllStructGetPtr($other))` is a second view
+            // of one buffer. When that buffer is a foreign pointer the struct
+            // holds no bytes of its own, so a new view maps the pointer as
+            // well — aliasing its (empty) backing store would lose the data.
+            Some(existing) if existing.external_base().is_some() => {
+                DllStruct::create_raw(&definition, self.arch(), pointer as u64)
+            }
             Some(existing) => {
                 let base = existing.address();
                 let (storage, base_offset) = existing.storage();
@@ -706,11 +713,11 @@ impl WindowsPlatform {
                 )
             }
             None if pointer == 0 => DllStruct::create(&definition, self.arch()),
-            // A raw pointer we do not own cannot be aliased safely.
-            None => {
-                ctx.set_error(1, 0);
-                return Value::Int(0);
-            }
+            // A pointer we did not hand out — `GlobalLock`, `MapViewOfFile`,
+            // anything a DLL allocated — is still memory the *script* owns.
+            // AutoIt maps the struct straight over it, which is the only way to
+            // fill a buffer a DLL made for itself, so do the same.
+            None => DllStruct::create_raw(&definition, self.arch(), pointer as u64),
         };
         match created {
             Ok(mut s) => {

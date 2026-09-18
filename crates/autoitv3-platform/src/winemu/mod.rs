@@ -1511,6 +1511,11 @@ impl Platform for WindowsEmulation {
                         offset,
                         address,
                     ),
+                    // A pointer outside our tables is *not* host memory here:
+                    // this layer hands out synthetic addresses, so writing
+                    // through an unknown one would corrupt the process. Every
+                    // buffer a script can legitimately name is a struct or a
+                    // blob, and `memory_storage` already found those.
                     None => DllStruct::create(&definition, self.arch),
                 };
                 match created {
