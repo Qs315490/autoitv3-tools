@@ -437,14 +437,17 @@ impl GuiState {
             }
             WindowState::Minimized => {}
         }
+        let mut shift = (0, 0);
         if let Some(window) = self.model.window_mut(handle) {
             window.visible = visible;
             window.state = state;
             if let Some((x, y)) = move_to {
+                shift = (x - window.x, y - window.y);
                 window.x = x;
                 window.y = y;
             }
         }
+        self.shift_subforms(handle, shift.0, shift.1);
         // Maximising and restoring change the size, so the controls dock the
         // same way they do for a hand-dragged window.
         if let Some((width, height)) = resize_to {
@@ -540,10 +543,13 @@ impl GuiState {
                 }
                 GuiUpdate::Move { handle, x, y } => {
                     // A user's drag. AutoIt has no message for this (scripts
-                    // poll WinGetPos), so the model is all that changes.
+                    // poll WinGetPos), so the model is all that changes — but a
+                    // subform rides along with the window it sits on.
+                    let mut shift = (0, 0);
                     let changed = match self.model.window_mut(handle) {
                         Some(window) => {
                             let changed = window.x != x || window.y != y;
+                            shift = (x - window.x, y - window.y);
                             window.x = x;
                             window.y = y;
                             changed
@@ -552,6 +558,7 @@ impl GuiState {
                     };
                     if changed {
                         self.notify_window(handle);
+                        self.shift_subforms(handle, shift.0, shift.1);
                     }
                     continue;
                 }
@@ -792,7 +799,9 @@ impl GuiState {
                 let mut x = position(3, width, desktop_width);
                 let mut y = position(4, height, desktop_height);
                 if let Some(owner_handle) = owner {
-                    if arg_int(args, 6) & WS_EX_MDICHILD != 0 {
+                    // Only a positive extended style names styles: a "Default"
+                    // reaches the model as -1, whose every bit is set.
+                    if arg_int(args, 6) > 0 && arg_int(args, 6) & WS_EX_MDICHILD != 0 {
                         if let Some(owner_window) = self.model.window(owner_handle) {
                             x = owner_window.x + x;
                             y = owner_window.y + y;
@@ -1497,14 +1506,18 @@ impl GuiState {
                         },
                         None => None,
                     };
+                    let mut shift = (0, 0);
                     if let Some(window) = self.model.window_mut(handle) {
                         if let Some(x) = coordinate(2) {
+                            shift.0 = x as i32 - window.x;
                             window.x = x as i32;
                         }
                         if let Some(y) = coordinate(3) {
+                            shift.1 = y as i32 - window.y;
                             window.y = y as i32;
                         }
                     }
+                    self.shift_subforms(handle, shift.0, shift.1);
                     // A size change moves the controls, so it goes through the
                     // same path a user's drag does.
                     let width = coordinate(4).unwrap_or_else(|| {
@@ -2791,7 +2804,38 @@ impl GuiState {
         self.model.resolve_window(&spec)
     }
 
-    /// Resolve the `(window, control text)` pair `Control*` functions take.
+    /// Carry every `WS_EX_MDICHILD` subform of `handle` along by `(dx, dy)`.
+    ///
+    /// A subform's left/top are relative to its owner's client area, so moving
+    /// the owner moves the subform with it. An *owned* window does not do that
+    /// on its own — following its owner across the screen is a child window's
+    /// behaviour — so the model moves them itself and tells the backend where
+    /// they landed.
+    fn shift_subforms(&mut self, handle: i64, dx: i32, dy: i32) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let subforms: Vec<i64> = self
+            .model
+            .windows
+            .iter()
+            .flatten()
+            .filter(|window| {
+                window.owner == Some(handle) && window.exstyle & WS_EX_MDICHILD != 0
+            })
+            .map(|window| window.handle)
+            .collect();
+        for subform in subforms {
+            if let Some(window) = self.model.window_mut(subform) {
+                window.x += dx;
+                window.y += dy;
+            }
+            // A subform can carry subforms of its own.
+            self.shift_subforms(subform, dx, dy);
+            self.notify_window(subform);
+        }
+    }
+
     /// Resize a window and move its controls the way their docking asks.
     ///
     /// AutoIt's `$GUI_DOCK*` flags say what does *not* change when the window

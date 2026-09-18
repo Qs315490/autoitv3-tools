@@ -2031,6 +2031,85 @@ Return $p[0] & "," & $p[1]
     );
 }
 
+/// A backend that reports one user drag once every window of the script exists.
+///
+/// The release has to wait for all of them: a subform created *after* the drag
+/// would be placed correctly by \`GUICreate\` alone, which proves nothing about
+/// following.
+#[derive(Default)]
+struct DragBackend {
+    pending: Vec<GuiUpdate>,
+    windows_seen: usize,
+    release_after: usize,
+    seen: Rc<RefCell<Vec<(i64, i32, i32)>>>,
+}
+
+impl GuiBackend for DragBackend {
+    fn on_window(&mut self, window: &Window) {
+        self.windows_seen += 1;
+        self.seen
+            .borrow_mut()
+            .push((window.handle, window.x, window.y));
+    }
+    fn take_updates(&mut self) -> Vec<GuiUpdate> {
+        if self.windows_seen >= self.release_after {
+            std::mem::take(&mut self.pending)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[test]
+fn a_subform_follows_the_window_it_sits_on() {
+    // A `WS_EX_MDICHILD` subform is placed relative to its owner's client area,
+    // so it has to move with that owner — that is what makes the sample's tree
+    // area stay inside its form when the user drags the window. An owned window
+    // does not follow on its own, so the model moves it.
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(DragBackend {
+        pending: vec![GuiUpdate::Move {
+            handle: 0x1_0000,
+            x: 300,
+            y: 200,
+        }],
+        windows_seen: 0,
+        release_after: 4,
+        seen: seen.clone(),
+    }));
+    let body = r#"
+Local $main = GUICreate("m", 400, 300, 10, 20)
+Local $sub = GUICreate("", 200, 100, 4, 32, 2147483648, 192, $main)
+Local $nested = GUICreate("", 100, 50, 3, 3, 2147483648, 192, $sub)
+Local $plain = GUICreate("", 60, 40, 4, 32, 2147483648, 128, $main)
+GUISetState()
+Local $main_pos = WinGetPos($main)
+Local $sub_pos = WinGetPos($sub)
+Local $nested_pos = WinGetPos($nested)
+Local $plain_pos = WinGetPos($plain)
+Return $main_pos[0] & "," & $main_pos[1] & ":" & $sub_pos[0] & "," & $sub_pos[1] & ":" & $nested_pos[0] & "," & $nested_pos[1] & ":" & $plain_pos[0] & "," & $plain_pos[1]
+"#;
+    // The backend reports the main window dragged to (300,200) from (10,20).
+    // A subform rides along (it stays at owner+(4,32), and a subform of the
+    // subform at owner+(7,35)), while an *owned* window without the style keeps
+    // the screen coordinates the script gave it.
+    let value = text(emu, body);
+    let fields: Vec<&str> = value.split(':').collect();
+    assert_eq!(fields[0], "300,200", "the drag reached the model: {value}");
+    assert_eq!(
+        fields[1], "304,232",
+        "the subform follows its owner: {value}"
+    );
+    assert_eq!(
+        fields[2], "307,235",
+        "a nested subform follows too: {value}"
+    );
+    assert_eq!(
+        fields[3], "4,32",
+        "a plain owned window does not follow: {value}"
+    );
+}
+
 #[test]
 fn a_user_state_change_reaches_the_script() {
     use autoitv3_platform::winemu::WindowState;
