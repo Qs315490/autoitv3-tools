@@ -3068,6 +3068,40 @@ Return $ps[0] & "," & $ps[1] & ":" & $pp[0] & "," & $pp[1]
 }
 
 #[test]
+fn a_menu_bar_takes_its_height_out_of_the_client_area() {
+    // Measured on the official x64 interpreter: a 400x300 window reports a
+    // 400x300 client area before \`GUICtrlCreateMenu\` and 400x280 after, while its
+    // 406x332 outer rectangle does not change. A renderer that ignores the bar
+    // puts every control 20 pixels too low.
+    let body = r#"
+Local $w = GUICreate("T", 400, 300, 100, 100)
+Local $before = WinGetClientSize($w)
+GUICtrlCreateMenu("File", -1, $w)
+Local $after = WinGetClientSize($w)
+Return $before[0] & "x" & $before[1] & "->" & $after[0] & "x" & $after[1]
+"#;
+    assert_eq!(text(win10(), body), "400x300->400x280");
+}
+
+#[test]
+fn a_window_with_no_style_reports_the_official_default() {
+    // Measured on the official x64 interpreter: a window created with no style
+    // (or with \`-1\`) really gets \`0x84CA0000\` — \`$GUI_SS_DEFAULT_GUI\` plus
+    // \`WS_CLIPSIBLINGS\`, *not* \`WS_OVERLAPPEDWINDOW\` (\`0x00CF0000\`), whose
+    // \`WS_THICKFRAME\` gives a 408x334 outer rectangle where the official one is
+    // 406x332. The difference is what looked like a few pixels of drift.
+    let body = r#"
+Local $w = GUICreate("T", 400, 300, 100, 100)
+Local $a = GUIGetStyle($w)
+Local $p = WinGetPos($w)
+Return Hex($a[0], 8) & ":" & Hex($a[1], 8) & ":" & $p[2] & "x" & $p[3]
+"#;
+    // The headless backend reports no frame, so the outer size equals the client
+    // size here; the style word is the part that has to match.
+    assert_eq!(text(win10(), body), "84CA0000:00000000:400x300");
+}
+
+#[test]
 fn a_default_extended_style_does_not_make_a_window_a_subform() {
     // A window whose extended style is left at \`Default\` reaches the model as
     // -1, and -1 has every bit set. Testing \`WS_EX_MDICHILD\` alone made every
