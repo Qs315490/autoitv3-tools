@@ -161,12 +161,6 @@ const MDICHILD_INSET: i32 = 3;
 /// 406x332 rectangle does not change.
 const MENU_BAR_HEIGHT: i32 = 20;
 
-/// `$GUI_SS_DEFAULT_GUI`: what a window that named no style is created with.
-/// `WS_OVERLAPPEDWINDOW` = `WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
-/// WS_MINIMIZEBOX | WS_MAXIMIZEBOX`.
-const GUI_SS_DEFAULT_GUI: i64 = 0x84CA_0000;
-
-
 /// The bits a part reports through `GUICtrlRead`: its own checked, focus and
 /// default-button state.
 ///
