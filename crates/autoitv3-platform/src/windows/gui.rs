@@ -503,6 +503,15 @@ unsafe extern "system" fn wnd_proc(
                 if let Some(foreground) = foreground {
                     SetTextColor(hdc, colorref(foreground));
                 }
+                // A control with a text colour but no background of its own keeps
+                // the **parent's** background — that is what makes a light label
+                // readable on a dark title bar. Falling through to the default
+                // here would hand the control the system's white brush and paint
+                // light text on white, which is invisible.
+                let background = background.or_else(|| {
+                    let parent = unsafe { GetParent(lparam as HWND) };
+                    state.window_bk.get(&hwnd_key(parent)).copied()
+                });
                 if let Some(background) = background {
                     SetBkColor(hdc, colorref(background));
                     return Some(brush_for(state, background) as LRESULT);
