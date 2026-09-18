@@ -2730,6 +2730,20 @@ impl GuiBackend for Win32Backend {
         frame_size(style, window.exstyle.max(0) as u32)
     }
 
+    fn client_origin(&self, window: &Window) -> (i32, i32) {
+        // A subform is placed relative to its owner's *client* area, so the
+        // frame around that owner — border and caption — has to be measured
+        // rather than assumed: `ClientToScreen` on (0,0) is that origin.
+        let Some(hwnd) = self.windows.get(&window.handle).copied() else {
+            return (0, 0);
+        };
+        let mut point = POINT { x: 0, y: 0 };
+        if unsafe { ClientToScreen(hwnd, &mut point) } == 0 {
+            return (0, 0);
+        }
+        (point.x - window.x, point.y - window.y)
+    }
+
     fn snapshot(&mut self) -> Option<GuiImage> {
         // A real window can be screenshotted, but nothing asks for it yet.
         None
