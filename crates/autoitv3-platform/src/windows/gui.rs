@@ -1945,6 +1945,14 @@ impl Win32Backend {
         unsafe {
             let mut message: MSG = std::mem::zeroed();
             while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                if std::env::var_os("AU3_GUI_TRACE").is_some()
+                    && matches!(message.message, WM_PAINT | WM_ERASEBKGND)
+                {
+                    eprintln!(
+                        "[gui-trace] pump msg={:#x} hwnd={:?}",
+                        message.message, message.hwnd
+                    );
+                }
                 // `IsDialogMessageW` is what gives a GUI its keyboard habits:
                 // Tab and the arrow keys move between controls, Return presses
                 // the default button and Escape closes the window. AutoIt's own
