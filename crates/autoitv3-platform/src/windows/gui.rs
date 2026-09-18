@@ -82,7 +82,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, GetDC, GetStockObject,
-    InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, RedrawWindow, ReleaseDC,
+    GetUpdateRect, InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, RedrawWindow,
+    ReleaseDC,
     SelectObject, SetBkColor, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
     UpdateWindow, HDC, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
     SRCCOPY,
@@ -1986,9 +1987,15 @@ impl Win32Backend {
                 if std::env::var_os("AU3_GUI_TRACE").is_some()
                     && matches!(message.message, WM_PAINT | WM_ERASEBKGND)
                 {
+                    let mut update: RECT = std::mem::zeroed();
+                    let dirty = GetUpdateRect(message.hwnd, &mut update, 0);
+                    let style = GetWindowLongW(message.hwnd, GWL_STYLE) as u32;
                     eprintln!(
-                        "[gui-trace] pump msg={:#x} hwnd={:?}",
-                        message.message, message.hwnd
+                        "[gui-trace] pump msg={:#x} hwnd={:?} dirty={dirty} ws_visible={} is_visible={}",
+                        message.message,
+                        message.hwnd,
+                        style & 0x1000_0000 != 0,
+                        IsWindowVisible(message.hwnd)
                     );
                 }
                 // `IsDialogMessageW` is what gives a GUI its keyboard habits:
