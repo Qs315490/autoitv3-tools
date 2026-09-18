@@ -1943,7 +1943,11 @@ impl Win32Backend {
             return;
         }
         let graphic = control.kind == ControlKind::Graphic;
-        let dragging = control.exstyle & GUI_WS_EX_PARENTDRAG != 0;
+        // A script that leaves the extended style at "Default" hands the control
+        // -1, and -1 has every bit set: testing the flag alone would make *every*
+        // such control a drag handle and subclass it. Only a positive style is a
+        // style the script actually named.
+        let dragging = control.exstyle > 0 && control.exstyle & GUI_WS_EX_PARENTDRAG != 0;
         if !graphic && !dragging {
             return;
         }
