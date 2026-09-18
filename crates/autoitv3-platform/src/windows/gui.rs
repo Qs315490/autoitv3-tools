@@ -830,25 +830,9 @@ impl Win32Backend {
         // model as -1, whose every bit is set — testing the flag alone made
         // *every* window a child, and a child window with no parent fails to
         // create, which is a blank screen.
-        // A subform also needs an owner to be a child *of*: `WS_CHILD` with a
-        // null parent is a window Win32 refuses to create, and a script that
-        // names the style without naming an owner would lose the whole window
-        // (and every control on it) rather than get a plain one.
-        let subform = window.exstyle > 0
-            && window.exstyle & WS_EX_MDICHILD as i64 != 0
-            && window.owner.is_some();
+        let subform = is_subform(window);
         let exstyle = window.exstyle.max(0) as u32 & !WS_EX_MDICHILD;
-        // A child window cannot also be a popup, and the script's style for a
-        // subform is `WS_POPUP` (that is what `GUICreate` puts in a form's
-        // style). `WS_CHILD` replaces it here; the model keeps the script's own
-        // value for `WinGetStyle` to report.
-        let base_style = window_style(window);
-        let style = (if subform {
-            base_style & !WS_POPUP
-        } else {
-            base_style
-        }) | if window.visible { WS_VISIBLE } else { 0 }
-            | if subform { WS_CHILD } else { 0 };
+        let style = effective_style(window, subform);
         let frame = frame_size(style, exstyle);
         let (client_width, client_height) = (window.width.max(1), window.height.max(1));
         let (width, height) = (client_width + frame.0, client_height + frame.1);
@@ -2702,13 +2686,9 @@ impl GuiBackend for Win32Backend {
     fn frame_size(&self, window: &Window) -> (i32, i32) {
         // The same effective style `sync_window` creates the window with: a
         // subform becomes a child, and a child has no caption or border frame.
-        let style = window_style(window);
-        let style = if window.exstyle > 0 && window.exstyle & WS_EX_MDICHILD as i64 != 0 {
-            (style & !WS_POPUP) | WS_CHILD
-        } else {
-            style
-        };
-        let style = style | if window.visible { WS_VISIBLE } else { 0 };
+        // Both go through `is_subform` so the two can never disagree about which
+        // windows are children.
+        let style = effective_style(window, is_subform(window));
         let exstyle = window.exstyle.max(0) as u32 & !WS_EX_MDICHILD;
         frame_size(style, exstyle)
     }
@@ -2780,6 +2760,28 @@ impl Drop for Win32Backend {
 ///
 /// AutoIt's `$GUI_SS_DEFAULT_GUI` *is* `WS_OVERLAPPEDWINDOW`, so a script's
 /// style goes straight through; `-1`/`0` (AutoIt's "default") becomes it.
+/// Whether a window is a `WS_EX_MDICHILD` subform.
+///
+/// Only a positive extended style names styles — a "Default" reaches the model
+/// as -1, whose every bit is set, so testing the flag alone made *every* window
+/// a child. An owner is required too: `WS_CHILD` with a null parent is a window
+/// Win32 refuses to create, so a script naming the style without an owner would
+/// lose the window and every control on it rather than get a plain one.
+fn is_subform(window: &Window) -> bool {
+    window.exstyle > 0 && window.exstyle & WS_EX_MDICHILD as i64 != 0 && window.owner.is_some()
+}
+
+/// The style a window is really created with.
+///
+/// A child window cannot also be a popup, and the script's style for a subform
+/// is `WS_POPUP` (that is what `GUICreate` puts in a form's style). The model
+/// keeps the script's own value for `WinGetStyle` to report.
+fn effective_style(window: &Window, subform: bool) -> u32 {
+    let base = window_style(window);
+    let base = if subform { base & !WS_POPUP } else { base };
+    base | if window.visible { WS_VISIBLE } else { 0 } | if subform { WS_CHILD } else { 0 }
+}
+
 fn window_style(window: &Window) -> u32 {
     if window.style > 0 {
         window.style as u32
