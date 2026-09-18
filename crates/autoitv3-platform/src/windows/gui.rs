@@ -2114,6 +2114,12 @@ impl GuiBackend for Win32Backend {
     }
 
     fn on_window_removed(&mut self, handle: i64) {
+        if std::env::var_os("AU3_GUI_TRACE").is_some() {
+            eprintln!(
+                "[gui-trace] window handle={handle} DESTROYED hwnd={:?}",
+                self.windows.get(&handle)
+            );
+        }
         if let Some(hwnd) = self.windows.remove(&handle) {
             unsafe { DestroyWindow(hwnd) };
             let _ = with_shared(|state| state.window_ids.remove(&hwnd_key(hwnd)));
