@@ -812,10 +812,22 @@ impl Win32Backend {
                     )
                 };
                 if hwnd.is_null() {
+                    if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                        eprintln!(
+                            "[gui-trace] window handle={} title={:?} CREATE FAILED style={style:#x} exstyle={exstyle:#x} owner={owner:?}",
+                            window.handle, window.title
+                        );
+                    }
                     return;
                 }
                 self.windows.insert(window.handle, hwnd);
                 let _ = with_shared(|state| state.window_ids.insert(hwnd_key(hwnd), window.handle));
+                if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                    eprintln!(
+                        "[gui-trace] window handle={} title={:?} created hwnd={hwnd:?} pos=({}, {}) size={}x{} style={style:#x} exstyle={exstyle:#x}",
+                        window.handle, window.title, window.x, window.y, width, height
+                    );
+                }
                 hwnd
             }
         };
@@ -919,6 +931,12 @@ impl Win32Backend {
         let Some(parent) = self.windows.get(&control.window).copied() else {
             // The model keeps a control whose window does not exist; the OS has
             // nowhere to put it.
+            if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                eprintln!(
+                    "[gui-trace] control id={} kind={:?} text={:?} DROPPED: window {} has no real HWND",
+                    control.id, control.kind, control.text, control.window
+                );
+            }
             return;
         };
         // Menus are not child windows.
@@ -1000,7 +1018,27 @@ impl Win32Backend {
             )
         };
         if hwnd.is_null() {
+            if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                eprintln!(
+                    "[gui-trace] control id={} kind={:?} text={:?} CREATE FAILED at ({}, {}) {}x{} window={}",
+                    control.id,
+                    control.kind,
+                    control.text,
+                    control.x,
+                    control.y,
+                    control.width,
+                    control.height,
+                    control.window
+                );
+            }
             return;
+        }
+        if std::env::var_os("AU3_GUI_TRACE").is_some() {
+            eprintln!(
+                "[gui-trace] control id={} kind={:?} text={:?} created at ({}, {}) {}x{} window={} hwnd={hwnd:?}",
+                control.id, control.kind, control.text, control.x, control.y,
+                control.width, control.height, control.window
+            );
         }
         let _ = with_shared(|state| state.control_ids.insert(win_id, (control.id, control.kind)));
         let mut created = ControlState::new(control, win_id, hwnd);
