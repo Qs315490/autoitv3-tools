@@ -103,7 +103,8 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics,
-    GetParent, GetWindowLongW, GetWindowRect, SetLayeredWindowAttributes, SetWindowLongW,
+    GetParent, GetWindowLongW, GetWindowRect, IsWindowVisible, SetLayeredWindowAttributes,
+    SetWindowLongW,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsIconic, IsWindow, IsZoomed,
     LoadCursorW, LoadImageW, MoveWindow, PeekMessageW, RegisterClassExW, SendMessageW, SetCursor,
     SetMenu, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WindowFromPoint, MSG,
@@ -1034,10 +1035,16 @@ impl Win32Backend {
             return;
         }
         if std::env::var_os("AU3_GUI_TRACE").is_some() {
+            let style_now = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+            let visible = unsafe { IsWindowVisible(hwnd) };
+            let parent_now = unsafe { GetParent(hwnd) };
+            let mut rect: RECT = unsafe { std::mem::zeroed() };
+            unsafe { GetWindowRect(hwnd, &mut rect) };
             eprintln!(
-                "[gui-trace] control id={} kind={:?} text={:?} created at ({}, {}) {}x{} window={} hwnd={hwnd:?}",
+                "[gui-trace] control id={} kind={:?} text={:?} created at ({}, {}) {}x{} window={} hwnd={hwnd:?} ws_visible={} is_visible={} parent={parent_now:?} rect=({},{},{},{})",
                 control.id, control.kind, control.text, control.x, control.y,
-                control.width, control.height, control.window
+                control.width, control.height, control.window,
+                style_now & 0x1000_0000 != 0, visible, rect.left, rect.top, rect.right, rect.bottom
             );
         }
         let _ = with_shared(|state| state.control_ids.insert(win_id, (control.id, control.kind)));
