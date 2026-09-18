@@ -2156,6 +2156,26 @@ impl GuiBackend for Win32Backend {
                 }
             }
         }
+        // A window that becomes visible has to repaint the controls sitting on it
+        // too. The system invalidates a child when the area over it is uncovered,
+        // but a control created while its window was still hidden and then covered
+        // by another window can stay unpainted for good — which is exactly what
+        // happened to every control of a sample's main window. Invalidating the
+        // children here costs one call each and makes the first frame complete.
+        let children: Vec<HWND> = self
+            .controls
+            .values()
+            .filter(|control| !control.hwnd.is_null())
+            .map(|control| control.hwnd)
+            .collect();
+        for hwnd in children {
+            if unsafe { IsWindow(hwnd) } != 0 {
+                unsafe {
+                    InvalidateRect(hwnd, std::ptr::null(), 1);
+                    UpdateWindow(hwnd);
+                }
+            }
+        }
     }
 
     fn poll(&mut self) -> Vec<GuiEvent> {
