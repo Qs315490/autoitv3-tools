@@ -3068,6 +3068,33 @@ Return $ps[0] & "," & $ps[1] & ":" & $pp[0] & "," & $pp[1]
 }
 
 #[test]
+fn a_subform_is_placed_relative_to_the_owners_client_area() {
+    // Measured on the official x64 interpreter: a subform asked for at (4,32)
+    // over an owner at (100,100) with a 761x551 client area landed at (107,161).
+    // The owner's *client* origin is (103,129) — border 3, caption 29 — so the
+    // frame is part of the offset. Placing from the window rectangle instead put
+    // the subform 29px too high, right over the owner's title bar.
+    struct FramedBackend;
+    impl GuiBackend for FramedBackend {
+        fn client_origin(&self, _window: &Window) -> (i32, i32) {
+            (3, 29)
+        }
+    }
+    let emu = win10().with_gui_backend(Box::new(FramedBackend));
+    let body = r#"
+Local $main = GUICreate("m", 761, 551, 100, 100)
+Local $sub = GUICreate("", 759, 521, 4, 32, 2147483648, 192, $main)
+Local $p = WinGetPos($sub)
+Return $p[0] & "," & $p[1]
+"#;
+    assert_eq!(
+        text(emu, body),
+        "107,161",
+        "the subform sits at the owner's client origin plus its own coordinates"
+    );
+}
+
+#[test]
 fn a_color_set_to_default_or_negative_one_resets_instead_of_storing_zero() {
     // Sample wrappers turn a -1 config value into the `Default` keyword before
     // calling `GUICtrlSetBkColor`/`GUICtrlSetColor` — the official semantic is

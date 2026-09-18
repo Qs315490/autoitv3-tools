@@ -82,8 +82,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, Ellipse, EndPaint, GetDC, GetStockObject,
-    GetUpdateRect, InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle, RedrawWindow,
-    ReleaseDC, ScreenToClient,
+    ClientToScreen, GetUpdateRect, InvalidateRect, LineTo, MoveToEx, Pie, PolyBezier, Rectangle,
+    RedrawWindow, ReleaseDC, ScreenToClient,
     SelectObject, SetBkColor, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
     UpdateWindow, HDC, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
     SRCCOPY,

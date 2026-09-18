@@ -180,6 +180,17 @@ pub trait GuiBackend {
         (0, 0)
     }
 
+    /// Where a window's client area starts, relative to its window rectangle.
+    ///
+    /// A `WS_EX_MDICHILD` subform's `GUICreate` coordinates are relative to its
+    /// owner's **client** area, so placing one needs this origin and not the
+    /// window rectangle's. Measured on the official x64 interpreter: a subform
+    /// asked for at (4,32) over an owner at (100,100) with a 761x551 client area
+    /// landed at (107,161) — the owner's client origin (103,129) plus (4,32).
+    fn client_origin(&self, _window: &Window) -> (i32, i32) {
+        (0, 0)
+    }
+
     /// The size of the desktop this backend provides, in pixels.
     ///
     /// A live window's viewport and an offscreen canvas are both desktops for
