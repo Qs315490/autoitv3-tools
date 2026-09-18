@@ -2134,6 +2134,12 @@ impl GuiBackend for Win32Backend {
             self.forget_control(id);
         }
         self.current_menu.remove(&handle);
+        // Destroying a window uncovers whatever was under it. The system repaints
+        // the exposed area of the parent, but the controls sitting there are not
+        // invalidated — a sample that covers its whole window with a mask during
+        // startup would leave every control unpainted for good. Repaint the
+        // remaining windows and their controls after the destroy.
+        self.present();
     }
 
     fn on_control(&mut self, control: &Control) {
