@@ -2464,7 +2464,9 @@ impl GuiState {
                     .model
                     .part_owner(id)
                     .and_then(|owner| self.model.control(owner))
-                    .map(|owner| owner.exstyle & LVS_EX_CHECKBOXES != 0)
+                    // A "Default" extended style reaches the model as -1, whose
+                    // every bit is set: only a positive style names styles.
+                    .map(|owner| owner.exstyle > 0 && owner.exstyle & LVS_EX_CHECKBOXES != 0)
                     .unwrap_or(false);
                 if advanced && checkboxes {
                     Value::Int(if control.is_checked() { 1 } else { 4 })
