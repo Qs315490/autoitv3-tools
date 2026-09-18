@@ -1145,7 +1145,13 @@ impl Win32Backend {
                         )
                     {
                         let text = to_wide(&control.text);
-                        SetWindowTextW(hwnd, text.as_ptr());
+                        let ok = SetWindowTextW(hwnd, text.as_ptr());
+                        if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                            eprintln!(
+                                "[gui-trace] settext id={} hwnd={hwnd:?} ok={ok} text={:?}",
+                                control.id, control.text
+                            );
+                        }
                     }
                     if state.visible != control.is_visible() {
                         ShowWindow(
