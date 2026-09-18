@@ -3068,6 +3068,57 @@ Return $ps[0] & "," & $ps[1] & ":" & $pp[0] & "," & $pp[1]
 }
 
 #[test]
+fn a_control_inherits_the_font_its_window_was_given() {
+    // Measured on the official x64 interpreter: a label created after
+    // \`GUISetFont(9, 400, 0, "microsoft yahei")\` reports a 9pt/400 "microsoft
+    // yahei" font, and one created after a later \`GUISetFont(20, 700, 0,
+    // "Arial")\` reports 20pt/700 "Arial". A control that inherits nothing falls
+    // back to the system font, which is how the whole interface lost its font.
+    #[derive(Default)]
+    struct FontBackend {
+        seen: Rc<RefCell<Vec<(i64, Option<(String, i32, i32)>)>>>,
+    }
+    impl GuiBackend for FontBackend {
+        fn on_control(&mut self, control: &Control) {
+            self.seen.borrow_mut().push((
+                control.id,
+                control
+                    .font
+                    .as_ref()
+                    .map(|font| (font.name.clone(), font.size, font.weight)),
+            ));
+        }
+    }
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let emu = win10().with_gui_backend(Box::new(FontBackend { seen: seen.clone() }));
+    let body = r#"
+GUICreate("T", 300, 200)
+GUISetFont(9, 400, 0, "microsoft yahei")
+Local $first = GUICtrlCreateLabel("A", 0, 0, 100, 20)
+GUISetFont(20, 700, 0, "Arial")
+Local $second = GUICtrlCreateLabel("B", 0, 30, 100, 20)
+Return $first & ":" & $second
+"#;
+    text(emu, body);
+    let seen = seen.borrow();
+    let font_of = |id: i64| {
+        seen.iter()
+            .find(|(control, _)| *control == id)
+            .and_then(|(_, font)| font.clone())
+    };
+    assert_eq!(
+        font_of(1),
+        Some(("microsoft yahei".to_string(), 9, 400)),
+        "the first label takes the font set before it: {seen:?}"
+    );
+    assert_eq!(
+        font_of(2),
+        Some(("Arial".to_string(), 20, 700)),
+        "the second takes the later font: {seen:?}"
+    );
+}
+
+#[test]
 fn a_subform_is_placed_relative_to_the_owners_client_area() {
     // Measured on the official x64 interpreter: a subform asked for at (4,32)
     // over an owner at (100,100) with a 761x551 client area landed at (107,161).
