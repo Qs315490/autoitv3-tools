@@ -798,6 +798,10 @@ pub struct Win32Backend {
     /// How much larger a window's frame is than its client area, per window.
     /// Dragging gives a window rectangle, but the model thinks in client sizes.
     frames: HashMap<i64, (i32, i32)>,
+    /// The `ShowWindow` command last sent per window, so a geometry-only update
+    /// never re-shows it. Re-showing a window the user is dragging makes the
+    /// title bar jump about.
+    shown: HashMap<i64, i32>,
     /// Which windows were last pushed on top, so the z-order is only changed
     /// when the model asks for a different one.
     topmost: HashMap<i64, bool>,
@@ -838,6 +842,7 @@ impl Win32Backend {
             current_menu: HashMap::new(),
             applied: HashMap::new(),
             frames: HashMap::new(),
+            shown: HashMap::new(),
             topmost: HashMap::new(),
             transparency: HashMap::new(),
             layered: HashMap::new(),
@@ -1016,20 +1021,27 @@ impl Win32Backend {
                 height,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
+            // Only when the state actually changed. Re-showing a window the user
+            // is dragging fights Windows' own modal move loop, which is what made
+            // the frame jump about: the geometry above is re-applied on every
+            // poll, and `ShowWindow` on every one of those is far too much.
             let command = if !window.visible {
                 SW_HIDE
             } else {
                 match window.state {
                     WindowState::Minimized => SW_MINIMIZE,
                     WindowState::Maximized => SW_SHOWMAXIMIZED,
-                    // `SW_SHOWNORMAL` *restores* a window, and a drag that is in
-                    // progress is a window the user is moving: restoring it on
-                    // every geometry update is what made the title bar jump
-                    // about. `SW_SHOWNOACTIVATE` just makes sure it is visible.
+                    // `SW_SHOWNORMAL` *restores* a window; a window being dragged
+                    // is already normal, and "restoring" it every frame is what
+                    // made the title bar jump. `SW_SHOWNOACTIVATE` only makes
+                    // sure it is visible.
                     WindowState::Normal => SW_SHOWNOACTIVATE,
                 }
             };
-            ShowWindow(hwnd, command);
+            if self.shown.get(&window.handle).copied() != Some(command) {
+                ShowWindow(hwnd, command);
+                self.shown.insert(window.handle, command);
+            }
             EnableWindow(hwnd, i32::from(window.enabled));
         }
         // The z-order, the focus and the background are model state that only
@@ -2487,6 +2499,7 @@ impl GuiBackend for Win32Backend {
         }
         self.applied.remove(&handle);
         self.frames.remove(&handle);
+        self.shown.remove(&handle);
         for map in [&mut self.tooltips, &mut self.balloon_tooltips] {
             if let Some(tooltip) = map.remove(&handle) {
                 unsafe { DestroyWindow(tooltip) };
