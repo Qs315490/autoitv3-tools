@@ -800,6 +800,9 @@ pub struct Win32Backend {
     /// never re-shows it. Re-showing a window the user is dragging makes the
     /// title bar jump about.
     shown: HashMap<i64, i32>,
+    /// The caption last written per window: `SetWindowTextW` repaints the whole
+    /// non-client area, which flashes while a window is being dragged.
+    titles: HashMap<i64, String>,
     /// Which windows were last pushed on top, so the z-order is only changed
     /// when the model asks for a different one.
     topmost: HashMap<i64, bool>,
@@ -841,6 +844,7 @@ impl Win32Backend {
             applied: HashMap::new(),
             frames: HashMap::new(),
             shown: HashMap::new(),
+            titles: HashMap::new(),
             topmost: HashMap::new(),
             transparency: HashMap::new(),
             layered: HashMap::new(),
@@ -1000,25 +1004,42 @@ impl Win32Backend {
             state.carried.insert(hwnd_key(hwnd), (window.x, window.y));
         });
         unsafe {
-            // Title, geometry and visibility are idempotent and cheap.
-            let title = to_wide(&window.title);
-            SetWindowTextW(hwnd, title.as_ptr());
-            // A subform is an owned popup in screen coordinates, which is what
-            // the model already resolved its place to.
-            // `SWP_NOACTIVATE | SWP_NOZORDER`: this is the model re-applying a
-            // rectangle the user may be dragging right now. Letting it also
-            // activate or restack the window makes the drag flicker, and
-            // `MoveWindow`'s repaint (its last argument) is what keeps the
-            // contents on screen while the frame moves.
-            SetWindowPos(
-                hwnd,
-                std::ptr::null_mut(),
-                window.x,
-                window.y,
-                width,
-                height,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+            // Nothing below is worth a call when the window is already the way
+            // the model describes it — and the geometry *is* re-sent on every
+            // poll, since the loop above recomputes it from the model. During a
+            // title-bar drag the user is moving the very window this would move,
+            // so re-applying an unchanged rectangle is pure interference: it is
+            // what made the frame flicker and the title bar jump.
+            let mut current: RECT = std::mem::zeroed();
+            let unchanged = GetWindowRect(hwnd, &mut current) != 0
+                && current.left == window.x
+                && current.top == window.y
+                && current.right - current.left == width
+                && current.bottom - current.top == height;
+            if !unchanged {
+                // A subform is an owned popup in screen coordinates, which is
+                // what the model already resolved its place to.
+                // `SWP_NOZORDER | SWP_NOACTIVATE`: this is the model re-applying
+                // a rectangle the user may be dragging right now, and letting it
+                // also activate or restack the window is what made the drag
+                // flicker.
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    window.x,
+                    window.y,
+                    width,
+                    height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            // A title only costs a call when it changed; `SetWindowTextW` repaints
+            // the caption, which is visible as a flash while the user drags.
+            if self.titles.get(&window.handle) != Some(&window.title) {
+                let title = to_wide(&window.title);
+                SetWindowTextW(hwnd, title.as_ptr());
+                self.titles.insert(window.handle, window.title.clone());
+            }
             // Only when the state actually changed. Re-showing a window the user
             // is dragging fights Windows' own modal move loop, which is what made
             // the frame jump about: the geometry above is re-applied on every
@@ -2500,6 +2521,7 @@ impl GuiBackend for Win32Backend {
         self.applied.remove(&handle);
         self.frames.remove(&handle);
         self.shown.remove(&handle);
+        self.titles.remove(&handle);
         for map in [&mut self.tooltips, &mut self.balloon_tooltips] {
             if let Some(tooltip) = map.remove(&handle) {
                 unsafe { DestroyWindow(tooltip) };
