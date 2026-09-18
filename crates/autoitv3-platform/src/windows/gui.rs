@@ -2002,21 +2002,45 @@ impl Win32Backend {
                 // Tab and the arrow keys move between controls, Return presses
                 // the default button and Escape closes the window. AutoIt's own
                 // message loop does the same, so a script sees the same events.
-                // The dialog windows are collected first: `IsDialogMessageW`
-                // dispatches messages of its own (that is how Tab and Return reach
-                // the controls), and dispatching one while the shared table is
-                // borrowed would make every nested `wnd_proc` call fail its
-                // borrow and silently fall back to the default handling.
-                let dialogs: Vec<HWND> = with_shared(|shared| {
-                    shared.window_ids.keys().map(|hwnd| *hwnd as HWND).collect()
-                })
-                .unwrap_or_default();
+                //
+                // It is asked about **keyboard messages only**: that is the whole
+                // of what a dialog procedure reads, and it swallows what it takes
+                // — asking it about a `WM_PAINT` of a window it does not own
+                // loses the paint. The dialog windows are collected first, so the
+                // shared table is not borrowed while a nested dispatch runs.
+                // The keyboard range is `WM_KEYFIRST`..`WM_KEYLAST`
+                // (`WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR` and the `WM_SYS*`
+                // counterparts).
+                let keyboard = (0x0100..=0x0109).contains(&message.message);
                 let mut handled = false;
-                for hwnd in dialogs {
-                    if IsDialogMessageW(hwnd, &message) != 0 {
-                        handled = true;
-                        break;
+                let mut handled_by = std::ptr::null_mut();
+                if keyboard {
+                    let dialogs: Vec<HWND> = with_shared(|shared| {
+                        shared.window_ids.keys().map(|hwnd| *hwnd as HWND).collect()
+                    })
+                    .unwrap_or_default();
+                    for hwnd in dialogs {
+                        if IsDialogMessageW(hwnd, &message) != 0 {
+                            handled = true;
+                            handled_by = hwnd;
+                            break;
+                        }
                     }
+                }
+                if std::env::var_os("AU3_GUI_TRACE").is_some()
+                    && matches!(message.message, WM_PAINT | WM_ERASEBKGND)
+                {
+                    let mut class: [u16; 64] = [0; 64];
+                    GetClassNameW(message.hwnd, class.as_mut_ptr(), 64);
+                    let class = String::from_utf16_lossy(
+                        &class[..class.iter().position(|c| *c == 0).unwrap_or(64)],
+                    );
+                    eprintln!(
+                        "[gui-trace] pump done msg={:#x} hwnd={:?} class={class:?} parent={:?} handled={handled} by={handled_by:?}",
+                        message.message,
+                        message.hwnd,
+                        GetParent(message.hwnd)
+                    );
                 }
                 if !handled {
                     TranslateMessage(&message);
