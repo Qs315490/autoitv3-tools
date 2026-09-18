@@ -1080,10 +1080,11 @@ impl Win32Backend {
                 &class[..class.iter().position(|c| *c == 0).unwrap_or(64)],
             );
             eprintln!(
-                "[gui-trace] control id={} kind={:?} class={class:?} text={:?} created at ({}, {}) {}x{} window={} hwnd={hwnd:?} ws_visible={} is_visible={} parent={parent_now:?} rect=({},{},{},{})",
+                "[gui-trace] control id={} kind={:?} class={class:?} text={:?} created at ({}, {}) {}x{} window={} hwnd={hwnd:?} ws_visible={} is_visible={} parent={parent_now:?} rect=({},{},{},{}) style={style_now:#x} script_style={:#x} exstyle={:#x}",
                 control.id, control.kind, control.text, control.x, control.y,
                 control.width, control.height, control.window,
-                style_now & 0x1000_0000 != 0, visible, rect.left, rect.top, rect.right, rect.bottom
+                style_now & 0x1000_0000 != 0, visible, rect.left, rect.top, rect.right, rect.bottom,
+                control.style, unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) }
             );
         }
         let _ = with_shared(|state| state.control_ids.insert(win_id, (control.id, control.kind)));
@@ -1990,8 +1991,15 @@ impl Win32Backend {
                     let mut update: RECT = std::mem::zeroed();
                     let dirty = GetUpdateRect(message.hwnd, &mut update, 0);
                     let style = GetWindowLongW(message.hwnd, GWL_STYLE) as u32;
+                    let control = with_shared(|shared| {
+                        shared
+                            .colors
+                            .get(&(message.hwnd as usize))
+                            .map(|(id, _, _)| *id)
+                    })
+                    .flatten();
                     eprintln!(
-                        "[gui-trace] pump msg={:#x} hwnd={:?} dirty={dirty} ws_visible={} is_visible={}",
+                        "[gui-trace] pump msg={:#x} hwnd={:?} control={control:?} dirty={dirty} ws_visible={} is_visible={}",
                         message.message,
                         message.hwnd,
                         style & 0x1000_0000 != 0,
@@ -2035,8 +2043,17 @@ impl Win32Backend {
                     let class = String::from_utf16_lossy(
                         &class[..class.iter().position(|c| *c == 0).unwrap_or(64)],
                     );
+                    let mut update: RECT = std::mem::zeroed();
+                    let dirty_after = GetUpdateRect(message.hwnd, &mut update, 0);
+                    let control = with_shared(|shared| {
+                        shared
+                            .colors
+                            .get(&(message.hwnd as usize))
+                            .map(|(id, _, _)| *id)
+                    })
+                    .flatten();
                     eprintln!(
-                        "[gui-trace] pump done msg={:#x} hwnd={:?} class={class:?} parent={:?} handled={handled} by={handled_by:?}",
+                        "[gui-trace] pump done msg={:#x} hwnd={:?} control={control:?} class={class:?} parent={:?} handled={handled} by={handled_by:?} dirty_after={dirty_after}",
                         message.message,
                         message.hwnd,
                         GetParent(message.hwnd)
@@ -2975,22 +2992,31 @@ unsafe extern "system" fn child_proc(
             }
         }
         WM_PAINT => {
-            let mut paint: PAINTSTRUCT = std::mem::zeroed();
-            let hdc = BeginPaint(hwnd, &mut paint);
-            let _ = with_shared(|shared| {
-                let Some(drawing) = shared.drawings.get(&hwnd_key(hwnd)).cloned() else {
-                    return;
-                };
+            // Only a control that actually carries a drawing is painted here. A
+            // control subclassed just for `$GUI_WS_EX_PARENTDRAG` — a label on a
+            // title bar, typically — has none, and `WM_PAINT` then belongs to
+            // its class procedure: handling it here would consume the message
+            // after `BeginPaint` cleared the update region, leaving the text
+            // unpainted and the parent never asked for a colour.
+            let painting = with_shared(|shared| {
+                shared.drawings.get(&hwnd_key(hwnd)).cloned().map(|drawing| {
+                    let brush = drawing.background.map(|color| brush_for(shared, color));
+                    (drawing, brush)
+                })
+            })
+            .flatten();
+            if let Some((drawing, brush)) = painting {
+                let mut paint: PAINTSTRUCT = std::mem::zeroed();
+                let hdc = BeginPaint(hwnd, &mut paint);
                 let mut rect: RECT = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rect);
-                if let Some(background) = drawing.background {
-                    let brush = brush_for(shared, background);
+                if let Some(brush) = brush {
                     FillRect(hdc, &rect, brush);
                 }
                 paint_commands(hdc, &drawing.commands, drawing.color);
-            });
-            EndPaint(hwnd, &paint);
-            return 0;
+                EndPaint(hwnd, &paint);
+                return 0;
+            }
         }
         _ => {}
     }
