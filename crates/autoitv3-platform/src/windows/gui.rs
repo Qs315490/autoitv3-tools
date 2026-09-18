@@ -147,7 +147,6 @@ const LWA_ALPHA: u32 = 2;
 
 // `ShowWindow` commands.
 const SW_HIDE: i32 = 0;
-const SW_SHOWNORMAL: i32 = 1;
 const SW_SHOWMAXIMIZED: i32 = 3;
 const SW_SHOW: i32 = 5;
 const SW_MINIMIZE: i32 = 6;
@@ -314,6 +313,8 @@ const HWND_NOTOPMOST: isize = -2;
 const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
+/// `SW_SHOWNOACTIVATE`: show a window without activating or restoring it.
+const SW_SHOWNOACTIVATE: i32 = 4;
 const SWP_NOZORDER: u32 = 0x0004;
 const SWP_FRAMECHANGED: u32 = 0x0020;
 /// `GetWindowLongW`/`SetWindowLongW`: the window's style word.
@@ -1001,14 +1002,31 @@ impl Win32Backend {
             SetWindowTextW(hwnd, title.as_ptr());
             // A subform is an owned popup in screen coordinates, which is what
             // the model already resolved its place to.
-            MoveWindow(hwnd, window.x, window.y, width, height, 1);
+            // `SWP_NOACTIVATE | SWP_NOZORDER`: this is the model re-applying a
+            // rectangle the user may be dragging right now. Letting it also
+            // activate or restack the window makes the drag flicker, and
+            // `MoveWindow`'s repaint (its last argument) is what keeps the
+            // contents on screen while the frame moves.
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                window.x,
+                window.y,
+                width,
+                height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
             let command = if !window.visible {
                 SW_HIDE
             } else {
                 match window.state {
                     WindowState::Minimized => SW_MINIMIZE,
                     WindowState::Maximized => SW_SHOWMAXIMIZED,
-                    WindowState::Normal => SW_SHOWNORMAL,
+                    // `SW_SHOWNORMAL` *restores* a window, and a drag that is in
+                    // progress is a window the user is moving: restoring it on
+                    // every geometry update is what made the title bar jump
+                    // about. `SW_SHOWNOACTIVATE` just makes sure it is visible.
+                    WindowState::Normal => SW_SHOWNOACTIVATE,
                 }
             };
             ShowWindow(hwnd, command);
