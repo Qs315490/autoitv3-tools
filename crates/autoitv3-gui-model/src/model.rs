@@ -378,6 +378,14 @@ pub struct Window {
     /// so a renderer can pass the real `HWND` on and z-order follows.
     pub owner: Option<i64>,
     pub resizing: i64,
+    /// Whether `GUICtrlCreateMenu` put a menu bar on this window.
+    ///
+    /// A menu bar is part of the window's non-client area: measured on the
+    /// official x64 interpreter, adding one to a 400x300 window left the outer
+    /// rectangle at 406x332 but took the client area from 400x300 down to
+    /// 400x280 — the bar's 20 pixels come out of the client area, so every
+    /// client-relative position and `WinGetClientSize` depends on this.
+    pub menu: bool,
     /// `GUISetOnEvent` handlers by `$GUI_EVENT_*` id: one function per event, so
     /// a window can answer a close and a minimise differently.
     pub on_events: std::collections::HashMap<i64, String>,
@@ -882,6 +890,7 @@ impl Window {
             transparency: None,
             owner: None,
             resizing: 0,
+            menu: false,
             on_events: std::collections::HashMap::new(),
             controls: Vec::new(),
         }

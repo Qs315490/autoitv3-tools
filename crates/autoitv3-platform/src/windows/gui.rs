@@ -125,7 +125,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{ICON_BIG, WM_SETICON};
 // ---------------------------------------------------------------------------
 
 // Window styles (`winuser.h`).
-const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
+/// `$GUI_SS_DEFAULT_GUI`: what the official interpreter creates a window with
+/// when the script names no style (measured: `0x84CA0000` once
+/// `WS_CLIPSIBLINGS` is OR-ed in).
+const GUI_SS_DEFAULT_GUI: u32 = 0x80CA_0000;
 const WS_VISIBLE: u32 = 0x1000_0000;
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_POPUP: u32 = 0x8000_0000;
@@ -296,6 +299,7 @@ const ICC_PROGRESS_CLASS: u32 = 0x0000_0020;
 const ICC_DATE_CLASSES: u32 = 0x0000_0100;
 
 // Painting, colouring and cursor messages (`winuser.h`).
+const WM_MOVE: u32 = 0x0003;
 const WM_PAINT: u32 = 0x000F;
 const WM_ERASEBKGND: u32 = 0x0014;
 const WM_SETCURSOR: u32 = 0x0020;
@@ -375,11 +379,28 @@ struct Shared {
     colors: HashMap<usize, (i64, Option<i64>, Option<i64>)>,
     /// Window `HWND` → the background colour `GUISetBkColor` set.
     window_bk: HashMap<usize, i64>,
-    /// Every `WS_EX_MDICHILD` subform `HWND`. A subform is a child window, so
-    /// Windows moves it with its parent; the geometry poll still has to leave it
-    /// alone — its rectangle changes because its parent moved, and reading that
-    /// as a drag of its own would shift it a second time.
+    /// Owner window `HWND` → the `WS_EX_MDICHILD` subforms created under it.
+    ///
+    /// A subform is an *owned popup*, not a child, so Windows does **not** move
+    /// it with its owner (measured on the official x64 interpreter: the subform's
+    /// style word has `WS_CHILD` clear and its parent is the desktop). The
+    /// official interpreter carries them itself, and so does the window procedure
+    /// here — that is the only way they keep up *during* a title-bar drag, whose
+    /// modal move loop keeps the script's pump from running.
+    subforms: HashMap<usize, Vec<HWND>>,
+    /// Owner window `HWND` → the owner position its subforms were last carried
+    /// from, so every `WM_MOVE` only has to apply a delta.
+    carried: HashMap<usize, (i32, i32)>,
+    /// Every `WS_EX_MDICHILD` subform `HWND`. A subform is not dragged on its
+    /// own — its owner carries it — so a rectangle it did not ask for is not a
+    /// user move and must not be reported as one (that would shift it twice).
     subform_hwnds: BTreeSet<usize>,
+    /// Subforms a `WM_MOVE` has decided to move, as `(hwnd, x, y)`.
+    ///
+    /// The window procedure only records the plan: `SetWindowPos` sends
+    /// messages of its own, and applying them while the table is borrowed would
+    /// make every nested call fail its borrow.
+    subform_moves: Vec<(HWND, i32, i32)>,
     /// Graphic control `HWND` → the commands to replay when it paints.
     drawings: HashMap<usize, Drawing>,
     /// Control `HWND` → the cursor identifier a script set.
@@ -533,6 +554,48 @@ unsafe extern "system" fn wnd_proc(
                     return Some(brush_for(state, background) as LRESULT);
                 }
             }
+            // A window that was moved carries its subforms along. This is the only
+            // way a subform keeps up *during* a title-bar drag: that drag runs
+            // Windows' own modal move loop, so the script's message pump (and with
+            // it every model update) is not running until the user lets go. The
+            // official interpreter does the same — its subforms are owned popups
+            // that Windows will not move by itself.
+            WM_MOVE => {
+                if state.subforms.contains_key(&hwnd_key(hwnd)) {
+                    let mut rect: RECT = std::mem::zeroed();
+                    if GetWindowRect(hwnd, &mut rect) != 0 {
+                        let now = (rect.left, rect.top);
+                        let (dx, dy) = match state.carried.insert(hwnd_key(hwnd), now) {
+                            Some((px, py)) => (now.0 - px, now.1 - py),
+                            None => (0, 0),
+                        };
+                        if dx != 0 || dy != 0 {
+                            // The whole subtree takes the same delta, so it is
+                            // collected here and applied after the table is
+                            // released — `SetWindowPos` sends messages of its
+                            // own, and a nested borrow would be refused.
+                            let mut plan: Vec<(HWND, i32, i32)> = Vec::new();
+                            let mut pending = vec![(hwnd, dx, dy)];
+                            while let Some((parent, dx, dy)) = pending.pop() {
+                                let Some(children) = state.subforms.get(&hwnd_key(parent)) else {
+                                    continue;
+                                };
+                                for child in children {
+                                    let mut child_rect: RECT = std::mem::zeroed();
+                                    if GetWindowRect(*child, &mut child_rect) == 0 {
+                                        continue;
+                                    }
+                                    let (x, y) = (child_rect.left + dx, child_rect.top + dy);
+                                    state.carried.insert(hwnd_key(*child), (x, y));
+                                    plan.push((*child, x, y));
+                                    pending.push((*child, dx, dy));
+                                }
+                            }
+                            state.subform_moves.extend(plan);
+                        }
+                    }
+                }
+            }
             // A window colour is painted by the window itself.
             WM_ERASEBKGND => {
                 let background = *state.window_bk.get(&hwnd_key(hwnd))?;
@@ -560,6 +623,21 @@ unsafe extern "system" fn wnd_proc(
         None
     })
     .flatten();
+    // The subforms a `WM_MOVE` asked for, moved now that the table is free.
+    let pending = with_shared(|state| std::mem::take(&mut state.subform_moves)).unwrap_or_default();
+    for (target, x, y) in pending {
+        unsafe {
+            SetWindowPos(
+                target,
+                std::ptr::null_mut(),
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
     answered.unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam))
 }
 
@@ -849,34 +927,17 @@ impl Win32Backend {
                     .owner
                     .and_then(|handle| self.windows.get(&handle).copied());
                 let owner = owner_hwnd.unwrap_or(std::ptr::null_mut());
-                let (create_x, create_y) = if subform {
-                    // The model holds a screen rectangle; a child window is placed
-                    // in its parent's client space.
-                    let parent = owner_hwnd.map(|hwnd| {
-                        let mut point = POINT { x: 0, y: 0 };
-                        if unsafe { ClientToScreen(hwnd, &mut point) } == 0 {
-                            point = POINT {
-                                x: window.x,
-                                y: window.y,
-                            };
-                        }
-                        point
-                    });
-                    match parent {
-                        Some(origin) => (window.x - origin.x, window.y - origin.y),
-                        None => (window.x, window.y),
-                    }
-                } else {
-                    (window.x, window.y)
-                };
+                // A subform is an owned popup in **screen** coordinates, the same
+                // as any other window — the model already resolved its place
+                // against the owner's client area.
                 let hwnd = unsafe {
                     CreateWindowExW(
                         exstyle,
                         class.as_ptr(),
                         title.as_ptr(),
                         style,
-                        create_x,
-                        create_y,
+                        window.x,
+                        window.y,
                         width,
                         height,
                         owner,
@@ -897,10 +958,19 @@ impl Win32Backend {
                 self.windows.insert(window.handle, hwnd);
                 let _ = with_shared(|state| state.window_ids.insert(hwnd_key(hwnd), window.handle));
                 // Remember the subform, so the geometry poll leaves it alone.
+                // A subform has to be carried by whoever moves its owner, and
+                // that includes Windows' own title-bar drag loop.
                 if subform {
-                    let _ = with_shared(|state| {
-                        state.subform_hwnds.insert(hwnd_key(hwnd));
-                    });
+                    if let Some(owner_hwnd) = owner_hwnd {
+                        let _ = with_shared(|state| {
+                            state
+                                .subforms
+                                .entry(hwnd_key(owner_hwnd))
+                                .or_default()
+                                .push(hwnd);
+                            state.subform_hwnds.insert(hwnd_key(hwnd));
+                        });
+                    }
                 }
                 if std::env::var_os("AU3_GUI_TRACE").is_some() {
                     eprintln!(
@@ -918,35 +988,20 @@ impl Win32Backend {
             window.handle,
             (window.x, window.y, client_width, client_height),
         );
+        // Record where this call puts the window *before* moving it: the
+        // `WM_MOVE` that `MoveWindow` sends would otherwise look like the user
+        // moving the window, and the subform carry would then apply a shift the
+        // model is applying as well — which is a visible jump on every update.
+        let _ = with_shared(|state| {
+            state.carried.insert(hwnd_key(hwnd), (window.x, window.y));
+        });
         unsafe {
             // Title, geometry and visibility are idempotent and cheap.
             let title = to_wide(&window.title);
             SetWindowTextW(hwnd, title.as_ptr());
-            // A subform's model rectangle is a screen rectangle, so the parent's
-            // client origin comes off again to get its place in the parent.
-            let (move_x, move_y) = if subform {
-                let origin = self
-                    .windows
-                    .get(&window.owner.unwrap_or(0))
-                    .copied()
-                    .map(|parent| {
-                        let mut point = POINT { x: 0, y: 0 };
-                        if ClientToScreen(parent, &mut point) == 0 {
-                            point = POINT {
-                                x: window.x,
-                                y: window.y,
-                            };
-                        }
-                        point
-                    });
-                match origin {
-                    Some(origin) => (window.x - origin.x, window.y - origin.y),
-                    None => (window.x, window.y),
-                }
-            } else {
-                (window.x, window.y)
-            };
-            MoveWindow(hwnd, move_x, move_y, width, height, 1);
+            // A subform is an owned popup in screen coordinates, which is what
+            // the model already resolved its place to.
+            MoveWindow(hwnd, window.x, window.y, width, height, 1);
             let command = if !window.visible {
                 SW_HIDE
             } else {
@@ -2324,9 +2379,9 @@ impl Win32Backend {
             if unsafe { IsIconic(hwnd) } != 0 || unsafe { IsZoomed(hwnd) } != 0 {
                 continue;
             }
-            // A subform is a child window, so Windows moved it with its parent;
-            // its rectangle changing is not a drag of its own, and reading it as
-            // one would shift it a second time.
+            // A subform is carried by its owner (the window procedure's
+            // `WM_MOVE`), so its rectangle changing is not a drag of its own;
+            // reading it as one would shift it a second time.
             if with_shared(|state| state.subform_hwnds.contains(&hwnd_key(hwnd)))
                 .unwrap_or(false)
             {
@@ -2392,8 +2447,23 @@ impl GuiBackend for Win32Backend {
         if let Some(hwnd) = self.windows.remove(&handle) {
             let _ = with_shared(|state| {
                 state.window_ids.remove(&hwnd_key(hwnd));
-                // A destroyed window is nobody's subform any more.
+                // A destroyed window is nobody's subform any more, and the
+                // subforms it owned were destroyed with it.
+                let gone: Vec<HWND> = state
+                    .subforms
+                    .remove(&hwnd_key(hwnd))
+                    .unwrap_or_default();
+                for subform in gone {
+                    state.subform_hwnds.remove(&hwnd_key(subform));
+                    state.carried.remove(&hwnd_key(subform));
+                    state.subforms.remove(&hwnd_key(subform));
+                }
                 state.subform_hwnds.remove(&hwnd_key(hwnd));
+                state.carried.remove(&hwnd_key(hwnd));
+                state.subform_moves.retain(|(target, _, _)| *target != hwnd);
+                for subforms in state.subforms.values_mut() {
+                    subforms.retain(|subform| *subform != hwnd);
+                }
             });
             unsafe { DestroyWindow(hwnd) };
         }
@@ -2758,8 +2828,12 @@ impl Drop for Win32Backend {
 
 /// The style a top-level window is created with.
 ///
-/// AutoIt's `$GUI_SS_DEFAULT_GUI` *is* `WS_OVERLAPPEDWINDOW`, so a script's
-/// style goes straight through; `-1`/`0` (AutoIt's "default") becomes it.
+/// Measured on the official x64 interpreter: a window created with no style (or
+/// with `-1`) really gets `0x84CA0000` — `$GUI_SS_DEFAULT_GUI` (`0x80CA0000`)
+/// plus `WS_CLIPSIBLINGS`. That is *not* `WS_OVERLAPPEDWINDOW`: its
+/// `WS_THICKFRAME` gives a 408x334 outer rectangle where the official default
+/// is 406x332, and the difference is what showed up as "a few pixels off".
+/// A script's own style goes straight through.
 /// Whether a window is a `WS_EX_MDICHILD` subform.
 ///
 /// Only a positive extended style names styles — a "Default" reaches the model
@@ -2773,20 +2847,24 @@ fn is_subform(window: &Window) -> bool {
 
 /// The style a window is really created with.
 ///
-/// A child window cannot also be a popup, and the script's style for a subform
-/// is `WS_POPUP` (that is what `GUICreate` puts in a form's style). The model
-/// keeps the script's own value for `WinGetStyle` to report.
-fn effective_style(window: &Window, subform: bool) -> u32 {
-    let base = window_style(window);
-    let base = if subform { base & !WS_POPUP } else { base };
-    base | if window.visible { WS_VISIBLE } else { 0 } | if subform { WS_CHILD } else { 0 }
+/// A subform stays an **owned popup**, not a child: measured on the official x64
+/// interpreter, the subform's style word has `WS_CHILD` clear (`0x94000000` —
+/// popup, visible, clipsiblings) and its parent is the desktop, with the owner
+/// pointing at the main window. `WS_EX_MDICHILD` itself is stripped (the script
+/// asked for `0xC0`, the window came out `0x80` = `WS_EX_TOOLWINDOW`).
+/// Windows then does *not* move it with its owner, so the window procedure
+/// carries it from `WM_MOVE` — which is also what the official one does.
+fn effective_style(window: &Window, _subform: bool) -> u32 {
+    window_style(window) | if window.visible { WS_VISIBLE } else { 0 }
 }
 
 fn window_style(window: &Window) -> u32 {
     if window.style > 0 {
         window.style as u32
     } else {
-        WS_OVERLAPPEDWINDOW
+        // `$GUI_SS_DEFAULT_GUI | WS_CLIPSIBLINGS`; the visible bit is the
+        // caller's.
+        GUI_SS_DEFAULT_GUI | WS_CLIPSIBLINGS
     }
 }
 

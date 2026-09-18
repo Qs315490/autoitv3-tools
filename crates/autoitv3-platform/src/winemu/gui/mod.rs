@@ -140,6 +140,19 @@ const LVS_EX_CHECKBOXES: i64 = 0x0000_0004;
 /// relative to the owner's client area (measured on the official interpreter).
 const WS_EX_MDICHILD: i64 = 0x40;
 
+/// How much of a window's client area a menu bar takes.
+///
+/// Measured on the official x64 interpreter: a 400x300 window reports a 400x300
+/// client area before `GUICtrlCreateMenu` and 400x280 after, while its outer
+/// 406x332 rectangle does not change.
+const MENU_BAR_HEIGHT: i32 = 20;
+
+/// `$GUI_SS_DEFAULT_GUI`: what a window that named no style is created with.
+/// `WS_OVERLAPPEDWINDOW` = `WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
+/// WS_MINIMIZEBOX | WS_MAXIMIZEBOX`.
+const GUI_SS_DEFAULT_GUI: i64 = 0x84CA_0000;
+
+
 /// The bits a part reports through `GUICtrlRead`: its own checked, focus and
 /// default-button state.
 ///
@@ -845,6 +858,7 @@ impl GuiState {
                     transparency: None,
                     owner,
                     resizing: 0,
+                    menu: false,
                     on_events: std::collections::HashMap::new(),
                     controls: Vec::new(),
                 };
@@ -1057,9 +1071,17 @@ impl GuiState {
                 match handle.and_then(|h| self.model.window(h)) {
                     Some(window) => {
                         ctx.set_error(0, 0);
+                        // A window that named no style is created with
+                        // `$GUI_SS_DEFAULT_GUI` — measured on the official x64
+                        // interpreter, which reports `0x84CA0000` for it.
+                        let style = if window.style > 0 {
+                            window.style
+                        } else {
+                            GUI_SS_DEFAULT_GUI
+                        };
                         Value::array(vec![
-                            Value::Int(window.style),
-                            Value::Int(window.exstyle),
+                            Value::Int(style),
+                            Value::Int(window.exstyle.max(0)),
                         ])
                     }
                     None => {
@@ -1510,10 +1532,15 @@ impl GuiState {
                 let window = self.window_arg(args, 0).and_then(|h| self.model.window(h));
                 match window {
                     Some(w) => {
+                        // A menu bar is part of the non-client area: measured on
+                        // the official x64 interpreter, a 400x300 window keeps its
+                        // 406x332 outer rectangle when a menu is added but reports
+                        // a 400x280 client area.
+                        let bar = if w.menu { MENU_BAR_HEIGHT } else { 0 };
                         ctx.set_error(0, 0);
                         Value::array(vec![
                             Value::Int(i64::from(w.width)),
-                            Value::Int(i64::from(w.height)),
+                            Value::Int(i64::from(w.height - bar)),
                         ])
                     }
                     None => {
@@ -2220,6 +2247,14 @@ impl GuiState {
             // last; a top-level menu of the bar names no parent.
             ControlKind::Menu | ControlKind::ContextMenu => {
                 control.parent = self.menu_parent(window, Some(arg_int(args, 1)));
+                // A menu bar is part of the non-client area: it takes 20 pixels
+                // off the window's client area (measured on the official x64
+                // interpreter), so the model has to know one exists.
+                if kind == ControlKind::Menu {
+                    if let Some(target) = self.model.window_mut(window) {
+                        target.menu = true;
+                    }
+                }
             }
             _ => {
                 // A control created while a tab page is current belongs to that
