@@ -77,7 +77,8 @@ use super::dialogs;
 use crate::dialog_notice as notice;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    FillRect, GetObjectW, BITMAP, HBRUSH, HBITMAP,
+    FillRect, GetObjectW, GetDIBits, BITMAP, HBRUSH, HBITMAP, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, CreateDIBSection,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
@@ -101,7 +102,7 @@ use windows_sys::Win32::UI::Controls::{
     NMLVCUSTOMDRAW, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW,
     TTF_CENTERTIP, TTS_BALLOON,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
@@ -154,15 +155,17 @@ const SW_MINIMIZE: i32 = 6;
 const WM_ACTIVATE: u32 = 0x0006;
 const WM_COMMAND: u32 = 0x0111;
 const WM_NOTIFY: u32 = 0x004E;
-const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_LBUTTONUP: u32 = 0x0202;
+const WM_CANCELMODE: u32 = 0x001F;
+const WM_CAPTURECHANGED: u32 = 0x0215;
+const WM_DESTROY: u32 = 0x0002;
+const WM_ENTERSIZEMOVE: u32 = 0x0231;
+const WM_EXITSIZEMOVE: u32 = 0x0232;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_CLOSE: u32 = 0x0010;
 const WM_SETFONT: u32 = 0x0030;
 const WM_SYSCOMMAND: u32 = 0x0112;
-
-/// `WM_NCHITTEST`'s "the caption", which a non-client left-button press turns
-/// into a window move.
-const HTCAPTION: usize = 2;
 
 // `WM_SYSCOMMAND` requests.
 const SC_MINIMIZE: usize = 0xF020;
@@ -358,6 +361,96 @@ const WINDOW_CLASS: &str = "Au3EmulatedWindow";
 // The table a window procedure can reach
 // ---------------------------------------------------------------------------
 
+/// A title control drag driven by ordinary messages, so the interpreter remains
+/// available to run GUIRegisterMsg handlers and paint their changes while held.
+#[derive(Clone, Copy)]
+struct ParentDrag {
+    child: HWND,
+    parent: HWND,
+    cursor: (i32, i32),
+    origin: (i32, i32),
+}
+
+unsafe fn begin_parent_drag(child: HWND, parent: HWND) {
+    if let Some(old) = with_shared(|state| state.parent_drag).flatten() {
+        finish_parent_drag(old.parent, false);
+    }
+    let mut point: POINT = std::mem::zeroed();
+    let mut rect: RECT = std::mem::zeroed();
+    if GetCursorPos(&mut point) == 0 || GetWindowRect(parent, &mut rect) == 0 {
+        return;
+    }
+    SetCapture(parent);
+    if GetCapture() != parent {
+        return;
+    }
+    with_shared(|state| state.parent_drag = Some(ParentDrag {
+        child, parent, cursor: (point.x, point.y), origin: (rect.left, rect.top),
+    }));
+    // These notifications use the same watched-message path as native moves.
+    SendMessageW(parent, WM_ENTERSIZEMOVE, 0, 0);
+}
+
+unsafe fn finish_parent_drag(parent: HWND, restore: bool) {
+    let drag = with_shared(|state| {
+        if state.parent_drag.is_some_and(|drag| drag.parent == parent) {
+            state.parent_drag.take()
+        } else {
+            None
+        }
+    }).flatten();
+    let Some(drag) = drag else { return };
+    // Clear before any Win32 call: ReleaseCapture sends WM_CAPTURECHANGED.
+    if GetCapture() == parent {
+        ReleaseCapture();
+    }
+    if IsWindow(parent) != 0 {
+        if restore {
+            SetWindowPos(parent, std::ptr::null_mut(), drag.origin.0, drag.origin.1,
+                0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        SendMessageW(parent, WM_EXITSIZEMOVE, 0, 0);
+    }
+}
+
+unsafe fn parent_drag_message(hwnd: HWND, message: u32, wparam: WPARAM) -> bool {
+    let Some(drag) = with_shared(|state| state.parent_drag).flatten() else { return false };
+    if drag.parent != hwnd {
+        return false;
+    }
+    match message {
+        WM_MOUSEMOVE => {
+            // MK_LBUTTON guards a release that happened while another window
+            // temporarily owned input; never keep moving after the button is up.
+            if wparam & 1 == 0 {
+                finish_parent_drag(hwnd, false);
+            } else {
+                let mut point: POINT = std::mem::zeroed();
+                if GetCursorPos(&mut point) != 0 {
+                    SetWindowPos(hwnd, std::ptr::null_mut(),
+                        drag.origin.0 + point.x - drag.cursor.0,
+                        drag.origin.1 + point.y - drag.cursor.1,
+                        0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+            }
+            true
+        }
+        WM_LBUTTONUP => {
+            finish_parent_drag(hwnd, false);
+            true
+        }
+        WM_CANCELMODE | WM_CAPTURECHANGED | WM_DESTROY => {
+            finish_parent_drag(hwnd, false);
+            false
+        }
+        WM_ACTIVATE if wparam & 0xFFFF == 0 => {
+            finish_parent_drag(hwnd, false);
+            false
+        }
+        _ => false,
+    }
+}
+
 /// Live mappings and everything a window procedure collected for the model.
 #[derive(Default)]
 struct Shared {
@@ -425,6 +518,8 @@ struct Shared {
     /// Control `HWND`s whose `exstyle` carries `$GUI_WS_EX_PARENTDRAG`: a press
     /// inside one moves the window it sits on.
     dragging: BTreeSet<usize>,
+    /// Cooperative PARENTDRAG operation; never enters DefWindowProc's modal loop.
+    parent_drag: Option<ParentDrag>,
     /// Alternating `ListView` control id → one colour per row, resolved from
     /// `$GUI_BKCOLOR_LV_ALTERNATE`: the window procedure cannot reach the model,
     /// and a `NM_CUSTOMDRAW` has to answer with a row's colour on the spot.
@@ -463,6 +558,9 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if parent_drag_message(hwnd, message, wparam) {
+        return 0;
+    }
     if std::env::var_os("AU3_GUI_TRACE").is_some()
         && matches!(
             message,
@@ -1814,7 +1912,15 @@ impl Win32Backend {
         let kind = if icon { IMAGE_ICON } else { IMAGE_BITMAP };
         state.image = wanted.clone();
         let Some(path) = wanted else {
-            unsafe { SendMessageW(state.hwnd, message, kind as usize, 0) };
+            // An empty `GUICtrlSetImage($id, "")` clears the *file* picture. A
+            // bitmap the script drew and handed over with `STM_SETIMAGE` is not
+            // that: wiping it here would blank the control on the next model
+            // push (a show/hide, a colour) — measured, that is exactly what the
+            // checkbox pictures suffered. Clear only what this backend loaded
+            // from a path.
+            if state.image_handle.is_none() {
+                unsafe { SendMessageW(state.hwnd, message, kind as usize, 0) };
+            }
             return;
         };
         let Some(loaded) = load_image(&path, icon) else {
@@ -2260,6 +2366,12 @@ impl Win32Backend {
                 // The keyboard range is `WM_KEYFIRST`..`WM_KEYLAST`
                 // (`WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR` and the `WM_SYS*`
                 // counterparts).
+                if message.message == 0x0100 && message.wParam == 0x1B {
+                    if let Some(drag) = with_shared(|state| state.parent_drag).flatten() {
+                        finish_parent_drag(drag.parent, true);
+                        continue;
+                    }
+                }
                 let keyboard = (0x0100..=0x0109).contains(&message.message);
                 let mut handled = false;
                 let mut handled_by = std::ptr::null_mut();
@@ -2876,9 +2988,30 @@ impl GuiBackend for Win32Backend {
         wparam: usize,
         lparam: isize,
     ) -> Option<i64> {
-        let state = self.controls.get(&id)?;
+        let state = self.controls.get_mut(&id)?;
         if state.hwnd.is_null() {
             return None;
+        }
+        // A bitmap handed over with `STM_SETIMAGE` carries per-pixel alpha,
+        // which a plain STATIC ignores — the transparent pixels reach the
+        // screen as black, and the control paints whatever the caller next
+        // deletes. The official interpreter keeps its own copy (measured:
+        // `STM_GETIMAGE` answers a handle the script never set), so the
+        // script deleting its DIB is safe there. Composite the alpha over
+        // the control background and hand the STATIC that flattening, and
+        // own it from here so the script's `DeleteObject` cannot take the
+        // picture away.
+        if message == STM_SETIMAGE && wparam == IMAGE_BITMAP as usize && lparam != 0 {
+            if std::env::var_os("AU3_GUI_TRACE").is_some() {
+                eprintln!("[gui-trace] STM_SETIMAGE id={id} hbitmap={:#x}", lparam);
+            }
+            if let Some(result) = unsafe { set_pic_bitmap(state, lparam as usize) } {
+                // Record that the visible picture is the backend's own: the
+                // model has no path for a script-drawn HBITMAP, and the next
+                // `apply_image` must not read the mismatch as "clear it".
+                state.image = None;
+                return Some(result);
+            }
         }
         let result = unsafe { SendMessageW(state.hwnd, message, wparam, lparam) };
         Some(result as i64)
@@ -3278,6 +3411,182 @@ fn load_bitmap_gdiplus(path: &[u16]) -> Option<(*mut c_void, i32, i32)> {
     }
 }
 
+/// Take ownership of a bitmap a script handed to a `Pic`, flattening its alpha.
+///
+/// The script built the HBITMAP (typically `CreateDIBSection` + 32bpp pixels
+/// from GDI+) and hands it over with `STM_SETIMAGE`, then usually deletes both
+/// its DIB and the old-image handle the call returns. A plain STATIC neither
+/// blends per-pixel alpha nor owns the object, so the picture dies with the
+/// caller's cleanup. Copy the pixels out, blend them over the control
+/// background, hand the STATIC the flattening and remember it as the control's
+/// own image — the script's handle answering back is cosmetic.
+///
+/// The returned value is what `STM_SETIMAGE` should answer: the previous image
+/// handle, `0` when there was none.
+unsafe fn set_pic_bitmap(state: &mut ControlState, hbitmap: usize) -> Option<i64> {
+    let handle = hbitmap as HBITMAP;
+    // The object has to be a DIB we can read. Anything else (a packed DIB, an
+    // icon handed to the wrong message) falls through to the control itself.
+    let mut dib = unsafe { std::mem::zeroed::<BITMAP>() };
+    if unsafe { GetObjectW(handle as *mut c_void, std::mem::size_of::<BITMAP>() as i32, &mut dib as *mut BITMAP as *mut c_void) } == 0 {
+        return None;
+    }
+    let (width, height) = (dib.bmWidth.max(0) as i32, dib.bmHeight.abs().max(1));
+    if width == 0 || height == 0 || dib.bmBitsPixel != 32 {
+        return None;
+    }
+    // Copy the caller's pixels out through `GetDIBits`, which normalises the
+    // layout to top-down BGRA whatever the source's orientation — the copy
+    // is what survives their `DeleteObject`, and the single canonical layout
+    // takes the guesswork out of the blend below.
+    let stride = width as usize * 4;
+    let len = stride * height as usize;
+    let mut source = vec![0u8; len];
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..Default::default()
+        },
+        bmiColors: [std::mem::zeroed()],
+    };
+    let screen = unsafe { GetDC(std::ptr::null_mut()) };
+    let copied = unsafe {
+        GetDIBits(
+            screen,
+            handle,
+            0,
+            height as u32,
+            source.as_mut_ptr() as *mut c_void,
+            &mut info,
+            DIB_RGB_COLORS,
+        )
+    };
+    if screen != std::ptr::null_mut() {
+        unsafe { ReleaseDC(std::ptr::null_mut(), screen) };
+    }
+    if copied == 0 {
+        return None;
+    }
+    let source = &source[..];
+    if std::env::var_os("AU3_GUI_TRACE").is_some() {
+        let direct = if dib.bmBits.is_null() {
+            [0u8; 4]
+        } else {
+            let b = unsafe { std::slice::from_raw_parts(dib.bmBits as *const u8, 4) };
+            [b[0], b[1], b[2], b[3]]
+        };
+        eprintln!(
+            "[gui-trace] getdibits_px={:02x}{:02x}{:02x}{:02x} bmbits_px={:02x}{:02x}{:02x}{:02x}",
+            source[0], source[1], source[2], source[3], direct[0], direct[1], direct[2], direct[3],
+        );
+    }
+    // Where the alpha lands: over the control's own background colour when the
+    // script set one (the same table `WM_CTLCOLORSTATIC` reads), otherwise
+    // white — a transparent pixel shows what the Pic control would have
+    // painted. The colours are `COLORREF`s (0x00BBGGRR).
+    // The table stores `Option<i64>` and `with_shared` adds its own, so two
+    // levels of Option collapse into the colour or the default. A stored `0`
+    // means "the script passed `$GUI_BKCOLOR_DEFAULT`, the value a control
+    // factory sends first" — that is *no* colour, not black, so treat it like
+    // an unset entry and fall through to the window background, then white.
+    let background = with_shared(|shared| {
+        shared
+            .colors
+            .get(&(state.hwnd as usize))
+            .and_then(|&(_, _, background)| background)
+            .filter(|background| *background != 0)
+            .or_else(|| {
+                shared
+                    .window_bk
+                    .get(&(state.window as usize))
+                    .copied()
+                    .filter(|background| *background != 0)
+            })
+    })
+    .flatten()
+    .unwrap_or(0x00FF_FFFF);
+    if std::env::var_os("AU3_GUI_TRACE").is_some() {
+        eprintln!("[gui-trace] pic background={background:#x}");
+    }
+    let (br, bg, bb) = (
+        ((background & 0x00_00_FF) as f32) / 255.0,
+        (((background >> 8) & 0x00_00_FF) as f32) / 255.0,
+        (((background >> 16) & 0x00_00_FF) as f32) / 255.0,
+    );
+    let mut blended: Vec<u8> = Vec::with_capacity(len);
+    for px in 0..(width as usize * height as usize) {
+        let o = px * 4;
+        let (b, g, r, a) = (source[o], source[o + 1], source[o + 2], source[o + 3]);
+        let af = a as f32 / 255.0;
+        // src over background: `src*alpha + background*(1 - alpha)`. A fully
+        // transparent pixel keeps the background, a fully opaque one the
+        // picture.
+        blended.push((b as f32 * af + bb * (1.0 - af)) as u8);
+        blended.push((g as f32 * af + bg * (1.0 - af)) as u8);
+        blended.push((r as f32 * af + br * (1.0 - af)) as u8);
+        blended.push(255);
+    }
+    // Build a top-down 32bpp DIB from the blended pixels.
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..Default::default()
+        },
+        bmiColors: [std::mem::zeroed()],
+    };
+    let mut out: *mut c_void = std::ptr::null_mut();
+    let flat = unsafe {
+        CreateDIBSection(
+            std::ptr::null_mut(),
+            &mut info,
+            DIB_RGB_COLORS,
+            &mut out,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if flat.is_null() || out.is_null() {
+        return None;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(blended.as_ptr(), out as *mut u8, blended.len()) };
+    if std::env::var_os("AU3_GUI_TRACE").is_some() {
+        eprintln!(
+            "[gui-trace] set_pic_bitmap {}x{} src_stride={} blended_len={} first_px={:02x}{:02x}{:02x}{:02x}",
+            width, height, stride, blended.len(),
+            blended[0], blended[1], blended[2], blended[3],
+        );
+    }
+    // Hand the STATIC the flattening and remember it here: the old image (ours
+    // or the script's) is what the call answers.
+    let previous = unsafe { SendMessageW(state.hwnd, STM_SETIMAGE, IMAGE_BITMAP as usize, flat as isize) };
+    if let Some(old) = state.image_handle.take() {
+        unsafe {
+            if old.icon {
+                DestroyIcon(old.handle);
+            } else {
+                DeleteObject(old.handle);
+            }
+        }
+    }
+    state.image_handle = Some(LoadedImage {
+        handle: flat,
+        icon: false,
+        width,
+        height,
+    });
+    Some(previous as i64)
+}
+
 /// Load the picture file a control asks for.
 ///
 /// `LoadImage` reads BMP, CUR and ICO; JPEG and GIF come from GDI+, which is what
@@ -3410,15 +3719,22 @@ unsafe extern "system" fn child_proc(
     _subclass: usize,
     _data: usize,
 ) -> LRESULT {
+    if message == WM_DESTROY {
+        if let Some(drag) = with_shared(|state| state.parent_drag).flatten() {
+            if drag.child == hwnd {
+                finish_parent_drag(drag.parent, false);
+            }
+        }
+    }
     match message {
-        // `$GUI_WS_EX_PARENTDRAG`: hand the press to the parent as if the user
-        // had grabbed the title bar, which is how a child moves a window.
+        // Return to the interpreter after starting: registered enter handlers
+        // must run while the mouse is held, not after a modal move loop exits.
         WM_LBUTTONDOWN => {
             let dragging =
                 with_shared(|shared| shared.dragging.contains(&hwnd_key(hwnd))).unwrap_or(false);
             let parent = unsafe { GetParent(hwnd) };
             if dragging && !parent.is_null() {
-                unsafe { SendMessageW(parent, WM_NCLBUTTONDOWN, HTCAPTION, lparam) };
+                begin_parent_drag(hwnd, parent);
                 return 0;
             }
         }
